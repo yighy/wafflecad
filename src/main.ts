@@ -1291,6 +1291,7 @@ const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: st
   { tool: "point", icon: "point", label: "Point", key: "P" },
   { tool: "trim", icon: "trim", label: "Trim", key: "T" },
   { tool: "fillet", icon: "fillet", label: "Fillet", key: "F" },
+  { tool: "project", icon: "project", label: "Use edges", key: "U" },
 ];
 
 /** `disabled`: why the tool cannot be used now; it stays in place, greyed, and tapping it says why. */
@@ -1463,6 +1464,8 @@ function renderPanel() {
             ? "Press a piece of a curve: it turns red, and goes when you lift, up to the nearest crossings."
             : ed.tool === "fillet"
               ? "Tap the corner point between two lines, then type the radius."
+              : ed.tool === "project"
+                ? "Tap edges of the model: each one is added to the sketch, flattened onto its plane and fixed."
           : "Tap or drag to draw. Points snap to existing geometry.";
       el.appendChild(hint);
     }

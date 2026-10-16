@@ -141,3 +141,95 @@ export function mirrorEntities(sk: SketchFeature, ids: string[], axisId: string)
   sk.constraints.push(...cons);
   return count || added.length;
 }
+
+/**
+ * Adds a model edge (a 3D polyline) to the sketch, projected onto its plane: as a line, a
+ * circle or an arc when it is one, else a spline through points along it. The new points are
+ * fixed where they are; a point already at the same place is reused, so edges stay joined.
+ * Returns an error message, or null when done.
+ */
+export function projectEdge(sk: SketchFeature, chain: [number, number, number][]): string | null {
+  const { origin: o, xDir: xd, normal: n } = sk.plane;
+  const yd = [n[1] * xd[2] - n[2] * xd[1], n[2] * xd[0] - n[0] * xd[2], n[0] * xd[1] - n[1] * xd[0]];
+  const to2 = (p: number[]): P2 => {
+    const w = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+    return [w[0] * xd[0] + w[1] * xd[1] + w[2] * xd[2], w[0] * yd[0] + w[1] * yd[1] + w[2] * yd[2]];
+  };
+  const pts: P2[] = [];
+  for (const p of chain.map(to2)) if (!pts.length || len(sub(p, pts[pts.length - 1])) > 1e-6) pts.push(p);
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const size = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  if (pts.length < 2 || size < 1e-6) return "This edge is seen end-on from the sketch plane";
+  const tol = Math.max(size * 1e-4, 1e-6);
+  const closed = pts.length > 2 && len(sub(pts[0], pts[pts.length - 1])) < tol;
+  if (closed) pts.pop();
+
+  const view = new SketchView(sk);
+  const pointAt = (p: P2) => {
+    const found = view.points().find((q) => Math.hypot(q.x - p[0], q.y - p[1]) < tol * 10);
+    if (found) return found.id;
+    const id = uid();
+    sk.entities.push({ id, type: "point", x: p[0], y: p[1] });
+    sk.constraints.push({ id: uid(), type: "fix", refs: [id], at: [p[0], p[1]] });
+    view.byId.set(id, sk.entities[sk.entities.length - 1]);
+    return id;
+  };
+  const distToChord = (p: P2, a: P2, b: P2) => {
+    const d = sub(b, a);
+    return Math.abs(d[0] * (p[1] - a[1]) - d[1] * (p[0] - a[0])) / Math.max(len(d), 1e-12);
+  };
+
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  if (!closed && pts.every((p) => distToChord(p, first, last) < tol)) {
+    sk.entities.push({ id: uid(), type: "line", p1: pointAt(first), p2: pointAt(last) });
+    return null;
+  }
+  const circle = fitCircle(pts, tol);
+  if (circle) {
+    const [c, r] = circle;
+    if (closed) {
+      const id = uid();
+      const cid = pointAt(c);
+      sk.entities.push({ id, type: "circle", c: cid, r });
+      sk.constraints.push({ id: uid(), type: "radius", refs: [id], value: r });
+      return null;
+    }
+    // Which way the edge turns decides the arc's ends (arcs run counter-clockwise).
+    let sweep = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const a0 = Math.atan2(pts[i - 1][1] - c[1], pts[i - 1][0] - c[0]);
+      let d = Math.atan2(pts[i][1] - c[1], pts[i][0] - c[0]) - a0;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      sweep += d;
+    }
+    const [s, e] = sweep > 0 ? [first, last] : [last, first];
+    sk.entities.push({ id: uid(), type: "arc", c: pointAt(c), s: pointAt(s), e: pointAt(e) });
+    return null;
+  }
+  // Any other curve: a spline through up to 12 points along it.
+  const count = Math.min(pts.length, 12);
+  const picks: P2[] = [];
+  for (let i = 0; i < count; i++) picks.push(pts[Math.round((i * (pts.length - (closed ? 0 : 1))) / (count - (closed ? 0 : 1))) % pts.length]);
+  const ids = picks.map(pointAt).filter((id, i, a) => i === 0 || id !== a[i - 1]);
+  if (ids.length < (closed ? 3 : 2)) return "This edge is too small to use";
+  sk.entities.push({ id: uid(), type: "spline", pts: ids, closed: closed || undefined });
+  return null;
+}
+
+/** Circle through all the points (within tol), from three of them spread along the list. */
+function fitCircle(pts: P2[], tol: number): [P2, number] | null {
+  if (pts.length < 3) return null;
+  const [a, b, c] = [pts[0], pts[Math.floor(pts.length / 3)], pts[Math.floor((2 * pts.length) / 3)]];
+  const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+  if (Math.abs(d) < 1e-12) return null;
+  const a2 = a[0] ** 2 + a[1] ** 2;
+  const b2 = b[0] ** 2 + b[1] ** 2;
+  const c2 = c[0] ** 2 + c[1] ** 2;
+  const ctr: P2 = [(a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d, (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d];
+  const r = len(sub(a, ctr));
+  // The mesh is within 0.01 mm of the true edge: allow that much on top of the tolerance.
+  return pts.every((p) => Math.abs(len(sub(p, ctr)) - r) < tol + 0.01) ? [ctr, r] : null;
+}

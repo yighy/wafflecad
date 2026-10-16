@@ -8,11 +8,11 @@ import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } f
 import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleSpline, splineSpans, uid } from "./model";
 import { arcMid, findRegions, sampleSegments } from "./profiles";
 import { trimPlan, type TrimPlan } from "./trim";
-import { cornerLines, filletCorner, mirrorAxis, mirrorEntities } from "./ops";
+import { cornerLines, filletCorner, mirrorAxis, mirrorEntities, projectEdge } from "./ops";
 import type { Drag, SolveResult, Solver } from "./solver";
 import { keypad } from "../ui/keypad";
 
-export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point" | "trim" | "fillet";
+export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point" | "trim" | "fillet" | "project";
 
 type P2 = [number, number];
 
@@ -174,6 +174,7 @@ export class SketchEditor implements PointerTool {
     this.boxEl.style.display = "none";
     this.vp.loupe = null;
     this.trimPreview = null;
+    this.vp.highlightEdges([]);
   }
 
   // ---------- Coordinates and snapping ----------
@@ -302,6 +303,11 @@ export class SketchEditor implements PointerTool {
   // ---------- Pointer handling ----------
 
   down(p: Ptr) {
+    if (this.tool === "project") {
+      this.press = { p, snap: { kind: "free", at: this.toSketch(p) }, hit: null, moved: false };
+      this.showEdgeUnder(p);
+      return;
+    }
     if (this.tool === "trim") {
       this.press = { p, snap: { kind: "free", at: this.toSketch(p) }, hit: null, moved: false };
       this.trimPreview = this.trimAt(p)?.plan ?? null;
@@ -320,6 +326,7 @@ export class SketchEditor implements PointerTool {
   move(p: Ptr) {
     const pr = this.press;
     if (!pr) return;
+    if (this.tool === "project") return this.showEdgeUnder(p);
     if (this.tool === "trim") {
       // Slide the finger along: the piece under it is shown, and removed on release.
       this.trimPreview = this.trimAt(p)?.plan ?? null;
@@ -353,6 +360,7 @@ export class SketchEditor implements PointerTool {
     this.vp.loupe = null;
     if (!pr) return;
     if (this.tool === "trim") return this.trim(p);
+    if (this.tool === "project") return this.useEdge(p);
     if (this.tool === "select") {
       if (this.dragState) {
         this.dragState = null;
@@ -397,6 +405,7 @@ export class SketchEditor implements PointerTool {
       this.render();
       return;
     }
+    if (this.tool === "project") return this.showEdgeUnder(p);
     if (this.tool === "select") {
       const h = this.hitTest(p)?.id ?? null;
       if (h !== this.hoverId) {
@@ -638,6 +647,26 @@ export class SketchEditor implements PointerTool {
       if (d < R && (!best || d < best.d)) best = { curve: c, at: proj, d };
     }
     return best && { curve: best.curve, plan: trimPlan(this.sk, best.curve.id, best.at) };
+  }
+
+  private edgeUnder(p: Ptr) {
+    return this.vp.pickEdge(p.x, p.y, p.kind === "touch" ? 24 : p.kind === "pen" ? 14 : 9);
+  }
+
+  private showEdgeUnder(p: Ptr) {
+    const i = this.edgeUnder(p);
+    this.vp.highlightEdges(i === null ? [] : [i]);
+  }
+
+  /** "Use edges": adds the tapped model edge to the sketch, projected onto its plane. */
+  private useEdge(p: Ptr) {
+    const i = this.edgeUnder(p);
+    this.vp.highlightEdges([]);
+    if (i === null) return this.hooks.toast("Tap an edge of the model");
+    const backup = structuredClone(this.sk);
+    const err = projectEdge(this.sk, this.vp.edgePolyline(i));
+    if (err) return this.hooks.toast(err);
+    this.checkOrRevert(backup, "Use edge", "This edge conflicts with the sketch's constraints");
   }
 
   private trim(p: Ptr) {

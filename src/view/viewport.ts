@@ -526,6 +526,17 @@ export class Viewport {
     return this.edgeGroups[i].mid;
   }
 
+  /** The points of an edge's polyline, in order. */
+  edgePolyline(i: number): Vec3[] {
+    const g = this.edgeGroups[i];
+    const L = this.edgeLines;
+    const out: Vec3[] = [];
+    for (let k = g.start; k < g.start + g.count; k += 2) out.push([L[k * 3], L[k * 3 + 1], L[k * 3 + 2]]);
+    const e = (g.start + g.count - 1) * 3;
+    out.push([L[e], L[e + 1], L[e + 2]]);
+    return out;
+  }
+
   /** Draws chosen edges thick, in the accent colour, over the model. */
   highlightEdges(indices: number[]) {
     if (this.edgeHighlight) {

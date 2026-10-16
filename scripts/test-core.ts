@@ -5,7 +5,7 @@ import { Solver } from "../src/sketch/solver";
 import { deleteEntities, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
 import { trimPlan } from "../src/sketch/trim";
-import { filletCorner, mirrorEntities } from "../src/sketch/ops";
+import { filletCorner, mirrorEntities, projectEdge } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
@@ -436,6 +436,34 @@ tsk.constraints.push({ id: "tt", type: "tangent", refs: ["ts", "tl"] });
 const after0 = new SketchView(tsk).splineSpans(ent(tsk, "ts"))[0];
 check("spline tangent to a line leaves along it", near(after0.c1[1], 0) && after0.c1[0] > 0 && !near(before0.c1[1], 0), JSON.stringify(after0.c1));
 check("solver ignores the spline tangency", solver.solve(tsk).ok);
+
+// --- Use edges: project the edges of a block's top face onto a sketch on it.
+const blockDoc: CadDocument = { format: "touch-cad", version: 1, features: [sk, { id: "e1", kind: "extrude", name: "E1", sketchId: sk.id, distance: 5, symmetric: false, op: "add" }] };
+const blockRes = buildResult(blockDoc);
+const useFace = blockRes.planarFaces.find((f) => near(f.plane.normal[2], 1))!;
+const usk = newSketch("U", useFace.plane);
+const chainOf = (g: { start: number; count: number }) => {
+  const out: [number, number, number][] = [];
+  const L = blockRes.edges;
+  for (let k = g.start; k < g.start + g.count; k += 2) out.push([L[k * 3], L[k * 3 + 1], L[k * 3 + 2]]);
+  const e = (g.start + g.count - 1) * 3;
+  out.push([L[e], L[e + 1], L[e + 2]]);
+  return out;
+};
+const topEdges = blockRes.edgeGroups.filter((g) => near(g.mid[2], 5));
+const uerr = topEdges.map((g) => projectEdge(usk, chainOf(g))).filter(Boolean);
+const ures = solver.solve(usk);
+check("projected top edges close a profile", topEdges.length >= 4 && !uerr.length && ures.ok && findRegions(usk).length >= 1 && ures.dof === 0, `${topEdges.length} ${JSON.stringify(uerr)} dof=${ures.dof}`);
+const vertical = blockRes.edgeGroups.find((g) => near(g.mid[2], 2.5))!;
+check("edge seen end-on is refused", projectEdge(newSketch("U2", useFace.plane), chainOf(vertical)) !== null);
+const csk = newSketch("C", XY);
+const ring: [number, number, number][] = Array.from({ length: 41 }, (_, i) => [3 + 4 * Math.cos((i / 40) * Math.PI * 2), 4 * Math.sin((i / 40) * Math.PI * 2), 7]);
+projectEdge(csk, ring);
+const ringC = csk.entities.find((e) => e.type === "circle") as { r: number } | undefined;
+check("circular edge becomes a circle", !!ringC && near(ringC.r, 4, 1e-6));
+const halfRing = ring.slice(0, 21);
+projectEdge(csk, halfRing);
+check("half circle becomes an arc", csk.entities.some((e) => e.type === "arc"));
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);
