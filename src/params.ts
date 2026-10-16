@@ -135,6 +135,8 @@ export function* expressionSlots(doc: CadDocument): Generator<{ get: () => strin
       yield { get: () => f.thicknessExpr!, set: (e) => (f.thicknessExpr = e) };
     } else if (f.kind === "fillet" && f.radiusExpr) {
       yield { get: () => f.radiusExpr!, set: (e) => (f.radiusExpr = e) };
+    } else if (f.kind === "hole" && f.depthExpr) {
+      yield { get: () => f.depthExpr!, set: (e) => (f.depthExpr = e) };
     }
   }
 }
@@ -150,7 +152,9 @@ export function usedNames(doc: CadDocument, except?: string): Set<string> {
           ? [f.thicknessExpr ?? ""]
           : f.kind === "fillet"
             ? [f.radiusExpr ?? ""]
-            : [f.distanceExpr ?? ""];
+            : f.kind === "hole"
+              ? [f.depthExpr ?? ""]
+              : [f.distanceExpr ?? ""];
     for (const e of exprs) for (const n of identifiers(e)) out.add(n);
   }
   for (const p of doc.parameters ?? []) if (p.name !== except) for (const n of identifiers(p.expr)) out.add(n);
@@ -189,6 +193,11 @@ export function applyParameters(doc: CadDocument, solver: Solver): string[] {
       if (v === null) continue;
       if (v <= 0) problems.push(`${f.name}: the thickness must be positive`);
       else f.thickness = v;
+    } else if (f.kind === "hole" && f.depthExpr) {
+      const v = val(f.depthExpr, f.name);
+      if (v === null) continue;
+      if (v < 0) problems.push(`${f.name}: the depth cannot be negative`);
+      else f.depth = v;
     } else if (f.kind === "fillet" && f.radiusExpr) {
       const v = val(f.radiusExpr, f.name);
       if (v === null) continue;

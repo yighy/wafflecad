@@ -1,7 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, Parameter, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
@@ -13,6 +13,7 @@ import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
 import { DistanceHandle, sketchArrow } from "./ui/distanceHandle";
 import { findRegions } from "./sketch/profiles";
+import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
 
 const STORAGE_KEY = "touch-cad.document";
 const PREFS_KEY = "touch-cad.prefs";
@@ -64,7 +65,8 @@ type Mode =
   | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle }
   | { kind: "pushpull"; feat: PushPullFeature; keypad: KeypadHandle }
   | { kind: "shell"; feat: ShellFeature; keypad: KeypadHandle }
-  | { kind: "fillet"; feat: FilletFeature; keypad: KeypadHandle };
+  | { kind: "fillet"; feat: FilletFeature; keypad: KeypadHandle }
+  | { kind: "hole"; feat: HoleFeature; keypad: KeypadHandle };
 
 /** Modes where a feature is being edited with the keypad open. */
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
@@ -72,9 +74,9 @@ const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "
 let doc: CadDocument = loadDoc();
 let mode: Mode = { kind: "part" };
 let selectedFeature: string | null = null;
-let selectedFace: { faceId: number; plane: PlaneDef | null; center: Vec3 | null } | null = null;
+let selectedFace: { faceId: number; plane: PlaneDef | null; center: Vec3 | null; hit: Vec3 | null } | null = null;
 /** A face tool chosen before any face was selected: it starts on the next face tapped. */
-let pendingFaceTool: "pushpull" | "shell" | null = null;
+let pendingFaceTool: "pushpull" | "shell" | "hole" | null = null;
 /** The right panel shows the parameter list. */
 let showParams = false;
 /** A feature left out of the preview build (the shell, while its faces are being chosen). */
@@ -427,7 +429,7 @@ function faceRefOfSelection(): FaceRef | null {
 }
 
 /** Starts a face tool on the selected face, or waits for a face to be tapped. */
-function faceTool(tool: "pushpull" | "shell") {
+function faceTool(tool: "pushpull" | "shell" | "hole") {
   if (mode.kind !== "part") return;
   if (!doc.features.some((f) => f.kind === "extrude")) return toast("Make a solid first (Sketch, then Extrude)");
   const ref = faceRefOfSelection();
@@ -439,7 +441,8 @@ function faceTool(tool: "pushpull" | "shell") {
   }
   pendingFaceTool = null;
   if (tool === "pushpull") void pushPull(undefined, ref);
-  else void shell(undefined, ref);
+  else if (tool === "shell") void shell(undefined, ref);
+  else void holeTool(undefined, { normal: ref.normal, at: (selectedFace?.hit ?? ref.center).map((c) => Math.round(c * 100) / 100) as Vec3 });
 }
 
 async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
@@ -556,6 +559,127 @@ async function shell(existing?: ShellFeature, ref?: FaceRef) {
   feat.thickness = value;
   feat.thicknessExpr = res?.expr;
   commit();
+}
+
+// ---------- Holes ----------
+
+/** Starts the hole tool: from the selected sketch's free points, the selected face, or the next face tapped. */
+function startHoles() {
+  if (mode.kind !== "part") return;
+  const sel = doc.features.find((f) => f.id === selectedFeature);
+  if (sel?.kind === "sketch") {
+    if (!sketchHolePoints(sel).length) return toast("This sketch has no free points: add points where the holes go");
+    return void holeTool(undefined, { sketch: sel });
+  }
+  faceTool("hole");
+}
+
+async function holeTool(existing?: HoleFeature, from?: { sketch: SketchFeature } | { normal: Vec3; at: Vec3 }) {
+  if (mode.kind !== "part") return;
+  const feat: HoleFeature =
+    existing ??
+    (from && "sketch" in from
+      ? { id: uid(), kind: "hole", name: nextName("Hole"), sketchId: from.sketch.id, normal: from.sketch.plane.normal, size: "M3", fit: "clearance", head: "none", depth: 0 }
+      : { id: uid(), kind: "hole", name: nextName("Hole"), points: [from!.at], normal: from!.normal, size: "M3", fit: "clearance", head: "none", depth: 0 });
+  const before = structuredClone(feat);
+  if (!existing) doc.features.push(feat);
+  selectedFeature = feat.id;
+  selectedFace = null;
+  showParams = false;
+  vp.highlightFace(null);
+  // Positions are chosen on the solid as it is before the holes.
+  previewExclude = feat.id;
+  const kp = openKeypad({
+    title: feat.name,
+    subtitle: feat.sketchId ? "At the free points of the sketch" : "Tap the face to add or remove holes",
+    label: "Depth (0 = through)",
+    value: feat.depth,
+    expr: feat.depthExpr,
+    scope: paramScope(),
+    confirmLabel: "Confirm",
+    segments: [
+      {
+        options: HOLE_SIZES.map((s) => ({ value: s, label: s })),
+        get: () => feat.size,
+        set: (v) => (feat.size = v as HoleFeature["size"]),
+      },
+      {
+        options: [
+          { value: "none", label: "Plain" },
+          { value: "counterbore", label: "Counterbore" },
+          { value: "countersink", label: "Countersink" },
+        ],
+        get: () => feat.head,
+        set: (v) => (feat.head = v as HoleFeature["head"]),
+      },
+      {
+        options: [
+          { value: "clearance", label: "Screw passes" },
+          { value: "plastic", label: "Screw into plastic" },
+        ],
+        get: () => feat.fit,
+        set: (v) => (feat.fit = v as HoleFeature["fit"]),
+      },
+    ],
+    extras: feat.sketchId
+      ? [
+          {
+            label: "Flip direction",
+            icon: "flip",
+            run: () => {
+              feat.flip = !feat.flip;
+              toast(feat.flip ? "Drilling along the sketch normal" : "Drilling against the sketch normal");
+            },
+          },
+        ]
+      : [],
+    onInput: (v) => {
+      if (v >= 0) feat.depth = v;
+    },
+  });
+  mode = { kind: "hole", feat, keypad: kp };
+  renderAll();
+  rebuild(true);
+
+  const res = await kp.result;
+  const value = res?.value ?? null;
+  previewExclude = null;
+  mode = { kind: "part" };
+  const hasPoints = feat.sketchId ? true : !!feat.points?.length;
+  if (value === null || value < 0 || !hasPoints) {
+    if (value !== null && !hasPoints) toast("Tap at least one place on the face");
+    if (value !== null && value < 0) toast("The depth cannot be negative");
+    if (existing) Object.assign(feat, before);
+    else {
+      doc.features = doc.features.filter((x) => x !== feat);
+      selectedFeature = null;
+    }
+    rebuild(true);
+    renderAll();
+    return;
+  }
+  feat.depth = value;
+  feat.depthExpr = res?.expr;
+  commit();
+}
+
+/** Adds a hole where the face is tapped, or removes the one tapped. */
+function toggleHolePoint(feat: HoleFeature, p: Ptr) {
+  if (feat.sketchId) return toast("These holes follow the sketch points: edit the sketch to move them");
+  const hit = vp.pickPoint(p.x, p.y);
+  if (!hit) return;
+  const pts = (feat.points ??= []);
+  const n = feat.normal;
+  const pf = hit.faceId == null ? undefined : lastBuild?.planarFaces.find((f) => f.faceId === hit.faceId);
+  const sameNormal = pf && pf.plane.normal[0] * n[0] + pf.plane.normal[1] * n[1] + pf.plane.normal[2] * n[2] > 0.999;
+  const ref = pts[0] ?? hit.point;
+  const offPlane = Math.abs((hit.point[0] - ref[0]) * n[0] + (hit.point[1] - ref[1]) * n[1] + (hit.point[2] - ref[2]) * n[2]);
+  if (!sameNormal || offPlane > 1e-3) return toast("All holes of one feature go on the same flat face");
+  const near = pts.findIndex((q) => Math.hypot(q[0] - hit.point[0], q[1] - hit.point[1], q[2] - hit.point[2]) < Math.max(vp.wpp * 20, 1));
+  if (near >= 0) pts.splice(near, 1);
+  else pts.push(hit.point.map((c) => Math.round(c * 100) / 100) as Vec3);
+  renderPartOverlays();
+  renderStatus();
 }
 
 // ---------- Fillet / chamfer (on edges of the solid) ----------
@@ -939,6 +1063,7 @@ function renderTools() {
     );
     el.appendChild(toolRow("shell", "Shell", () => faceTool("shell"), { active: mode.kind === "shell" || pendingFaceTool === "shell", key: "K" }));
     el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { active: mode.kind === "fillet", key: "R" }));
+    el.appendChild(toolRow("hole", "Hole", startHoles, { active: mode.kind === "hole" || pendingFaceTool === "hole", key: "H" }));
     el.appendChild(section("Design"));
     el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
   }
@@ -1014,6 +1139,7 @@ function renderPanel() {
       items.push(["sketch", "Sketch on this face", () => createSketchOn(plane)]);
       items.push(["pushpull", "Press Pull", () => faceTool("pushpull")]);
       items.push(["shell", "Shell (open this face)", () => faceTool("shell")]);
+      items.push(["hole", "Hole here", () => faceTool("hole")]);
       items.push(["lookAt", "Look at", () => vp.viewNormalTo(plane)]);
     }
     actions(items);
@@ -1027,9 +1153,11 @@ function renderPanel() {
     if (f.kind === "sketch") {
       items.push(["edit", "Edit sketch", () => enterSketch(f)]);
       items.push(["extrude", "Extrude", () => void extrude()]);
+      if (sketchHolePoints(f).length) items.push(["hole", "Holes at its points", startHoles]);
     } else if (f.kind === "extrude") items.push(["edit", "Edit", () => void extrude(f)]);
     else if (f.kind === "pushpull") items.push(["edit", "Edit", () => void pushPull(f)]);
     else if (f.kind === "fillet") items.push(["edit", "Edit", () => void filletTool(f)]);
+    else if (f.kind === "hole") items.push(["edit", "Edit", () => void holeTool(f)]);
     else items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
     items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
@@ -1060,6 +1188,11 @@ function featureDetail(f: Feature) {
   if (f.kind === "sketch") return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}`;
   if (f.kind === "pushpull") return `${f.distance >= 0 ? "Pull" : "Push"} · ${fmtNum(Math.abs(f.distance))} mm`;
   if (f.kind === "shell") return `${fmtNum(f.thickness)} mm walls · ${f.faces.length} open face${f.faces.length > 1 ? "s" : ""}`;
+  if (f.kind === "hole") {
+    const n = f.sketchId ? "at sketch points" : `× ${f.points?.length ?? 0}`;
+    const head = f.head === "counterbore" ? " · counterbore" : f.head === "countersink" ? " · countersink" : "";
+    return `${f.size} ${n}${head} · ${f.depth > 0 ? `${fmtNum(f.depth)} mm deep` : "through"}`;
+  }
   if (f.kind === "fillet")
     return `${f.mode === "fillet" ? "Radius" : "Chamfer"} ${fmtNum(f.radius)} mm · ${f.edges.length} edge${f.edges.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
@@ -1071,6 +1204,7 @@ function featureIcon(f: Feature) {
   if (f.kind === "pushpull") return "pushpull";
   if (f.kind === "shell") return "shell";
   if (f.kind === "fillet") return f.mode === "fillet" ? "fillet" : "chamfer";
+  if (f.kind === "hole") return "hole";
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
 }
 
@@ -1122,11 +1256,14 @@ function renderStatus() {
   } else if (mode.kind === "extrude") s = "Extrude · drag the handle or type a value";
   else if (mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
   else if (mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
-  else if (mode.kind === "fillet") {
+  else if (mode.kind === "hole") {
+    const f = mode.feat;
+    s = f.sketchId ? `Hole · ${f.size} at the sketch points` : `Hole · ${f.size} × ${f.points?.length ?? 0} · tap to add or remove`;
+  } else if (mode.kind === "fillet") {
     const n = mode.feat.edges.length;
     s = `${mode.feat.mode === "fillet" ? "Fillet" : "Chamfer"} · ${n ? `${n} edge${n > 1 ? "s" : ""} chosen` : "tap the edges"}, type the size`;
   }
-  else if (pendingFaceTool) s = `${pendingFaceTool === "shell" ? "Shell" : "Press Pull"} · tap a flat face`;
+  else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
   $("#status").textContent = s;
 }
 
@@ -1168,7 +1305,17 @@ function renderPartOverlays() {
     if (used.has(f.id) && f.id !== highlight) continue;
     appendSketchLines(batch, f, f.id === highlight ? hi : normal);
   }
-  vp.setSketchLayer([batch], []);
+  const marks = { positions: [] as number[], colors: [] as number[], size: 14 };
+  if (mode.kind === "hole") {
+    const f = mode.feat;
+    const sk = f.sketchId ? doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch") : undefined;
+    const acc = rgb("--accent");
+    for (const q of sk ? sketchHolePoints(sk) : f.points ?? []) {
+      marks.positions.push(...q);
+      marks.colors.push(...acc);
+    }
+  }
+  vp.setSketchLayer([batch], [marks]);
   vp.setLabels([]);
 }
 
@@ -1215,12 +1362,14 @@ const partTool: PointerTool = {
       return;
     }
     if (mode.kind === "fillet") return toggleFilletEdge(mode.feat, p);
+    if (mode.kind === "hole") return toggleHolePoint(mode.feat, p);
     if (mode.kind !== "part") return;
     vp.highlightFace(face);
     selectedFeature = null;
     if (face != null) showParams = false;
     const pf = face == null ? undefined : lastBuild?.planarFaces.find((f) => f.faceId === face);
-    selectedFace = face == null ? null : { faceId: face, plane: pf?.plane ?? null, center: pf?.center ?? null };
+    const hit = face == null ? null : vp.pickPoint(p.x, p.y)?.point ?? null;
+    selectedFace = face == null ? null : { faceId: face, plane: pf?.plane ?? null, center: pf?.center ?? null, hit };
     if (pendingFaceTool && face != null) {
       if (!pf) return toast("Only flat faces work here");
       return faceTool(pendingFaceTool);
@@ -1428,6 +1577,7 @@ window.addEventListener("keydown", (e) => {
     else if (key === "q") faceTool("pushpull");
     else if (key === "p") toggleParams();
     else if (key === "r") void filletTool();
+    else if (key === "h") startHoles();
     else if (key === "k") faceTool("shell");
     else if (key === "f") vp.fit();
     else if (key === "delete" && selectedFeature) {

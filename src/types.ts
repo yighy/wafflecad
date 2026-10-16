@@ -156,7 +156,31 @@ export interface FilletFeature {
   radiusExpr?: string;
 }
 
-export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature | FilletFeature;
+/**
+ * Screw holes. Positions come either from the free points of a sketch (precise, follow its
+ * dimensions) or from points tapped on a flat face.
+ */
+export interface HoleFeature {
+  id: string;
+  kind: "hole";
+  name: string;
+  sketchId?: string;
+  /** Tapped positions (world coordinates, on the face). */
+  points?: Vec3[];
+  /** Outward normal of the face (or the sketch normal): holes go the other way. */
+  normal: Vec3;
+  /** Drill along the normal instead (sketches on reference planes may face either way). */
+  flip?: boolean;
+  size: "M2.5" | "M3" | "M4" | "M5";
+  /** Clearance for the screw to pass, or pilot hole to screw into plastic. */
+  fit: "clearance" | "plastic";
+  head: "none" | "counterbore" | "countersink";
+  /** Blind depth in mm; 0 = through all. */
+  depth: number;
+  depthExpr?: string;
+}
+
+export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature | FilletFeature | HoleFeature;
 
 /** A named value usable in any dimension or feature value. */
 export interface Parameter {

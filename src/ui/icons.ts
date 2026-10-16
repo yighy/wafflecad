@@ -35,6 +35,7 @@ const P: Record<string, string> = {
   variable: '<path d="M4 18c2.5 0 3.5-2 4.5-6S10.5 6 13 6M6 11h6"/><path d="M14 12l6 6M20 12l-6 6"/>',
   fillet: '<path d="M5 20V12a7 7 0 0 1 7-7h7"/><path d="M5 5h3M5 5v3" stroke-dasharray="2 2"/>',
   chamfer: '<path d="M5 20v-9l6-6h8"/><path d="M5 5h3M5 5v3" stroke-dasharray="2 2"/>',
+  hole: '<circle cx="12" cy="9" r="5"/><path d="M7 9v9a5 2 0 0 0 10 0V9"/>',
   home: '<path d="M4 11 12 4l8 7"/><path d="M6 10v10h12V10"/><path d="M10 20v-5h4v5"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
 };

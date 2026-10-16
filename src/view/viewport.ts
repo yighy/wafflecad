@@ -403,6 +403,16 @@ export class Viewport {
     this.requestRender();
   }
 
+  /** Point of the model under a screen point, with its face. */
+  pickPoint(x: number, y: number): { point: Vec3; faceId: number | null } | null {
+    if (!this.mesh) return null;
+    const hit = this.ray(x, y).intersectObject(this.mesh)[0];
+    if (!hit) return null;
+    const i = (hit.faceIndex ?? -1) * 3;
+    const faceId = this.faceGroups.find((g) => i >= g.start && i < g.start + g.count)?.faceId ?? null;
+    return { point: [hit.point.x, hit.point.y, hit.point.z], faceId };
+  }
+
   /** B-rep face id under a screen point, if any. */
   pickFace(x: number, y: number): number | null {
     if (!this.mesh) return null;

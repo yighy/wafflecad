@@ -6,7 +6,7 @@ A parametric 3D CAD that runs in the browser and is designed first for **fingers
 - Constrained 2D sketches, solved by FreeCAD's solver ([planegcs](https://github.com/Salusoft89/planegcs), WebAssembly)
 - Exact B-rep solids with OpenCascade ([replicad](https://replicad.xyz), WebAssembly, in a worker)
 - Feature history in the style of Onshape/FreeCAD: Sketch → Extrude (join / cut / intersect), Press Pull, Shell,
-  Fillet / Chamfer, every feature editable
+  Fillet / Chamfer, Hole (M2.5 to M5, counterbore, countersink), every feature editable
 - **STEP** export for other CAD software, **STL** for slicers
 - Installable PWA, works offline once loaded
 
@@ -84,6 +84,23 @@ Tap a flat face of the solid: the right panel offers **Sketch on this face**, **
 - **Shell**: hollows the solid with walls of the given thickness, leaving the chosen faces open.
   While the keypad is open, tap more faces to open or close them.
 
+## Holes
+
+**Hole** (or `H`) drills metric screw holes, M2.5 to M5:
+
+- **Plain**, **Counterbore** (socket head, ISO 4762) or **Countersink** (90° flat head, ISO 10642);
+- **Screw passes** (clearance hole, ISO 273 medium) or **Screw into plastic** (pilot hole for a screw
+  cut straight into a printed part);
+- depth in mm, or 0 for through all.
+
+Two ways to place them:
+
+- **Quick**: tap a flat face, then **Hole here**; while the keypad is open, tap the face again to add
+  holes, or tap a hole to remove it.
+- **Precise**: draw a sketch on the face with points where the holes go, dimension them, then select the
+  sketch in the timeline and tap **Holes at its points**. The holes then follow the sketch's dimensions and
+  parameters. **Flip direction** drills the other way for sketches on reference planes.
+
 ## Fillets and chamfers
 
 **Fillet / Chamfer** (or `R`): tap the edges to round or bevel (tap again to drop one), type the size,
@@ -122,6 +139,6 @@ It is saved automatically in the browser; **Save** / **Open** use `.json` files.
 ## Known limitations
 
 - A sketch on a face stores a copy of the face's plane: it does not follow the face if earlier features change.
-- No revolve, holes or patterns yet.
+- No revolve or patterns yet.
 - Shell faces are chosen on the solid as it is before the shell, so the preview shows the shell only after Confirm.
 - One body: every extrusion adds to, cuts or intersects the same solid.

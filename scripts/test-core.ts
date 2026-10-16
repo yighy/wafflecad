@@ -190,6 +190,29 @@ check("missing edge reported", !!gone.errors.gn, JSON.stringify(gone.errors));
 const groups = buildResult(block()).edgeGroups;
 check("12 edge groups with midpoints", groups.length === 12 && groups.some((g) => near(g.mid[0], 10) && near(g.mid[1], 0) && near(g.mid[2], 5)), String(groups.length));
 
+// --- Holes in the 20 × 10 × 5 block, from its top face.
+const holeBase = { normal: [0, 0, 1] as [number, number, number], size: "M3" as const, fit: "clearance" as const };
+const hl = (extra: object) => buildShape(block({ id: "h", kind: "hole", name: "H", points: [[5, 5, 5], [15, 5, 5]], head: "none", depth: 0, ...holeBase, ...extra } as never));
+const r34 = 3.4 / 2;
+let hs = hl({});
+check("two M3 through holes", !hs.errors.h && near(measureVolume(hs.shape!), 1000 - 2 * Math.PI * r34 * r34 * 5, 1e-2), `${JSON.stringify(hs.errors)} vol=${hs.shape && measureVolume(hs.shape)}`);
+hs = hl({ depth: 3 });
+check("blind 3 mm", !hs.errors.h && near(measureVolume(hs.shape!), 1000 - 2 * Math.PI * r34 * r34 * 3, 1e-2), `vol=${hs.shape && measureVolume(hs.shape)}`);
+hs = hl({ head: "counterbore" });
+const cb = 2 * (Math.PI * 3.25 * 3.25 * 3.3 + Math.PI * r34 * r34 * (5 - 3.3));
+check("counterbore M3", !hs.errors.h && near(measureVolume(hs.shape!), 1000 - cb, 1e-2), `vol=${hs.shape && measureVolume(hs.shape)}`);
+hs = hl({ head: "countersink" });
+const h = 6.7 / 2 - r34;
+const cone = (Math.PI * h * (3.35 * 3.35 + 3.35 * r34 + r34 * r34)) / 3;
+check("countersink M3", !hs.errors.h && near(measureVolume(hs.shape!), 1000 - 2 * (cone + Math.PI * r34 * r34 * (5 - h)), 1e-2), `vol=${hs.shape && measureVolume(hs.shape)}`);
+hs = hl({ fit: "plastic" });
+check("pilot hole for plastic", !hs.errors.h && near(measureVolume(hs.shape!), 1000 - 2 * Math.PI * 1.25 * 1.25 * 5, 1e-2));
+// From the free points of a sketch on the top face.
+const hSk = newSketch("HS", { origin: [0, 0, 5], xDir: [1, 0, 0], normal: [0, 0, 1], label: "Face" });
+hSk.entities.push({ id: "hp", type: "point", x: 10, y: 5 });
+hs = buildShape(block(hSk, { id: "h", kind: "hole", name: "H", sketchId: hSk.id, normal: [0, 0, 1], size: "M5", fit: "clearance", head: "none", depth: 0 }));
+check("hole at a sketch point", !hs.errors.h && near(measureVolume(hs.shape!), 1000 - Math.PI * 2.75 * 2.75 * 5, 1e-2), `${JSON.stringify(hs.errors)} vol=${hs.shape && measureVolume(hs.shape)}`);
+
 // --- Parameters and expressions.
 check("expression with names", evaluate("2 * w + 5", { w: 10 }) === 25);
 check("unknown name fails", evaluate("w + 1", {}) === null);

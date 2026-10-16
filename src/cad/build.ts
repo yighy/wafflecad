@@ -1,7 +1,8 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
 import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, type Drawing, type Face, type Shape3D } from "replicad";
-import type { BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, FaceRef, FilletFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import type { BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, FaceRef, FilletFeature, HoleFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import { holeDims, sketchHolePoints } from "./holes";
 import { findRegions } from "../sketch/profiles";
 
 const MESH_OPTS = { tolerance: 0.01, angularTolerance: 0.1 };
@@ -88,6 +89,47 @@ function fillet(shape: Shape3D, f: FilletFeature): Shape3D {
   }
 }
 
+/** One hole as a solid of revolution: profile (radius, depth) turned around the drilling axis. */
+function holeTool(p: Vec3, dir: Vec3, f: HoleFeature, length: number): Shape3D {
+  const { d, counterbore, countersink } = holeDims(f);
+  const r = d / 2;
+  const e = 0.05; // start just above the surface so the cut is clean
+  const prof: [number, number][] = [[0, -e]];
+  if (counterbore) prof.push([counterbore.d / 2, -e], [counterbore.d / 2, counterbore.depth], [r, counterbore.depth]);
+  else if (countersink) prof.push([countersink / 2 + e, -e], [r, countersink / 2 - r]);
+  else prof.push([r, -e]);
+  prof.push([r, length], [0, length]);
+  // A plane containing the axis: x = radial direction, y = drilling direction.
+  let u: Vec3 = Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  u = add(u, scale(dir, -dot(u, dir)));
+  u = scale(u, 1 / Math.hypot(...u));
+  const normal: Vec3 = [u[1] * dir[2] - u[2] * dir[1], u[2] * dir[0] - u[0] * dir[2], u[0] * dir[1] - u[1] * dir[0]];
+  const pen = draw(prof[0]);
+  for (const q of prof.slice(1)) pen.lineTo(q);
+  const sketch = pen.close().sketchOnPlane(new Plane(p, u, normal));
+  return (sketch as unknown as { revolve: (axis: Vec3, o: { origin: Vec3 }) => Shape3D }).revolve(dir, { origin: p });
+}
+
+function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeature>): Shape3D {
+  let pts: Vec3[];
+  if (f.sketchId) {
+    const sk = sketches.get(f.sketchId);
+    if (!sk) throw new Error("Sketch not found");
+    pts = sketchHolePoints(sk);
+    if (!pts.length) throw new Error("The sketch has no free points to drill at");
+  } else pts = f.points ?? [];
+  if (!pts.length) throw new Error("No hole position");
+  const sign = f.flip ? 1 : -1;
+  const dir = scale(f.normal, sign / Math.hypot(...f.normal));
+  const bb = shape.boundingBox;
+  const through = Math.hypot(bb.width, bb.height, bb.depth) * 2 + 10;
+  if (f.depth < 0) throw new Error("The depth must be positive");
+  const length = f.depth > 0 ? f.depth : through;
+  let result = shape;
+  for (const p of pts) result = result.cut(holeTool(p, dir, f, length));
+  return result;
+}
+
 /** Replays the features; a failing feature is skipped and reported. */
 export function buildShape(doc: CadDocument) {
   let shape: Shape3D | null = null;
@@ -96,6 +138,15 @@ export function buildShape(doc: CadDocument) {
   for (const f of doc.features) {
     if (f.kind === "sketch") {
       sketches.set(f.id, f);
+      continue;
+    }
+    if (f.kind === "hole") {
+      try {
+        if (!shape) throw new Error("There is no solid yet");
+        shape = holes(shape, f, sketches).simplify();
+      } catch (e) {
+        errors[f.id] = e instanceof Error ? e.message : String(e);
+      }
       continue;
     }
     if (f.kind === "pushpull" || f.kind === "shell" || f.kind === "fillet") {
