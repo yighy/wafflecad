@@ -314,9 +314,15 @@ function planarFaces(shape: Shape3D): PlanarFace[] {
     const center: Vec3 = [c.x, c.y, c.z];
     // Keep the world origin's projection as sketch origin, so dimensions read naturally.
     const origin = scale(normal, dot(center, normal));
-    let xDir: Vec3 = [1, 0, 0];
-    if (Math.abs(dot(xDir, normal)) > 0.9) xDir = [0, 1, 0];
-    xDir = add(xDir, scale(normal, -dot(xDir, normal)));
+    let xDir: Vec3;
+    if (Math.abs(normal[2]) > 0.9) {
+      // Flat-lying face: sketch X along world X.
+      xDir = add([1, 0, 0], scale(normal, -normal[0]));
+    } else {
+      // Standing face: sketch Y points up (world Z), so the view looking at it is never upside down.
+      const up = add([0, 0, 1], scale(normal, -normal[2]));
+      xDir = [up[1] * normal[2] - up[2] * normal[1], up[2] * normal[0] - up[0] * normal[2], up[0] * normal[1] - up[1] * normal[0]];
+    }
     const len = Math.hypot(...xDir);
     out.push({ faceId, center: interiorPoint(face, center), plane: { origin, xDir: scale(xDir, 1 / len), normal, label: "Face" } satisfies PlaneDef });
   }

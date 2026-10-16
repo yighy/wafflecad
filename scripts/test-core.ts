@@ -138,6 +138,10 @@ const result = buildResult(doc);
 check("mesh + planar faces", !!result.mesh && result.planarFaces.length >= 6, String(result.planarFaces.length));
 const top5 = result.planarFaces.find((f) => near(f.plane.normal[2], 1) && near(f.plane.origin[2], 5));
 check("top face plane at z=5", !!top5);
+const sideUp = result.planarFaces
+  .filter((f) => Math.abs(f.plane.normal[2]) < 0.1)
+  .map(({ plane: { normal: n, xDir: x } }) => n[0] * x[1] - n[1] * x[0]);
+check("side face sketches have Y pointing up", sideUp.length >= 4 && sideUp.every((z) => z > 0.99), JSON.stringify(sideUp));
 if (top5 && result.mesh) {
   const g = result.mesh.faceGroups.find((g) => g.faceId === top5.faceId)!;
   const t = result.mesh.triangles[g.start];
