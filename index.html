@@ -3,47 +3,38 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#16181d" />
+    <meta name="theme-color" content="#e6e8ec" />
     <meta name="description" content="Touch-first parametric 3D CAD: constrained sketches, extrusions, STEP export." />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <title>Touch CAD</title>
   </head>
   <body data-mode="part">
-    <header id="topbar">
-      <button id="menu" aria-label="Menu">⋮</button>
-      <div id="menu-panel" class="menu"></div>
-      <span id="status"></span>
-      <button class="done-btn primary top-only" title="Finish sketch (Enter)">✓ Done</button>
-      <button class="undo-btn top-only" aria-label="Undo" title="Undo (Ctrl+Z, two-finger tap)">↶</button>
-      <button class="redo-btn top-only" aria-label="Redo" title="Redo (Ctrl+Y, three-finger tap)">↷</button>
-    </header>
-
-    <!-- Tablet: two thumb rails (tools left, selection actions right). Phone: bars at the bottom. -->
-    <nav id="rail-tools" class="rail">
-      <div id="toolbar" class="rail-body"></div>
-      <div class="rail-foot">
-        <button class="undo-btn" aria-label="Undo" title="Undo (Ctrl+Z, two-finger tap)"><span class="glyph">↶</span><span class="cap">Undo</span></button>
-        <button class="redo-btn" aria-label="Redo" title="Redo (Ctrl+Y, three-finger tap)"><span class="glyph">↷</span><span class="cap">Redo</span></button>
-      </div>
-    </nav>
-
+    <!-- The 3D view fills the window; every control floats above it. -->
     <main id="view"></main>
 
-    <nav id="rail-actions" class="rail">
-      <div id="context" class="rail-body"></div>
-      <div class="rail-foot">
-        <button class="done-btn primary" title="Finish sketch (Enter)"><span class="glyph">✓</span><span class="cap">Done</span></button>
-      </div>
-    </nav>
+    <aside id="tools" aria-label="Tools"></aside>
 
-    <aside id="drawer">
-      <div class="drawer-head">
-        <strong>Features</strong>
-        <button id="drawer-close" aria-label="Close">✕</button>
+    <div id="status-pill"><span class="dot"></span><span id="status"></span></div>
+
+    <div id="nav">
+      <div id="viewcube"></div>
+      <div id="view-buttons"></div>
+    </div>
+
+    <aside id="panel" aria-live="polite"><div id="panel-content"></div></aside>
+
+    <footer id="timeline">
+      <div class="history">
+        <button class="undo-btn" aria-label="Undo" title="Undo (Ctrl+Z, two-finger tap)"></button>
+        <button class="redo-btn" aria-label="Redo" title="Redo (Ctrl+Y, three-finger tap)"></button>
       </div>
-      <div id="tree-list"></div>
-    </aside>
+      <div id="chips"></div>
+      <div class="menu-wrap">
+        <button id="menu" aria-label="Menu"></button>
+        <div id="menu-panel" class="menu"></div>
+      </div>
+    </footer>
 
     <div id="toast" role="status"></div>
 
@@ -57,8 +48,8 @@
           <li><b>Two-finger tap</b>: undo. <b>Three-finger tap</b>: redo.</li>
           <li><b>Back gesture</b>: cancel / leave the sketch.</li>
         </ul>
-        <p><b>Workflow</b>: Sketch → pick a plane → draw → select geometry and tap the constraint buttons that appear → Done → Extrude.</p>
-        <p>Dimensions open a keypad that accepts expressions like <code>20*2+3</code>.</p>
+        <p><b>Workflow</b>: New sketch → pick a plane → draw → select geometry and use the constraints in the right panel → Finish → Extrude.</p>
+        <p>Values are typed on the keypad, which accepts expressions like <code>20*2+3</code>. An extrusion can also be pulled by its handle.</p>
         <button id="help-close" class="primary">Start</button>
       </div>
     </div>

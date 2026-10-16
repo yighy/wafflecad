@@ -51,7 +51,15 @@ export class Viewport {
   /** Loupe: magnified inset above the finger, in CSS px. Null = hidden. */
   loupe: { x: number; y: number } | null = null;
   readonly loupeEl: HTMLDivElement;
-  onCameraChange: () => void = () => {};
+  private cameraListeners: (() => void)[] = [];
+  private gridVisible = true;
+  private modelColor = "#8fa8c8";
+
+  /** Called whenever the camera moves (animations included). */
+  onCamera(fn: () => void): () => void {
+    this.cameraListeners.push(fn);
+    return () => (this.cameraListeners = this.cameraListeners.filter((f) => f !== fn));
+  }
 
   constructor(readonly container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -67,11 +75,16 @@ export class Viewport {
     this.loupeEl.className = "loupe";
     container.appendChild(this.loupeEl);
 
-    this.scene.background = new THREE.Color(cssVar("--bg3d", "#1d2026"));
+    this.scene.background = new THREE.Color();
+    this.applyThemeColors();
     this.scene.add(this.gridGroup, this.modelGroup, this.helperGroup, this.sketchGroup);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-    sun.position.set(0.3, 0.5, 1);
+    // Bright, flat-ish lighting: top faces lightest, sides in two distinct greys.
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a93a0, 2.0));
+    const top = new THREE.DirectionalLight(0xffffff, 1.3);
+    top.position.set(0.3, -0.5, 1);
+    this.scene.add(top);
+    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+    sun.position.set(-0.4, 0.6, 1);
     this.camera.add(sun);
     this.scene.add(this.camera);
 
@@ -167,7 +180,7 @@ export class Viewport {
 
   private changed() {
     this.updateCamera();
-    this.onCameraChange();
+    for (const fn of this.cameraListeners) fn();
     this.requestRender();
   }
 
@@ -179,8 +192,31 @@ export class Viewport {
       right: [[1, 0, 0], [0, 0, 1]],
     };
     const [eye, up] = dirs[name];
+    this.viewAlong(eye, up, animate);
+  }
+
+  /** Looks from direction `eye` (towards the target), with `up` pointing up on screen. */
+  viewAlong(eye: Vec3, up: Vec3, animate = true) {
     const m = new THREE.Matrix4().lookAt(V(eye), new THREE.Vector3(), V(up));
     this.animateTo(new THREE.Quaternion().setFromRotationMatrix(m), undefined, undefined, animate);
+  }
+
+  /** Re-reads the colours from the CSS theme. */
+  applyThemeColors() {
+    (this.scene.background as THREE.Color).set(cssVar("--bg3d", "#1d2026"));
+    this.modelColor = cssVar("--model", "#8fa8c8");
+    if (this.mesh) (this.mesh.material as THREE.MeshStandardMaterial).color.set(this.modelColor);
+    this.lastGrid = "";
+    this.requestRender();
+  }
+
+  setGridVisible(on: boolean) {
+    this.gridVisible = on;
+    this.gridGroup.visible = on;
+    this.requestRender();
+  }
+  get isGridVisible() {
+    return this.gridVisible;
   }
 
   /** Looks straight at a sketch plane, sketch X to the right. */
@@ -236,7 +272,7 @@ export class Viewport {
       this.viewHeight = a.h0 + (a.h1 - a.h0) * e;
       if (t >= 1) this.anim = null;
       this.updateCamera();
-      this.onCameraChange();
+      for (const fn of this.cameraListeners) fn();
       this.needsRender = true;
     }
     if (!this.needsRender) return;
@@ -331,7 +367,7 @@ export class Viewport {
     g.setAttribute("normal", new THREE.BufferAttribute(r.mesh.normals, 3));
     g.setIndex(new THREE.BufferAttribute(r.mesh.triangles, 1));
     const mat = new THREE.MeshStandardMaterial({
-      color: cssVar("--model", "#8fa8c8"),
+      color: this.modelColor,
       metalness: 0.05,
       roughness: 0.6,
       polygonOffset: true,
@@ -342,7 +378,9 @@ export class Viewport {
     this.faceGroups = r.mesh.faceGroups;
     this.modelGroup.add(this.mesh);
     if (r.edges.length) {
-      const colors = new Array((r.edges.length / 3) * 3).fill(0.08);
+      const edge = new THREE.Color(cssVar("--edge", "#141414"));
+      const colors: number[] = [];
+      for (let i = 0; i < r.edges.length / 3; i++) colors.push(edge.r, edge.g, edge.b);
       this.modelGroup.add(this.makeLines({ positions: Array.from(r.edges), colors, width: 1.5 }));
     }
     this.requestRender();
@@ -438,7 +476,8 @@ export class Viewport {
       const m = new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false });
       return new THREE.LineSegments(g, m);
     };
-    this.gridGroup.add(mk(minor, cssVar("--grid", "#8892a0"), 0.12), mk(major, cssVar("--grid", "#8892a0"), 0.28));
+    const gridColor = cssVar("--grid", "#8892a0");
+    this.gridGroup.add(mk(minor, gridColor, 0.14), mk(major, gridColor, 0.32));
     // World axes.
     const L = ext * 2;
     const axes = new THREE.Group();

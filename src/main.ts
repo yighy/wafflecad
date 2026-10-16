@@ -1,43 +1,71 @@
 import "./style.css";
+import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
 import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, Feature, PlaneDef, SketchFeature, WorkerRequest, WorkerResponse } from "./types";
-import { Viewport, type LineBatch } from "./view/viewport";
+import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
-import { SketchEditor, type SketchToolName } from "./sketch/editor";
+import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
 import { SketchView, newSketch, uid } from "./sketch/model";
-import { keypad } from "./ui/keypad";
+import { openKeypad, setKeypadHost, type KeypadHandle } from "./ui/keypad";
+import { icon } from "./ui/icons";
+import { createViewCube } from "./ui/viewcube";
+import { ExtrudeHandle } from "./ui/extrudeHandle";
+import { findRegions } from "./sketch/profiles";
 
 const STORAGE_KEY = "touch-cad.document";
+const PREFS_KEY = "touch-cad.prefs";
 const STD_PLANES: PlaneDef[] = [
   { origin: [0, 0, 0], xDir: [1, 0, 0], normal: [0, 0, 1], label: "XY" },
   { origin: [0, 0, 0], xDir: [1, 0, 0], normal: [0, -1, 0], label: "XZ" },
   { origin: [0, 0, 0], xDir: [0, 1, 0], normal: [1, 0, 0], label: "YZ" },
 ];
-const PLANE_COLORS: Record<string, string> = { XY: "#5588ee", XZ: "#55c46a", YZ: "#e05555" };
+const PLANE_NAMES: Record<string, string> = { XY: "Top (XY)", XZ: "Front (XZ)", YZ: "Right (YZ)" };
+const PLANE_COLORS: Record<string, string> = { XY: "#4c6ef5", XZ: "#2f9e44", YZ: "#e03131" };
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const buttons = (sel: string) => [...document.querySelectorAll<HTMLButtonElement>(sel)];
 
-const SWAP_KEY = "touch-cad.swapped";
-/** Tablet layout: tools under the left thumb and actions under the right one, or the reverse. */
-function setSwapped(on: boolean) {
-  document.body.classList.toggle("swapped", on);
+// ---------- Preferences ----------
+
+interface Prefs {
+  theme: "light" | "dark";
+  collapsed: boolean;
+}
+const prefs: Prefs = { theme: "light", collapsed: false };
+try {
+  Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
+} catch {
+  // Defaults.
+}
+function savePrefs() {
   try {
-    localStorage.setItem(SWAP_KEY, on ? "1" : "0");
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
   } catch {
     // Not remembered: fine.
   }
 }
+function applyPrefs() {
+  document.documentElement.dataset.theme = prefs.theme;
+  document.body.classList.toggle("collapsed", prefs.collapsed);
+  $<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", cssVar("--bg3d", "#e4e7eb"));
+}
+applyPrefs();
 
 // ---------- State ----------
 
-type Mode = { kind: "part" } | { kind: "pickPlane" } | { kind: "sketch"; editor: SketchEditor };
+type Mode =
+  | { kind: "part" }
+  | { kind: "pickPlane" }
+  | { kind: "sketch"; editor: SketchEditor }
+  | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle };
 
 let doc: CadDocument = loadDoc();
 let mode: Mode = { kind: "part" };
 let selectedFeature: string | null = null;
+let selectedFace: { faceId: number; plane: PlaneDef | null } | null = null;
 let lastBuild: BuildResult | null = null;
+let kernelMessage = "Loading geometry kernel…";
 const undoStack: string[] = [JSON.stringify(doc)];
 let undoPos = 0;
 
@@ -57,10 +85,12 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
   const m = ev.data;
   if (m.type === "ready") {
     kernelReady = true;
-    setStatus("");
+    kernelMessage = "";
+    renderStatus();
     rebuild(true);
   } else if (m.type === "fatal") {
-    setStatus("Geometry kernel failed to load: " + m.message);
+    kernelMessage = "Geometry kernel failed to load: " + m.message;
+    renderStatus();
   } else if (m.type === "built") {
     if (m.reqId !== latestBuild) return;
     const first = lastBuild === null;
@@ -68,7 +98,8 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     vp.setModel(m);
     if (first && m.mesh) vp.fit();
     if (mode.kind === "sketch") vp.setModelOpacity(0.45);
-    renderTree();
+    renderTimeline();
+    renderPanel();
     renderPartOverlays();
   } else if (m.type === "file") {
     pendingFiles.get(m.reqId)?.(m.blob, m.error);
@@ -129,12 +160,11 @@ function commit() {
   undoPos = undoStack.length - 1;
   save();
   rebuild();
-  renderTree();
-  renderPartOverlays();
-  updateHistoryButtons();
+  renderAll();
 }
 
 function restore(pos: number) {
+  if (mode.kind === "extrude") mode.keypad.close();
   undoPos = pos;
   doc = JSON.parse(undoStack[pos]);
   save();
@@ -144,11 +174,9 @@ function restore(pos: number) {
     if (sk) mode.editor.load(sk);
     else exitSketch();
   }
+  if (selectedFeature && !doc.features.some((f) => f.id === selectedFeature)) selectedFeature = null;
   rebuild();
-  renderTree();
-  renderPartOverlays();
-  renderToolbar();
-  updateHistoryButtons();
+  renderAll();
 }
 
 function undo() {
@@ -157,11 +185,6 @@ function undo() {
 }
 function redo() {
   if (undoPos < undoStack.length - 1) restore(undoPos + 1);
-}
-
-function updateHistoryButtons() {
-  for (const b of buttons(".undo-btn")) b.disabled = undoPos === 0;
-  for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
 }
 
 function nextName(prefix: string) {
@@ -175,10 +198,10 @@ function nextName(prefix: string) {
 function startNewSketch() {
   mode = { kind: "pickPlane" };
   selectedFeature = null;
+  selectedFace = null;
+  vp.highlightFace(null);
   vp.showPlanes(STD_PLANES.map((def) => ({ def, color: PLANE_COLORS[def.label] })));
-  renderToolbar();
-  renderPartOverlays();
-  setStatus("Tap a plane or a flat face");
+  renderAll();
 }
 
 function pickPlaneAt(p: Ptr) {
@@ -197,6 +220,7 @@ function pickPlaneAt(p: Ptr) {
 function createSketchOn(plane: PlaneDef) {
   vp.showPlanes(null);
   vp.highlightFace(null);
+  selectedFace = null;
   const sk = newSketch(nextName("Sketch"), plane);
   doc.features.push(sk);
   commit();
@@ -206,11 +230,13 @@ function createSketchOn(plane: PlaneDef) {
 function enterSketch(sk: SketchFeature) {
   if (mode.kind === "sketch") mode.editor.dispose();
   vp.showPlanes(null);
+  vp.highlightFace(null);
+  selectedFace = null;
   const editor = new SketchEditor(vp, solver, sk, {
     commit,
     changed: () => {
-      renderContext();
-      renderSketchStatus();
+      renderPanel();
+      renderStatus();
     },
     toast,
   });
@@ -219,10 +245,7 @@ function enterSketch(sk: SketchFeature) {
   vp.setGridPlane(sk.plane);
   vp.viewNormalTo(sk.plane);
   vp.setModelOpacity(0.45);
-  renderToolbar();
-  renderTree();
-  renderPartOverlays();
-  renderSketchStatus();
+  renderAll();
 }
 
 function exitSketch() {
@@ -232,107 +255,130 @@ function exitSketch() {
   mode = { kind: "part" };
   vp.setGridPlane(null);
   vp.setModelOpacity(1);
-  setStatus("");
   commit();
-  renderToolbar();
-  renderTree();
-  renderPartOverlays();
+  renderAll();
   const used = doc.features.some((f) => f.kind === "extrude" && f.sketchId === sk.id);
-  if (!used && new SketchView(sk).curves().some((c) => !c.construction && !("axis" in c && c.axis)))
-    toast("Tip: tap Extrude to turn this sketch into a solid");
+  if (!used && findRegions(sk).length)
+    toast("Next: Extrude turns this sketch into a solid");
 }
 
 function escape(): boolean {
+  if (mode.kind === "extrude") {
+    mode.keypad.close();
+    return true;
+  }
   if (mode.kind === "sketch") {
-    if (mode.editor.escape()) {
-      renderToolbar();
-      return true;
-    }
-    exitSketch();
+    if (!mode.editor.escape()) exitSketch();
+    renderAll();
     return true;
   }
   if (mode.kind === "pickPlane") {
     mode = { kind: "part" };
     vp.showPlanes(null);
     vp.highlightFace(null);
-    setStatus("");
-    renderToolbar();
+    renderAll();
     return true;
   }
-  if (selectedFeature) {
-    selectedFeature = null;
-    renderTree();
-    renderPartOverlays();
+  if (selectedFeature || selectedFace) {
+    clearPartSelection();
     return true;
   }
   return false;
 }
 
+function clearPartSelection() {
+  selectedFeature = null;
+  selectedFace = null;
+  vp.highlightFace(null);
+  renderAll();
+}
+
 // ---------- Extrude ----------
 
 async function extrude(existing?: ExtrudeFeature) {
+  if (mode.kind === "extrude") return;
   let f = existing;
   if (!f) {
     const sk = pickSketchForExtrude();
     if (!sk) return toast("Draw a closed sketch first");
     if (mode.kind === "sketch") exitSketch();
-    const hasSolid = doc.features.some((x) => x.kind === "extrude");
-    f = { id: uid(), kind: "extrude", name: nextName("Extrude"), sketchId: sk.id, distance: 10, symmetric: false, op: "add" };
-    if (hasSolid && sk.plane.label === "Face") f.distance = 5;
+    const onFace = sk.plane.label === "Face";
+    f = { id: uid(), kind: "extrude", name: nextName("Extrude"), sketchId: sk.id, distance: onFace ? 5 : 10, symmetric: false, op: "add" };
     doc.features.push(f);
   }
   const feat = f;
-  const onFace = doc.features.some((x) => x.id === feat.sketchId && x.kind === "sketch" && x.plane.label === "Face");
+  const sk = doc.features.find((x): x is SketchFeature => x.id === feat.sketchId && x.kind === "sketch");
+  if (!sk) return toast("This extrusion's sketch is missing");
+  const onFace = sk.plane.label === "Face";
   const before = { distance: feat.distance, symmetric: feat.symmetric, op: feat.op };
   selectedFeature = feat.id;
-  renderTree();
-  rebuild(true);
-  const opBtn = (op: ExtrudeOp, label: string) => ({
-    label,
-    active: () => feat.op === op,
-    toggle: () => {
-      // A face normal points out of the solid: cutting goes the other way by default.
-      if (onFace && (op === "cut") !== (feat.op === "cut")) feat.distance = -feat.distance;
-      feat.op = op;
-      rebuild();
-    },
-  });
-  const value = await keypad({
+  selectedFace = null;
+  vp.highlightFace(null);
+
+  let handle: ExtrudeHandle | null = null;
+  const setDistance = (d: number, fromKeypad = false) => {
+    feat.distance = d;
+    if (!fromKeypad) kp.set(Math.abs(d));
+    handle?.update();
+    renderTimeline();
+    rebuild();
+  };
+  const kp = openKeypad({
     title: feat.name,
+    subtitle: `${sk.name} · ${sk.plane.label === "Face" ? "on a face" : PLANE_NAMES[sk.plane.label] ?? sk.plane.label}`,
+    label: "Distance",
     value: Math.abs(feat.distance),
-    extras: [
-      opBtn("add", "Add"),
-      opBtn("cut", "Cut"),
-      opBtn("intersect", "Intersect"),
+    confirmLabel: "Confirm",
+    segments: [
       {
-        label: "⇅ Flip",
-        active: () => feat.distance < 0,
-        toggle: () => {
-          feat.distance = -feat.distance;
+        options: [
+          { value: "one", label: "One side" },
+          { value: "sym", label: "Symmetric" },
+        ],
+        get: () => (feat.symmetric ? "sym" : "one"),
+        set: (v) => {
+          feat.symmetric = v === "sym";
           rebuild();
         },
       },
       {
-        label: "Symmetric",
-        active: () => feat.symmetric,
-        toggle: () => {
-          feat.symmetric = !feat.symmetric;
+        options: [
+          { value: "add", label: "Join" },
+          { value: "cut", label: "Cut" },
+          { value: "intersect", label: "Intersect" },
+        ],
+        get: () => feat.op,
+        set: (v) => {
+          const op = v as ExtrudeOp;
+          // A face normal points out of the solid: cutting goes the other way by default.
+          if (onFace && (op === "cut") !== (feat.op === "cut")) feat.distance = -feat.distance;
+          feat.op = op;
+          handle?.update();
           rebuild();
         },
       },
     ],
+    extras: [{ label: "Flip direction", icon: "flip", run: () => setDistance(-feat.distance) }],
     onInput: (v) => {
-      if (v > 0) {
-        feat.distance = Math.sign(feat.distance || 1) * v;
-        rebuild();
-      }
+      if (v > 0) setDistance(Math.sign(feat.distance || 1) * v, true);
     },
   });
+  mode = { kind: "extrude", feat, keypad: kp };
+  handle = new ExtrudeHandle(vp, sk, () => feat.distance, (d) => setDistance(d));
+  renderAll();
+  rebuild(true);
+
+  const value = await kp.result;
+  handle.dispose();
+  mode = { kind: "part" };
   if (value === null || value <= 0) {
     if (existing) Object.assign(feat, before);
-    else doc.features = doc.features.filter((x) => x !== feat);
+    else {
+      doc.features = doc.features.filter((x) => x !== feat);
+      selectedFeature = null;
+    }
     rebuild(true);
-    renderTree();
+    renderAll();
     return;
   }
   feat.distance = Math.sign(feat.distance || 1) * value;
@@ -347,69 +393,6 @@ function pickSketchForExtrude(): SketchFeature | null {
   const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" ? [f.sketchId] : [])));
   const free = doc.features.filter((f): f is SketchFeature => f.kind === "sketch" && !used.has(f.id));
   return free[free.length - 1] ?? null;
-}
-
-// ---------- Feature tree ----------
-
-function renderTree() {
-  const list = $("#tree-list");
-  list.replaceChildren();
-  if (!doc.features.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "No features yet. Start with a sketch.";
-    list.appendChild(empty);
-  }
-  for (const f of doc.features) {
-    const row = document.createElement("div");
-    row.className = "feature";
-    if (f.id === selectedFeature) row.classList.add("sel");
-    const err = lastBuild?.errors[f.id];
-    if (err) row.classList.add("error");
-    const icon = f.kind === "sketch" ? "✎" : f.op === "cut" ? "⬇" : f.op === "intersect" ? "⋂" : "⬆";
-    const detail = f.kind === "sketch" ? f.plane.label : `${fmtNum(f.distance)} mm${f.symmetric ? " ⇹" : ""}`;
-    row.innerHTML = `<span class="ico"></span><span class="name"></span><span class="detail"></span>`;
-    row.querySelector(".ico")!.textContent = icon;
-    row.querySelector(".name")!.textContent = f.name;
-    row.querySelector(".detail")!.textContent = err ? "⚠ " + err : detail;
-    row.onclick = () => {
-      selectedFeature = selectedFeature === f.id ? null : f.id;
-      renderTree();
-      renderPartOverlays();
-    };
-    if (f.id === selectedFeature && mode.kind !== "sketch") {
-      const acts = document.createElement("div");
-      acts.className = "feature-actions";
-      const btn = (label: string, run: () => void, cls = "") => {
-        const b = document.createElement("button");
-        b.textContent = label;
-        b.className = cls;
-        b.onclick = (e) => {
-          e.stopPropagation();
-          run();
-        };
-        acts.appendChild(b);
-      };
-      if (f.kind === "sketch") {
-        btn("Edit", () => {
-          closeDrawer();
-          enterSketch(f);
-        });
-        btn("Extrude", () => {
-          closeDrawer();
-          void extrude();
-        });
-      } else
-        btn("Edit", () => {
-          closeDrawer();
-          void extrude(f);
-        });
-      btn("Rename", () => renameFeature(f));
-      btn("Delete", () => deleteFeature(f), "danger");
-      row.appendChild(acts);
-    }
-    list.appendChild(row);
-  }
 }
 
 function renameFeature(f: Feature) {
@@ -428,26 +411,301 @@ function deleteFeature(f: Feature) {
   commit();
 }
 
-function closeDrawer() {
-  document.body.classList.remove("drawer-open");
+// ---------- Rendering ----------
+
+function renderAll() {
+  document.body.dataset.mode = mode.kind;
+  document.body.classList.toggle("busy", mode.kind !== "part");
+  renderTools();
+  renderPanel();
+  renderTimeline();
+  renderStatus();
+  renderViewButtons();
+  renderPartOverlays();
 }
 
-// ---------- Part mode overlays: visible sketches ----------
+const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: string }[] = [
+  { tool: "select", icon: "select", label: "Select", key: "Esc" },
+  { tool: "line", icon: "line", label: "Line", key: "L" },
+  { tool: "rect", icon: "rect", label: "Rectangle", key: "R" },
+  { tool: "circle", icon: "circle", label: "Circle", key: "C" },
+  { tool: "arc", icon: "arc", label: "Arc", key: "A" },
+  { tool: "point", icon: "point", label: "Point", key: "P" },
+];
 
+function toolRow(ic: string, label: string, run: () => void, opts: { active?: boolean; on?: boolean; key?: string } = {}) {
+  const b = document.createElement("button");
+  b.className = "tool";
+  if (opts.active) b.classList.add("active");
+  if (opts.on) b.classList.add("on");
+  b.innerHTML = `<span class="tile">${icon(ic)}</span><span class="label"></span>`;
+  b.querySelector(".label")!.textContent = label;
+  b.title = opts.key ? `${label} (${opts.key})` : label;
+  b.setAttribute("aria-label", label);
+  b.onclick = run;
+  return b;
+}
+
+function section(title: string) {
+  const s = document.createElement("div");
+  s.className = "section";
+  s.textContent = title;
+  return s;
+}
+
+function renderTools() {
+  const el = $("#tools");
+  el.replaceChildren();
+  const collapse = document.createElement("button");
+  collapse.id = "collapse";
+  collapse.innerHTML = icon(prefs.collapsed ? "expand" : "collapse", 20);
+  collapse.title = prefs.collapsed ? "Show labels" : "Icons only";
+  collapse.onclick = () => {
+    prefs.collapsed = !prefs.collapsed;
+    savePrefs();
+    applyPrefs();
+    renderTools();
+    renderStatus();
+  };
+  el.appendChild(collapse);
+
+  if (mode.kind === "sketch") {
+    const ed = mode.editor;
+    el.appendChild(section("Draw"));
+    for (const t of SKETCH_TOOLS)
+      el.appendChild(
+        toolRow(t.icon, t.label, () => {
+          ed.setTool(t.tool);
+          renderAll();
+        }, { active: ed.tool === t.tool, key: t.key }),
+      );
+    el.appendChild(section("Options"));
+    el.appendChild(
+      toolRow("construction", "Construction", () => {
+        ed.construction = !ed.construction;
+        renderTools();
+      }, { on: ed.construction, key: "G" }),
+    );
+  } else if (mode.kind === "pickPlane") {
+    el.appendChild(section("Sketch plane"));
+    for (const p of STD_PLANES) el.appendChild(toolRow("plane", PLANE_NAMES[p.label], () => createSketchOn(p)));
+    el.appendChild(toolRow("close", "Cancel", () => escape()));
+  } else {
+    el.appendChild(section("Sketch"));
+    el.appendChild(toolRow("sketch", "New sketch", startNewSketch, { key: "S" }));
+    el.appendChild(section("Features"));
+    el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { active: mode.kind === "extrude", key: "E" }));
+  }
+}
+
+/** Right panel: what can be done with the current selection. */
+function renderPanel() {
+  const el = $("#panel-content");
+  el.replaceChildren();
+  const head = (title: string, sub = "", err = false, closable = false) => {
+    const h = document.createElement("div");
+    h.className = "p-head";
+    h.innerHTML = `<div><div class="p-title"></div><div class="p-sub"></div></div>`;
+    h.querySelector(".p-title")!.textContent = title;
+    const s = h.querySelector(".p-sub")!;
+    s.textContent = sub;
+    s.classList.toggle("err", err);
+    if (closable) {
+      const x = document.createElement("button");
+      x.className = "p-close";
+      x.innerHTML = icon("close", 20);
+      x.setAttribute("aria-label", "Close");
+      x.onclick = clearPartSelection;
+      h.appendChild(x);
+    }
+    el.appendChild(h);
+  };
+  const actions = (items: [string, string, () => void, string?][]) => {
+    const box = document.createElement("div");
+    box.className = "p-actions";
+    for (const [ic, label, run, cls] of items) {
+      const b = document.createElement("button");
+      b.innerHTML = icon(ic, 20) + "<span></span>";
+      b.querySelector("span")!.textContent = label;
+      if (cls) b.className = cls;
+      b.onclick = run;
+      box.appendChild(b);
+    }
+    el.appendChild(box);
+  };
+
+  if (mode.kind === "sketch") {
+    const ed = mode.editor;
+    head(ed.sk.name, dofText(ed.dof));
+    const acts = ed.actions();
+    if (ed.tool === "line")
+      acts.unshift({ id: "endline", label: "⏎", title: "End line", key: "Enter", run: () => ed.escape() });
+    if (acts.length) {
+      const grid = document.createElement("div");
+      grid.className = "p-grid";
+      for (const a of acts) grid.appendChild(actionTile(a));
+      el.appendChild(grid);
+    } else {
+      const hint = document.createElement("p");
+      hint.className = "p-hint";
+      hint.textContent =
+        ed.tool === "select"
+          ? "Tap lines, circles or points to constrain them. Drag a point to move it."
+          : "Tap or drag to draw. Points snap to existing geometry.";
+      el.appendChild(hint);
+    }
+    actions([["check", "Finish sketch", exitSketch, "primary"]]);
+    return;
+  }
+  if (mode.kind !== "part") return;
+
+  if (selectedFace) {
+    const plane = selectedFace.plane;
+    head("Face", plane ? "Flat face" : "Curved face", false, true);
+    const items: [string, string, () => void, string?][] = [];
+    if (plane) items.push(["sketch", "Sketch on this face", () => createSketchOn(plane)]);
+    if (plane) items.push(["lookAt", "Look at", () => vp.viewNormalTo(plane)]);
+    actions(items);
+    return;
+  }
+  const f = doc.features.find((x) => x.id === selectedFeature);
+  if (f) {
+    const err = lastBuild?.errors[f.id];
+    head(f.name, err ?? featureDetail(f), !!err, true);
+    const items: [string, string, () => void, string?][] = [];
+    if (f.kind === "sketch") {
+      items.push(["edit", "Edit sketch", () => enterSketch(f)]);
+      items.push(["extrude", "Extrude", () => void extrude()]);
+    } else items.push(["edit", "Edit", () => void extrude(f)]);
+    items.push(["rename", "Rename", () => renameFeature(f)]);
+    items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
+    actions(items);
+  }
+}
+
+function actionTile(a: Action) {
+  const b = document.createElement("button");
+  if (a.id === "del") b.classList.add("danger");
+  const glyph = a.id === "del" ? icon("trash", 20) : a.id === "constr" ? icon("construction", 20) : "";
+  b.innerHTML = `<span class="glyph">${glyph}</span><span class="cap"></span>`;
+  if (!glyph) b.querySelector(".glyph")!.textContent = a.label;
+  b.querySelector(".cap")!.textContent = a.title;
+  b.title = a.key ? `${a.title} (${a.key})` : a.title;
+  b.onclick = () => {
+    a.run();
+    renderPanel();
+  };
+  return b;
+}
+
+function dofText(dof: number) {
+  return dof === 0 ? "Fully constrained" : dof < 0 ? "Over-constrained" : `${dof} degree${dof > 1 ? "s" : ""} of freedom left`;
+}
+
+function featureDetail(f: Feature) {
+  if (f.kind === "sketch") return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}`;
+  const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
+  return `${op} · ${fmtNum(Math.abs(f.distance))} mm${f.symmetric ? " · symmetric" : ""}`;
+}
+
+function featureIcon(f: Feature) {
+  if (f.kind === "sketch") return "rect";
+  return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
+}
+
+function renderTimeline() {
+  const el = $("#chips");
+  el.replaceChildren();
+  if (!doc.features.length) {
+    const e = document.createElement("span");
+    e.className = "empty";
+    e.textContent = "Your feature history appears here. Start with New sketch.";
+    el.appendChild(e);
+  }
+  const current = mode.kind === "sketch" ? mode.editor.sk.id : mode.kind === "extrude" ? mode.feat.id : selectedFeature;
+  doc.features.forEach((f, i) => {
+    if (i > 0) {
+      const sep = document.createElement("span");
+      sep.className = "chip-sep";
+      sep.innerHTML = icon("chevron", 16);
+      el.appendChild(sep);
+    }
+    const b = document.createElement("button");
+    b.className = "chip";
+    if (f.id === current) b.classList.add("sel");
+    if (lastBuild?.errors[f.id]) b.classList.add("error");
+    b.innerHTML = icon(featureIcon(f), 20) + "<span></span>";
+    b.querySelector("span")!.textContent = f.kind === "extrude" ? `${f.name} · ${fmtNum(Math.abs(f.distance))}` : f.name;
+    b.onclick = () => {
+      if (mode.kind !== "part") return toast("Finish the current step first");
+      selectedFace = null;
+      vp.highlightFace(null);
+      selectedFeature = selectedFeature === f.id ? null : f.id;
+      renderAll();
+    };
+    el.appendChild(b);
+    if (f.id === current) requestAnimationFrame(() => b.scrollIntoView({ inline: "nearest", block: "nearest" }));
+  });
+  for (const b of buttons(".undo-btn")) b.disabled = undoPos === 0;
+  for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
+}
+
+function renderStatus() {
+  let s = kernelMessage;
+  if (mode.kind === "pickPlane") s = "New sketch · tap a plane or a flat face";
+  else if (mode.kind === "sketch") {
+    const ed = mode.editor;
+    const tool = SKETCH_TOOLS.find((t) => t.tool === ed.tool)!.label;
+    s = `${ed.sk.name} · ${tool} · ${dofText(ed.dof).toLowerCase()}`;
+  } else if (mode.kind === "extrude") s = "Extrude · drag the handle or type a value";
+  $("#status").textContent = s;
+}
+
+function renderViewButtons() {
+  const el = $("#view-buttons");
+  el.replaceChildren();
+  const add = (ic: string, title: string, run: () => void, on = false) => {
+    const b = document.createElement("button");
+    b.innerHTML = icon(ic, 22);
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    if (on) b.classList.add("on");
+    b.onclick = run;
+    el.appendChild(b);
+  };
+  add("fit", "Fit (F)", () => vp.fit());
+  add("iso", "Isometric view", () => vp.setStandardView("iso"));
+  add("grid", "Grid", () => {
+    vp.setGridVisible(!vp.isGridVisible);
+    renderViewButtons();
+  }, vp.isGridVisible);
+  if (mode.kind === "sketch") {
+    const plane = mode.editor.sk.plane;
+    add("lookAt", "Look at sketch", () => vp.viewNormalTo(plane));
+  }
+}
+
+/** Sketches not consumed by a feature stay visible in the part view. */
 function renderPartOverlays() {
   if (mode.kind === "sketch") return;
   const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" ? [f.sketchId] : [])));
   const sel = doc.features.find((f) => f.id === selectedFeature);
   const highlight = sel?.kind === "sketch" ? sel.id : sel?.kind === "extrude" ? sel.sketchId : null;
   const batch: LineBatch = { positions: [], colors: [], width: 2, overlay: true };
+  const hi = rgb("--sk-selected");
+  const normal = rgb("--sk-line");
   for (const f of doc.features) {
     if (f.kind !== "sketch") continue;
     if (used.has(f.id) && f.id !== highlight) continue;
-    const col = f.id === highlight ? [0.3, 0.76, 1] : [0.75, 0.8, 0.86];
-    appendSketchLines(batch, f, col);
+    appendSketchLines(batch, f, f.id === highlight ? hi : normal);
   }
   vp.setSketchLayer([batch], []);
   vp.setLabels([]);
+}
+
+function rgb(name: string) {
+  const c = new THREE.Color(cssVar(name, "#888888"));
+  return [c.r, c.g, c.b];
 }
 
 function appendSketchLines(b: LineBatch, sk: SketchFeature, col: number[]) {
@@ -475,106 +733,19 @@ function appendSketchLines(b: LineBatch, sk: SketchFeature, col: number[]) {
   }
 }
 
-// ---------- Toolbars ----------
-
-const SKETCH_TOOLS: { tool: SketchToolName; label: string; title: string; key: string }[] = [
-  { tool: "select", label: "↖", title: "Select / move", key: "Esc" },
-  { tool: "line", label: "╱", title: "Line", key: "L" },
-  { tool: "rect", label: "▭", title: "Rect", key: "R" },
-  { tool: "circle", label: "◯", title: "Circle", key: "C" },
-  { tool: "arc", label: "◠", title: "Arc (centre, start, end)", key: "A" },
-  { tool: "point", label: "•", title: "Point", key: "P" },
-];
-
-function toolButton(label: string, title: string, run: () => void, opts: { active?: boolean; cls?: string; key?: string } = {}) {
-  const b = document.createElement("button");
-  b.innerHTML = `<span class="glyph"></span><span class="cap"></span>`;
-  b.querySelector(".glyph")!.textContent = label;
-  b.querySelector(".cap")!.textContent = title;
-  b.title = opts.key ? `${title} (${opts.key})` : title;
-  if (opts.active) b.classList.add("active");
-  if (opts.cls) b.classList.add(opts.cls);
-  b.onclick = run;
-  return b;
-}
-
-function renderToolbar() {
-  const bar = $("#toolbar");
-  bar.replaceChildren();
-  document.body.dataset.mode = mode.kind;
-  if (mode.kind === "sketch") {
-    const ed = mode.editor;
-    for (const t of SKETCH_TOOLS) {
-      bar.appendChild(
-        toolButton(t.label, t.title.split(" ")[0], () => {
-          ed.setTool(t.tool);
-          renderToolbar();
-        }, { active: ed.tool === t.tool, key: t.key }),
-      );
-    }
-    bar.appendChild(
-      toolButton("┄", "Constr.", () => {
-        ed.construction = !ed.construction;
-        renderToolbar();
-      }, { active: ed.construction, key: "G" }),
-    );
-  } else if (mode.kind === "pickPlane") {
-    for (const p of STD_PLANES) bar.appendChild(toolButton("▱", p.label, () => createSketchOn(p)));
-    bar.appendChild(toolButton("✕", "Cancel", () => escape()));
-  } else {
-    bar.appendChild(toolButton("☰", "Features", () => document.body.classList.toggle("drawer-open")));
-    bar.appendChild(toolButton("✎", "Sketch", startNewSketch, { key: "S" }));
-    bar.appendChild(toolButton("⬆", "Extrude", () => void extrude(), { key: "E" }));
-    bar.appendChild(toolButton("⤢", "Fit", () => vp.fit(), { key: "F" }));
-    bar.appendChild(toolButton("◰", "View", cycleView, { key: "V" }));
-  }
-  renderContext();
-}
-
-let viewIdx = 0;
-const VIEWS = ["iso", "top", "front", "right"] as const;
-function cycleView() {
-  viewIdx = (viewIdx + 1) % VIEWS.length;
-  vp.setStandardView(VIEWS[viewIdx]);
-  toast(VIEWS[viewIdx][0].toUpperCase() + VIEWS[viewIdx].slice(1) + " view");
-}
-
-/** Constraint buttons for the current sketch selection. */
-function renderContext() {
-  const bar = $("#context");
-  bar.replaceChildren();
-  if (mode.kind !== "sketch") return;
-  const ed = mode.editor;
-  for (const a of ed.actions()) {
-    const b = toolButton(a.label, a.title, () => {
-      a.run();
-      renderContext();
-    }, { key: a.key, cls: a.id === "del" ? "danger" : "" });
-    bar.appendChild(b);
-  }
-  if (ed.tool === "line") bar.appendChild(toolButton("⏎", "End line", () => (ed.escape(), renderContext()), { key: "Enter" }));
-}
-
-function renderSketchStatus() {
-  if (mode.kind !== "sketch") return;
-  const ed = mode.editor;
-  const dof = ed.dof;
-  setStatus(`${ed.sk.name} · ${dof === 0 ? "fully constrained" : dof < 0 ? "over-constrained" : dof + " DOF free"}`);
-}
-
-// ---------- Part-mode pointer tool: pick faces / features ----------
+// ---------- Part-mode pointer tool: pick planes and faces ----------
 
 const partTool: PointerTool = {
   down() {},
   move() {},
   up(p) {
     if (mode.kind === "pickPlane") return pickPlaneAt(p);
+    if (mode.kind !== "part") return;
     const face = vp.pickFace(p.x, p.y);
     vp.highlightFace(face);
-    if (face != null) {
-      const plane = lastBuild?.planarFaces.find((f) => f.faceId === face)?.plane;
-      showFaceMenu(plane ?? null, face);
-    } else hideFaceMenu();
+    selectedFeature = null;
+    selectedFace = face == null ? null : { faceId: face, plane: lastBuild?.planarFaces.find((f) => f.faceId === face)?.plane ?? null };
+    renderAll();
   },
   cancel() {},
   hover(p) {
@@ -582,22 +753,6 @@ const partTool: PointerTool = {
     vp.highlightFace(vp.pickFace(p.x, p.y));
   },
 };
-
-function showFaceMenu(plane: PlaneDef | null, _face: number) {
-  const bar = $("#context");
-  bar.replaceChildren();
-  if (plane) bar.appendChild(toolButton("✎", "Sketch on face", () => {
-    hideFaceMenu();
-    createSketchOn(plane);
-  }));
-  bar.appendChild(toolButton("⤢", "Look at", () => plane && vp.viewNormalTo(plane)));
-  bar.appendChild(toolButton("✕", "Close", hideFaceMenu));
-}
-
-function hideFaceMenu() {
-  vp.highlightFace(null);
-  $("#context").replaceChildren();
-}
 
 // ---------- Menu, files ----------
 
@@ -639,6 +794,15 @@ function newDocument() {
   commit();
 }
 
+function setTheme(theme: Prefs["theme"]) {
+  prefs.theme = theme;
+  savePrefs();
+  applyPrefs();
+  vp.applyThemeColors();
+  if (mode.kind === "sketch") mode.editor.render();
+  renderAll();
+}
+
 function setupMenu() {
   const menu = $("#menu-panel");
   const items: [string, () => void][] = [
@@ -647,8 +811,8 @@ function setupMenu() {
     ["Save (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), "model.tcad.json")],
     ["Export STEP", () => exportFile("step")],
     ["Export STL", () => exportFile("stl")],
-    ["Swap rails (left-handed)", () => setSwapped(!document.body.classList.contains("swapped"))],
-    ["Help", showHelp],
+    ["Light / dark theme", () => setTheme(prefs.theme === "light" ? "dark" : "light")],
+    ["Help", () => $("#help").classList.add("open")],
   ];
   for (const [label, run] of items) {
     const b = document.createElement("button");
@@ -659,24 +823,18 @@ function setupMenu() {
     };
     menu.appendChild(b);
   }
-  $("#menu").onclick = (e) => {
+  const btn = $("#menu");
+  btn.innerHTML = icon("menu", 22);
+  btn.onclick = (e) => {
     e.stopPropagation();
     menu.classList.toggle("open");
   };
   document.addEventListener("pointerdown", (e) => {
-    if (!menu.contains(e.target as Node) && e.target !== $("#menu")) menu.classList.remove("open");
+    if (!menu.contains(e.target as Node) && !btn.contains(e.target as Node)) menu.classList.remove("open");
   });
 }
 
-function showHelp() {
-  $("#help").classList.add("open");
-}
-
-// ---------- Status and toasts ----------
-
-function setStatus(s: string) {
-  $("#status").textContent = s;
-}
+// ---------- Toasts ----------
 
 let toastTimer = 0;
 function toast(msg: string) {
@@ -706,36 +864,26 @@ window.addEventListener("keydown", (e) => {
     return redo();
   }
   if (ctrl || e.altKey) return;
-  if (k === "Escape") {
-    escape();
-    renderToolbar();
-    return;
-  }
+  if (k === "Escape") return void escape();
   if (mode.kind === "sketch") {
     const ed = mode.editor;
     if (k === "Enter") {
       if (!ed.escape()) exitSketch();
-      renderToolbar();
-      return;
+      return renderAll();
     }
     if (k === "Delete" || k === "Backspace") return ed.deleteSelection();
-    if (ed.selection.size && ed.runShortcut(k)) return renderContext();
+    if (ed.selection.size && ed.runShortcut(k)) return renderPanel();
     const t = SKETCH_TOOLS.find((x) => x.key.toLowerCase() === k.toLowerCase());
-    if (t) {
-      ed.setTool(t.tool);
-      renderToolbar();
-    } else if (k.toLowerCase() === "g") {
-      ed.construction = !ed.construction;
-      renderToolbar();
-    }
-    return;
+    if (t) ed.setTool(t.tool);
+    else if (k.toLowerCase() === "g") ed.construction = !ed.construction;
+    else return;
+    return renderAll();
   }
   if (mode.kind === "part") {
     const key = k.toLowerCase();
     if (key === "s") startNewSketch();
     else if (key === "e") void extrude();
     else if (key === "f") vp.fit();
-    else if (key === "v") cycleView();
     else if (key === "delete" && selectedFeature) {
       const f = doc.features.find((x) => x.id === selectedFeature);
       if (f) deleteFeature(f);
@@ -747,23 +895,25 @@ window.addEventListener("keydown", (e) => {
 history.replaceState({ base: true }, "");
 history.pushState({ guard: true }, "");
 window.addEventListener("popstate", () => {
-  if (escape()) {
-    renderToolbar();
-    history.pushState({ guard: true }, "");
-  }
+  if (escape()) history.pushState({ guard: true }, "");
 });
 
 // ---------- Boot ----------
 
 async function boot() {
+  setKeypadHost($("#panel"));
   setupMenu();
-  for (const b of buttons(".undo-btn")) b.onclick = undo;
-  for (const b of buttons(".redo-btn")) b.onclick = redo;
-  for (const b of buttons(".done-btn")) b.onclick = exitSketch;
-  setSwapped(localStorage.getItem(SWAP_KEY) === "1");
-  $("#drawer-close").onclick = closeDrawer;
+  for (const b of buttons(".undo-btn")) {
+    b.innerHTML = icon("undo", 22);
+    b.onclick = undo;
+  }
+  for (const b of buttons(".redo-btn")) {
+    b.innerHTML = icon("redo", 22);
+    b.onclick = redo;
+  }
+  createViewCube($("#viewcube"), vp, 62);
   $("#help-close").onclick = () => $("#help").classList.remove("open");
-  setStatus("Loading geometry kernel…");
+  renderAll();
   solver = await Solver.create(planegcsWasm);
   new InputRouter(vp, $("#view"), {
     is2D: () => mode.kind === "sketch",
@@ -771,12 +921,7 @@ async function boot() {
     onUndo: undo,
     onRedo: redo,
   });
-  renderToolbar();
-  renderTree();
-  renderPartOverlays();
-  updateHistoryButtons();
-  if (!kernelReady) setStatus("Loading geometry kernel…");
-  if (!doc.features.length) showHelp();
+  if (!doc.features.length) $("#help").classList.add("open");
   if ("serviceWorker" in navigator && import.meta.env.PROD) navigator.serviceWorker.register("./sw.js");
 }
 

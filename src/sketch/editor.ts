@@ -4,7 +4,7 @@ import * as THREE from "three";
 import type { ConstraintType, SkArc, SkConstraint, SkCurve, SkEntity, SkLine, SkPoint, SketchFeature } from "../types";
 import { DIMENSION_TYPES } from "../types";
 import type { PointerTool, Ptr } from "../view/input";
-import { V, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
+import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
 import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, uid } from "./model";
 import { arcMid, findRegions, sampleSegments } from "./profiles";
 import type { Drag, SolveResult, Solver } from "./solver";
@@ -36,16 +36,24 @@ export interface Action {
   run: () => void;
 }
 
-const COLORS = {
-  normal: [0.91, 0.94, 0.97],
-  constrained: [0.55, 0.88, 0.55],
-  construction: [0.85, 0.6, 0.3],
-  selected: [0.3, 0.76, 1.0],
-  hover: [1.0, 0.85, 0.45],
-  preview: [1.0, 0.71, 0.28],
-  axisX: [0.88, 0.33, 0.33],
-  axisY: [0.33, 0.77, 0.42],
-};
+/** Sketch colours, read from the CSS theme. */
+function palette() {
+  const c = (name: string, fallback: string) => {
+    const col = new THREE.Color(cssVar(name, fallback));
+    return [col.r, col.g, col.b];
+  };
+  return {
+    normal: c("--sk-line", "#e8eef5"),
+    constrained: c("--sk-constrained", "#8ce08c"),
+    construction: c("--sk-construction", "#d99a4a"),
+    selected: c("--sk-selected", "#4cc3ff"),
+    hover: c("--sk-hover", "#ffd873"),
+    preview: c("--accent", "#ffb648"),
+    origin: c("--sk-origin", "#f2f266"),
+    axisX: c("--axis-x", "#e05555"),
+    axisY: c("--axis-y", "#55c46a"),
+  };
+}
 const TAP = 8;
 const AUTO_HV_DEG = 4;
 /** Magnifier under the finger while drawing. Off for now: the target is tablets, with room to see. */
@@ -817,6 +825,7 @@ export class SketchEditor implements PointerTool {
 
   render() {
     const v = this.view;
+    const COLORS = palette();
     const lines: LineBatch = { positions: [], colors: [], width: 2.5, overlay: true };
     const constr: LineBatch = { positions: [], colors: [], width: 1.5, overlay: true, dashed: true };
     const preview: LineBatch = { positions: [], colors: [], width: 2, overlay: true, dashed: true };
@@ -862,7 +871,7 @@ export class SketchEditor implements PointerTool {
       }
     }
     for (const p of v.points()) {
-      const col = p.id === ORIGIN && !this.selection.has(p.id) ? [0.95, 0.95, 0.4] : colorOf(p.id, base);
+      const col = p.id === ORIGIN && !this.selection.has(p.id) ? COLORS.origin : colorOf(p.id, base);
       pts.positions.push(...this.toWorld([p.x, p.y]).toArray());
       pts.colors.push(...col);
     }
@@ -906,7 +915,7 @@ export class SketchEditor implements PointerTool {
       outer: loopPoly(r.outer),
       holes: r.holes.map(loopPoly),
     }));
-    this.vp.setFills(this.sk.plane, regions, "#4cc3ff");
+    this.vp.setFills(this.sk.plane, regions, cssVar("--sk-fill", "#4cc3ff"));
     this.renderLabels(v);
   }
 

@@ -35,12 +35,16 @@ While a stylus touches the screen, finger contacts are ignored (palm rejection).
 
 ## Layout
 
-On tablets (width ≥ 700 px) the controls sit in two vertical rails, within reach of the thumbs
-while holding the device with both hands: tools on the left, the actions for the current selection
-(constraints, dimensions, delete) on the right, with Undo/Redo and Done at the bottom of the rails.
-The keypad opens next to the action rail. **Menu → Swap rails** mirrors everything for left-handed use.
+The 3D view fills the screen; the controls float above it.
 
-On phones the same controls become two bars at the bottom of the screen.
+- **Left**: the tools of the current mode, grouped by section. The panel folds down to icons only.
+- **Right**: a panel for the current selection: constraints in a sketch, actions for a feature or a face,
+  and the keypad when a value is being typed.
+- **Top right**: a view cube (tap a face to look from that side), then Fit, Isometric, Grid, and Look at sketch.
+- **Bottom**: the feature history as a timeline (tap a step to edit, rename or delete it), Undo/Redo, and the menu.
+- An extrusion shows a handle that can be pulled along the sketch normal, next to the keypad.
+
+Menu → Light / dark theme. On phones the tools shrink to icons and the panel becomes a bottom sheet.
 
 ## Sketching
 
