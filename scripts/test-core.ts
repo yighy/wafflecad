@@ -4,6 +4,7 @@ import { measureVolume, setOC } from "replicad";
 import { Solver } from "../src/sketch/solver";
 import { deleteEntities, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
+import { trimPlan } from "../src/sketch/trim";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
 import type { CadDocument, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
@@ -339,6 +340,54 @@ const merged = ent<{ pts: string[]; closed?: boolean }>(arch2.s, "sp");
 check("joining the ends closes the spline", !!merged.closed && merged.pts.length === 4 && findRegions(arch2.s).length === 1);
 deleteEntities(arch2.s, [arch2.ids[1]]);
 check("deleting a spline point keeps the spline", ent<{ pts: string[] }>(arch2.s, "sp")?.pts.length === 3);
+
+// --- Trim.
+function lineSketch(segs: [number, number, number, number][]) {
+  const s = newSketch("Tr", XY);
+  const lines = segs.map(([x0, y0, x1, y1]) => {
+    const a = uid();
+    const b = uid();
+    const l: SkLine = { id: uid(), type: "line", p1: a, p2: b };
+    s.entities.push({ id: a, type: "point", x: x0, y: y0 }, { id: b, type: "point", x: x1, y: y1 }, l);
+    return l.id;
+  });
+  return { s, lines };
+}
+const trim = (s: SketchFeature, id: string, at: [number, number]) => {
+  const plan = trimPlan(s, id, at);
+  plan?.apply(s);
+  return plan;
+};
+const lineLen = (s: SketchFeature, id: string) => {
+  const l = ent<SkLine>(s, id);
+  const a = ent<SkPoint>(s, l.p1);
+  const b = ent<SkPoint>(s, l.p2);
+  return Math.hypot(b.x - a.x, b.y - a.y);
+};
+const cross = lineSketch([[-10, 0, 10, 0], [0, -10, 0, 10]]);
+trim(cross.s, cross.lines[0], [5, 0]);
+check("trim a line end at a crossing", near(lineLen(cross.s, cross.lines[0]), 10) && solver.solve(cross.s).ok, String(lineLen(cross.s, cross.lines[0])));
+const bars = lineSketch([[-10, 0, 10, 0], [-5, -5, -5, 5], [5, -5, 5, 5]]);
+trim(bars.s, bars.lines[0], [0, 0]);
+const pieces = bars.s.entities.filter((e) => e.type === "line" && !e.axis);
+check("trim the middle splits the line", pieces.length === 4 && solver.solve(bars.s).ok, String(pieces.length));
+trim(bars.s, bars.lines[1], [-5, 4]);
+check("trim at a line's end point reuses it", bars.s.entities.filter((e) => e.type === "point" && !e.fixed).length === 7);
+const lone = lineSketch([[0, 0, 4, 4]]);
+trim(lone.s, lone.lines[0], [2, 2]);
+check("trim with no crossing deletes the curve", !lone.s.entities.some((e) => e.id === lone.lines[0]) && lone.s.entities.length === 5);
+// Circle cut by a line: keep the lower half, then trim the line's ends → half disc.
+const disc = lineSketch([[-10, 0, 10, 0]]);
+const dc = uid();
+disc.s.entities.push({ id: dc, type: "point", x: 0, y: 0 }, { id: "cir", type: "circle", c: dc, r: 5 });
+trim(disc.s, "cir", [0, 5]);
+const half = ent<{ type: string }>(disc.s, "cir");
+trim(disc.s, disc.lines[0], [-8, 0]);
+trim(disc.s, disc.lines[0], [8, 0]);
+const halfRegions = findRegions(disc.s);
+const halfArea = halfRegions.length === 1 && halfRegions[0].outer.kind === "path" ? signedArea(sampleSegments(halfRegions[0].outer.segments)) : 0;
+check("trimmed circle + line → half disc", half.type === "arc" && near(halfArea, (Math.PI * 25) / 2, 0.3) && solver.solve(disc.s).ok, `${half.type} ${halfArea}`);
+check("splines are not trimmed", trimPlan(blob.s, "sp", [10, 0]) === null);
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

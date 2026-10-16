@@ -60,6 +60,9 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
    A spline passes through the points you tap; tap the last point again (or **Finish spline**) to end it,
    tap the first point to close it. Its points can be dragged, constrained and dimensioned like any other,
    and STEP export keeps it as an exact B-spline.
+   **Trim** removes a piece of a line, arc or circle up to the nearest crossings on each side: press the piece
+   (it turns red, slide to pick another) and lift. A piece with no crossing removes the whole curve; a circle
+   becomes an arc; cutting the middle of a line leaves two collinear lines. Reference axes do not cut.
    Points snap to existing points and curves; nearly horizontal/vertical lines get the constraint automatically.
 3. Tap geometry to select it (tap empty space to clear, drag on empty space for a box selection).
    The bar above the tools offers the constraints that fit the selection:
@@ -144,7 +147,7 @@ so the rounding appears after Confirm. A radius too large for the chosen edges i
 Faces are found again by a point on them and their normal, edges by the point at the middle of their length. If an earlier change moves the face,
 the feature turns red in the timeline instead of applying somewhere else.
 
-Optional keyboard shortcuts: `L` line, `R` rectangle, `C` circle, `A` arc, `S` spline, `P` point, `G` construction,
+Optional keyboard shortcuts: `L` line, `R` rectangle, `C` circle, `A` arc, `S` spline, `P` point, `T` trim, `G` construction,
 `Esc` cancel, `Enter` end a line or spline / finish, `Del` delete, `Ctrl+Z` / `Ctrl+Y`;
 with a selection: `H`, `V`, `E`, `T`, `D`, `X`, `Y`, `O`, `M`, `S`, `F`.
 In the part view: `S` sketch, `E` extrude, `F` fit, `V` cycle views.

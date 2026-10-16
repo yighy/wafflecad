@@ -7,10 +7,11 @@ import type { PointerTool, Ptr } from "../view/input";
 import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
 import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleSpline, splineSpans, uid } from "./model";
 import { arcMid, findRegions, sampleSegments } from "./profiles";
+import { trimPlan, type TrimPlan } from "./trim";
 import type { Drag, SolveResult, Solver } from "./solver";
 import { keypad } from "../ui/keypad";
 
-export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point";
+export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point" | "trim";
 
 type P2 = [number, number];
 
@@ -51,6 +52,7 @@ function palette() {
     selected: c("--sk-selected", "#4cc3ff"),
     hover: c("--sk-hover", "#ffd873"),
     preview: c("--accent", "#ffb648"),
+    trim: c("--danger", "#e5484d"),
     origin: c("--sk-origin", "#f2f266"),
     axisX: c("--axis-x", "#e05555"),
     axisY: c("--axis-y", "#55c46a"),
@@ -83,6 +85,8 @@ export class SketchEditor implements PointerTool {
   private press: { p: Ptr; snap: Snap; hit: string | null; moved: boolean } | null = null;
   private dragState: { ids: string[]; starts: Map<string, P2>; from: P2; radius?: string } | null = null;
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null;
+  /** Trim tool: the piece that the current press (or hover) would remove. */
+  private trimPreview: TrimPlan | null = null;
   private boxEl: HTMLDivElement;
 
   constructor(
@@ -168,6 +172,7 @@ export class SketchEditor implements PointerTool {
     this.box = null;
     this.boxEl.style.display = "none";
     this.vp.loupe = null;
+    this.trimPreview = null;
   }
 
   // ---------- Coordinates and snapping ----------
@@ -293,6 +298,12 @@ export class SketchEditor implements PointerTool {
   // ---------- Pointer handling ----------
 
   down(p: Ptr) {
+    if (this.tool === "trim") {
+      this.press = { p, snap: { kind: "free", at: this.toSketch(p) }, hit: null, moved: false };
+      this.trimPreview = this.trimAt(p)?.plan ?? null;
+      this.render();
+      return;
+    }
     const hit = this.tool === "select" ? this.hitTest(p) : null;
     this.press = { p, snap: this.snap(p), hit: hit?.id ?? null, moved: false };
     if (this.tool !== "select") {
@@ -305,6 +316,12 @@ export class SketchEditor implements PointerTool {
   move(p: Ptr) {
     const pr = this.press;
     if (!pr) return;
+    if (this.tool === "trim") {
+      // Slide the finger along: the piece under it is shown, and removed on release.
+      this.trimPreview = this.trimAt(p)?.plan ?? null;
+      this.render();
+      return;
+    }
     if (!pr.moved && Math.hypot(p.x - pr.p.x, p.y - pr.p.y) > TAP) {
       pr.moved = true;
       if (this.tool === "select") this.beginDrag(pr);
@@ -331,6 +348,7 @@ export class SketchEditor implements PointerTool {
     this.press = null;
     this.vp.loupe = null;
     if (!pr) return;
+    if (this.tool === "trim") return this.trim(p);
     if (this.tool === "select") {
       if (this.dragState) {
         this.dragState = null;
@@ -367,6 +385,11 @@ export class SketchEditor implements PointerTool {
     if (!p) {
       this.hoverId = null;
       if (this.tool !== "select") this.cursor = null;
+      this.render();
+      return;
+    }
+    if (this.tool === "trim") {
+      this.trimPreview = this.trimAt(p)?.plan ?? null;
       this.render();
       return;
     }
@@ -542,6 +565,47 @@ export class SketchEditor implements PointerTool {
     this.addCurve({ id: uid(), type: "arc", c: ci, s: ccw ? si : ei, e: ccw ? ei : si });
     this.anchors = [];
     this.afterEdit("Arc");
+  }
+
+  /** The curve under the pointer (reference axes excluded) and its trim plan. */
+  private trimAt(p: Ptr): { curve: SkCurve; plan: TrimPlan | null } | null {
+    const v = this.view;
+    const s = this.toSketch(p);
+    const R = hitRadius(p.kind);
+    let best: { curve: SkCurve; at: P2; d: number } | null = null;
+    for (const c of v.curves()) {
+      if (c.type === "line" && c.axis) continue;
+      const proj = this.project(c, s, v);
+      if (!proj) continue;
+      const [sx, sy] = this.toScreen(proj);
+      const d = Math.hypot(sx - p.x, sy - p.y);
+      if (d < R && (!best || d < best.d)) best = { curve: c, at: proj, d };
+    }
+    return best && { curve: best.curve, plan: trimPlan(this.sk, best.curve.id, best.at) };
+  }
+
+  private trim(p: Ptr) {
+    const hit = this.trimAt(p);
+    this.trimPreview = null;
+    if (!hit) return this.render();
+    if (!hit.plan) {
+      this.hooks.toast("Splines cannot be trimmed yet: delete their points instead");
+      return this.render();
+    }
+    const backup = structuredClone(this.sk);
+    hit.plan.apply(this.sk);
+    const r = this.solve();
+    if (!r.ok || r.conflicting.length) {
+      this.sk.entities = backup.entities;
+      this.sk.constraints = backup.constraints;
+      this.solve();
+      this.hooks.toast("Cannot trim here: the constraints would conflict");
+      return this.render();
+    }
+    for (const id of [...this.selection]) if (!this.view.get(id) && !this.sk.constraints.some((c) => c.id === id)) this.selection.delete(id);
+    this.hooks.commit("Trim");
+    this.render();
+    this.hooks.changed();
   }
 
   private afterEdit(label: string) {
@@ -982,7 +1046,10 @@ export class SketchEditor implements PointerTool {
       }
     }
 
-    this.vp.setSketchLayer([axes, constr, lines, preview], [pts, big]);
+    const trim: LineBatch = { positions: [], colors: [], width: 5, overlay: true };
+    if (this.trimPreview) poly(trim, this.trimPreview.removed, COLORS.trim);
+
+    this.vp.setSketchLayer([axes, constr, lines, preview, trim], [pts, big]);
 
     // Closed regions, filled faintly: what an extrusion will use.
     const regions = findRegions(this.sk).map((r) => ({
