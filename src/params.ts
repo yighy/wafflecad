@@ -1,0 +1,218 @@
+// Named parameters and expressions: `width = 40`, `wall = 2`, `depth = width / 2 + wall`.
+// Dimensions and feature values can store an expression; changing a parameter re-evaluates
+// every expression, re-solves the sketches whose dimensions changed, and the model rebuilds.
+import type { CadDocument, Parameter, SketchFeature } from "./types";
+import type { Solver } from "./sketch/solver";
+
+export type Scope = Record<string, number>;
+
+export const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const IDENT_G = /[A-Za-z_][A-Za-z0-9_]*/g;
+
+/** Names used by an expression. */
+export function identifiers(src: string): string[] {
+  return [...new Set(src.match(IDENT_G) ?? [])];
+}
+
+/** True when the expression depends on a parameter (otherwise it is just a number). */
+export function hasNames(src: string) {
+  return identifiers(src).length > 0;
+}
+
+/** Evaluates + − × ÷, parentheses and parameter names. Returns null on any error. */
+export function evaluate(src: string, scope: Scope = {}): number | null {
+  const s = src.replace(/\s+/g, "");
+  let i = 0;
+  const peek = () => s[i];
+  const atom = (): number | null => {
+    if (peek() === "(") {
+      i++;
+      const v = sum();
+      if (v === null || peek() !== ")") return null;
+      i++;
+      return v;
+    }
+    if (peek() === "-") {
+      i++;
+      const v = atom();
+      return v === null ? null : -v;
+    }
+    const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(s.slice(i));
+    if (name) {
+      i += name[0].length;
+      return Object.prototype.hasOwnProperty.call(scope, name[0]) ? scope[name[0]] : null;
+    }
+    const m = /^\d*\.?\d+|^\d+\.?/.exec(s.slice(i));
+    if (!m) return null;
+    i += m[0].length;
+    return parseFloat(m[0]);
+  };
+  const prod = (): number | null => {
+    let v = atom();
+    while (v !== null && (peek() === "*" || peek() === "/")) {
+      const op = s[i++];
+      const r = atom();
+      if (r === null) return null;
+      v = op === "*" ? v * r : v / r;
+    }
+    return v;
+  };
+  const sum = (): number | null => {
+    let v = prod();
+    while (v !== null && (peek() === "+" || peek() === "-")) {
+      const op = s[i++];
+      const r = prod();
+      if (r === null) return null;
+      v = op === "+" ? v + r : v - r;
+    }
+    return v;
+  };
+  if (!s) return null;
+  const v = sum();
+  return v !== null && i === s.length && Number.isFinite(v) ? v : null;
+}
+
+/** Why an expression does not evaluate, in a few words. */
+export function explain(src: string, scope: Scope): string {
+  const unknown = identifiers(src).filter((n) => !(n in scope));
+  if (unknown.length) return `Unknown: ${unknown.join(", ")}`;
+  return "Incomplete expression";
+}
+
+/** Values of all parameters, in dependency order. Cycles and errors are reported per parameter. */
+export function resolveParameters(params: Parameter[]): { scope: Scope; errors: Record<string, string> } {
+  const byName = new Map(params.map((p) => [p.name, p]));
+  const scope: Scope = {};
+  const errors: Record<string, string> = {};
+  const state = new Map<string, "visiting" | "done">();
+  const visit = (p: Parameter, path: string[]): boolean => {
+    const st = state.get(p.name);
+    if (st === "done") return p.name in scope;
+    if (st === "visiting") {
+      errors[p.id] = `Circular: ${[...path, p.name].join(" → ")}`;
+      return false;
+    }
+    state.set(p.name, "visiting");
+    let ok = true;
+    for (const n of identifiers(p.expr)) {
+      const dep = byName.get(n);
+      if (!dep) {
+        errors[p.id] = `Unknown: ${n}`;
+        ok = false;
+      } else if (!visit(dep, [...path, p.name])) {
+        errors[p.id] ??= `Depends on ${n}, which has an error`;
+        ok = false;
+      }
+    }
+    state.set(p.name, "done");
+    if (!ok) return false;
+    const v = evaluate(p.expr, scope);
+    if (v === null) {
+      errors[p.id] = explain(p.expr, scope);
+      return false;
+    }
+    scope[p.name] = v;
+    return true;
+  };
+  for (const p of params) visit(p, []);
+  return { scope, errors };
+}
+
+/** Replaces a parameter name in an expression (whole words only). */
+export function renameInExpr(src: string, from: string, to: string) {
+  return src.replace(IDENT_G, (n) => (n === from ? to : n));
+}
+
+/** Every expression of the document, with a setter, so they can be renamed or frozen. */
+export function* expressionSlots(doc: CadDocument): Generator<{ get: () => string; set: (e: string | undefined) => void }> {
+  for (const p of doc.parameters ?? []) yield { get: () => p.expr, set: (e) => (p.expr = e ?? "0") };
+  for (const f of doc.features) {
+    if (f.kind === "sketch") {
+      for (const c of f.constraints) if (c.expr) yield { get: () => c.expr!, set: (e) => (c.expr = e) };
+    } else if (f.kind === "extrude" || f.kind === "pushpull") {
+      if (f.distanceExpr) yield { get: () => f.distanceExpr!, set: (e) => (f.distanceExpr = e) };
+    } else if (f.kind === "shell" && f.thicknessExpr) {
+      yield { get: () => f.thicknessExpr!, set: (e) => (f.thicknessExpr = e) };
+    }
+  }
+}
+
+/** Names of parameters used anywhere (features and other parameters). */
+export function usedNames(doc: CadDocument, except?: string): Set<string> {
+  const out = new Set<string>();
+  for (const f of doc.features) {
+    const exprs =
+      f.kind === "sketch"
+        ? f.constraints.map((c) => c.expr ?? "")
+        : f.kind === "shell"
+          ? [f.thicknessExpr ?? ""]
+          : [f.distanceExpr ?? ""];
+    for (const e of exprs) for (const n of identifiers(e)) out.add(n);
+  }
+  for (const p of doc.parameters ?? []) if (p.name !== except) for (const n of identifiers(p.expr)) out.add(n);
+  return out;
+}
+
+/**
+ * Re-evaluates every expression and re-solves the sketches whose dimensions changed.
+ * Works in place; returns the problems found (the caller decides whether to keep the result).
+ */
+export function applyParameters(doc: CadDocument, solver: Solver): string[] {
+  const problems: string[] = [];
+  const { scope, errors } = resolveParameters(doc.parameters ?? []);
+  for (const p of doc.parameters ?? []) if (errors[p.id]) problems.push(`${p.name}: ${errors[p.id]}`);
+  const val = (expr: string, what: string): number | null => {
+    const v = evaluate(expr, scope);
+    if (v === null) problems.push(`${what}: ${explain(expr, scope)}`);
+    return v;
+  };
+  for (const f of doc.features) {
+    if (f.kind === "sketch") resolveSketch(f, scope, problems, solver);
+    else if (f.kind === "extrude") {
+      if (!f.distanceExpr) continue;
+      const v = val(f.distanceExpr, f.name);
+      if (v === null) continue;
+      if (v <= 0) problems.push(`${f.name}: the distance must be positive`);
+      else f.distance = Math.sign(f.distance || 1) * v;
+    } else if (f.kind === "pushpull") {
+      if (!f.distanceExpr) continue;
+      const v = val(f.distanceExpr, f.name);
+      if (v === null) continue;
+      if (v === 0) problems.push(`${f.name}: the distance cannot be zero`);
+      else f.distance = v;
+    } else if (f.kind === "shell" && f.thicknessExpr) {
+      const v = val(f.thicknessExpr, f.name);
+      if (v === null) continue;
+      if (v <= 0) problems.push(`${f.name}: the thickness must be positive`);
+      else f.thickness = v;
+    }
+  }
+  return problems;
+}
+
+/** Updates a sketch's driven dimensions; re-solves it if one changed. */
+function resolveSketch(sk: SketchFeature, scope: Scope, problems: string[], solver: Solver) {
+  let changed = false;
+  for (const c of sk.constraints) {
+    if (!c.expr) continue;
+    const v = evaluate(c.expr, scope);
+    if (v === null) {
+      problems.push(`${sk.name}: ${explain(c.expr, scope)}`);
+      continue;
+    }
+    if (c.type !== "angle" && v <= 0) {
+      problems.push(`${sk.name}: ${c.expr} must be positive`);
+      continue;
+    }
+    // Angles keep the side they were drawn on.
+    const signed = c.type === "angle" && (c.value ?? 0) < 0 ? -Math.abs(v) : v;
+    if (signed !== c.value) {
+      c.value = signed;
+      changed = true;
+    }
+  }
+  if (changed) {
+    const r = solver.solve(sk);
+    if (!r.ok || r.conflicting.length) problems.push(`${sk.name} cannot be solved with these values`);
+  }
+}

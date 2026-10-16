@@ -62,6 +62,18 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
    Closed regions are shaded: that is what an extrusion uses (nested loops become holes).
 6. **Finish sketch**, then **Extrude**.
 
+## Parameters
+
+**Parameters** (left panel, or `P`) lists named values such as `width`, `wall` or `screw_d`.
+A parameter is a number or an expression of other parameters (`depth = width / 2 + wall`).
+
+Every keypad shows the parameters as chips: tap one to use it in a dimension, an extrusion distance,
+a Press Pull or a shell thickness (`width - 2*wall`). The dimension then reads `width = 60`.
+Changing a parameter updates every value that uses it, re-solves the sketches and rebuilds the part;
+if a sketch cannot be solved with the new value, the change is refused with a message.
+Renaming a parameter updates every expression; deleting one that is used replaces it by its value.
+Dragging a handle replaces an expression by the dragged number.
+
 ## Working on faces
 
 Tap a flat face of the solid: the right panel offers **Sketch on this face**, **Press Pull** and **Shell**.

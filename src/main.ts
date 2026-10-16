@@ -1,7 +1,8 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, Parameter, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
@@ -73,6 +74,8 @@ let selectedFeature: string | null = null;
 let selectedFace: { faceId: number; plane: PlaneDef | null; center: Vec3 | null } | null = null;
 /** A face tool chosen before any face was selected: it starts on the next face tapped. */
 let pendingFaceTool: "pushpull" | "shell" | null = null;
+/** The right panel shows the parameter list. */
+let showParams = false;
 /** A feature left out of the preview build (the shell, while its faces are being chosen). */
 let previewExclude: string | null = null;
 let lastBuild: BuildResult | null = null;
@@ -252,6 +255,7 @@ function enterSketch(sk: SketchFeature) {
       renderStatus();
     },
     toast,
+    scope: paramScope,
   });
   mode = { kind: "sketch", editor };
   selectedFeature = sk.id;
@@ -283,6 +287,10 @@ function escape(): boolean {
   if (pendingFaceTool) {
     pendingFaceTool = null;
     renderAll();
+    return true;
+  }
+  if (showParams) {
+    toggleParams();
     return true;
   }
   if (mode.kind === "sketch") {
@@ -328,7 +336,7 @@ async function extrude(existing?: ExtrudeFeature) {
   const sk = doc.features.find((x): x is SketchFeature => x.id === feat.sketchId && x.kind === "sketch");
   if (!sk) return toast("This extrusion's sketch is missing");
   const onFace = sk.plane.label === "Face";
-  const before = { distance: feat.distance, symmetric: feat.symmetric, op: feat.op };
+  const before = { distance: feat.distance, distanceExpr: feat.distanceExpr, symmetric: feat.symmetric, op: feat.op };
   selectedFeature = feat.id;
   selectedFace = null;
   vp.highlightFace(null);
@@ -346,6 +354,8 @@ async function extrude(existing?: ExtrudeFeature) {
     subtitle: `${sk.name} · ${sk.plane.label === "Face" ? "on a face" : PLANE_NAMES[sk.plane.label] ?? sk.plane.label}`,
     label: "Distance",
     value: Math.abs(feat.distance),
+    expr: feat.distanceExpr,
+    scope: paramScope(),
     confirmLabel: "Confirm",
     segments: [
       {
@@ -387,10 +397,12 @@ async function extrude(existing?: ExtrudeFeature) {
   renderAll();
   rebuild(true);
 
-  const value = await kp.result;
+  const res = await kp.result;
+  const value = res?.value ?? null;
   handle.dispose();
   mode = { kind: "part" };
   if (value === null || value <= 0) {
+    if (value !== null) toast("The distance must be positive");
     if (existing) Object.assign(feat, before);
     else {
       doc.features = doc.features.filter((x) => x !== feat);
@@ -401,6 +413,7 @@ async function extrude(existing?: ExtrudeFeature) {
     return;
   }
   feat.distance = Math.sign(feat.distance || 1) * value;
+  feat.distanceExpr = res?.expr;
   commit();
 }
 
@@ -429,7 +442,7 @@ function faceTool(tool: "pushpull" | "shell") {
 
 async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
   const feat: PushPullFeature = existing ?? { id: uid(), kind: "pushpull", name: nextName("Press Pull"), face: ref!, distance: 5 };
-  const before = feat.distance;
+  const before = { distance: feat.distance, distanceExpr: feat.distanceExpr };
   if (!existing) doc.features.push(feat);
   selectedFeature = feat.id;
   selectedFace = null;
@@ -448,6 +461,8 @@ async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
     subtitle: "Positive pulls the face out, negative pushes it in",
     label: "Distance",
     value: feat.distance,
+    expr: feat.distanceExpr,
+    scope: paramScope(),
     confirmLabel: "Confirm",
     segments: [
       {
@@ -477,11 +492,12 @@ async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
   renderAll();
   rebuild(true);
 
-  const value = await kp.result;
+  const res = await kp.result;
+  const value = res?.value ?? null;
   handle.dispose();
   mode = { kind: "part" };
   if (value === null || value === 0) {
-    if (existing) feat.distance = before;
+    if (existing) Object.assign(feat, before);
     else {
       doc.features = doc.features.filter((x) => x !== feat);
       selectedFeature = null;
@@ -491,12 +507,13 @@ async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
     return;
   }
   feat.distance = value;
+  feat.distanceExpr = res?.expr;
   commit();
 }
 
 async function shell(existing?: ShellFeature, ref?: FaceRef) {
   const feat: ShellFeature = existing ?? { id: uid(), kind: "shell", name: nextName("Shell"), faces: [ref!], thickness: 2 };
-  const before = { thickness: feat.thickness, faces: [...feat.faces] };
+  const before = { thickness: feat.thickness, thicknessExpr: feat.thicknessExpr, faces: [...feat.faces] };
   if (!existing) doc.features.push(feat);
   selectedFeature = feat.id;
   selectedFace = null;
@@ -507,6 +524,8 @@ async function shell(existing?: ShellFeature, ref?: FaceRef) {
     subtitle: "Tap faces to open or close them",
     label: "Wall thickness",
     value: feat.thickness,
+    expr: feat.thicknessExpr,
+    scope: paramScope(),
     confirmLabel: "Confirm",
     onInput: (v) => {
       if (v > 0) feat.thickness = v;
@@ -516,7 +535,8 @@ async function shell(existing?: ShellFeature, ref?: FaceRef) {
   renderAll();
   rebuild(true);
 
-  const value = await kp.result;
+  const res = await kp.result;
+  const value = res?.value ?? null;
   previewExclude = null;
   mode = { kind: "part" };
   vp.highlightFace(null);
@@ -532,6 +552,7 @@ async function shell(existing?: ShellFeature, ref?: FaceRef) {
     return;
   }
   feat.thickness = value;
+  feat.thicknessExpr = res?.expr;
   commit();
 }
 
@@ -553,6 +574,169 @@ function toggleShellFace(feat: ShellFeature, faceId: number) {
   if (i >= 0) feat.faces.splice(i, 1);
   else feat.faces.push({ center: pf.center, normal: pf.plane.normal });
   highlightShellFaces(feat);
+}
+
+// ---------- Parameters ----------
+
+function paramScope() {
+  return resolveParameters(doc.parameters ?? []).scope;
+}
+
+/** Re-evaluates the whole document after a parameter change; undoes it if something breaks. */
+function applyParamChange(change: () => void) {
+  const backup = JSON.stringify(doc);
+  change();
+  const problems = applyParameters(doc, solver);
+  if (problems.length) {
+    doc = JSON.parse(backup);
+    toast(problems[0]);
+    renderAll();
+    return false;
+  }
+  commit();
+  return true;
+}
+
+function askName(title: string, initial: string, except?: string): string | null {
+  const name = prompt(title, initial)?.trim();
+  if (!name) return null;
+  if (!NAME_RE.test(name)) {
+    toast("Use letters, digits and _ (not starting with a digit)");
+    return null;
+  }
+  if ((doc.parameters ?? []).some((p) => p.name === name && p.name !== except)) {
+    toast(`${name} already exists`);
+    return null;
+  }
+  return name;
+}
+
+async function newParameter() {
+  const params = (doc.parameters ??= []);
+  let n = params.length + 1;
+  while (params.some((p) => p.name === `p${n}`)) n++;
+  const name = askName("Parameter name (e.g. width, wall, hole_d)", `p${n}`);
+  if (!name) return;
+  const res = await openKeypad({ title: name, subtitle: "New parameter", label: "Value", value: 10, scope: paramScope(), confirmLabel: "Add" }).result;
+  if (!res) return;
+  const p: Parameter = { id: uid(), name, expr: res.expr ?? String(res.value) };
+  applyParamChange(() => (doc.parameters ??= []).push(p));
+}
+
+async function editParameter(p: Parameter) {
+  const scope = paramScope();
+  delete scope[p.name];
+  const res = await openKeypad({
+    title: p.name,
+    subtitle: "Every dimension using it updates",
+    label: "Value",
+    value: paramScope()[p.name] ?? 0,
+    expr: hasNames(p.expr) ? p.expr : undefined,
+    scope,
+    confirmLabel: "Apply",
+  }).result;
+  if (!res) return;
+  const expr = res.expr ?? String(res.value);
+  applyParamChange(() => {
+    const live = doc.parameters?.find((x) => x.id === p.id);
+    if (live) live.expr = expr;
+  });
+}
+
+function renameParameter(p: Parameter) {
+  const name = askName("New name", p.name, p.name);
+  if (!name || name === p.name) return;
+  for (const slot of expressionSlots(doc)) slot.set(renameInExpr(slot.get(), p.name, name));
+  const live = doc.parameters?.find((x) => x.id === p.id);
+  if (live) live.name = name;
+  commit();
+}
+
+function deleteParameter(p: Parameter) {
+  const used = usedNames(doc, p.name).has(p.name);
+  if (used && !confirm(`${p.name} is used. Replace it by its current value everywhere?`)) return;
+  const value = paramScope()[p.name];
+  applyParamChange(() => {
+    doc.parameters = (doc.parameters ?? []).filter((x) => x.id !== p.id);
+    for (const slot of expressionSlots(doc)) {
+      const e = renameInExpr(slot.get(), p.name, value === undefined ? "0" : `(${value})`);
+      slot.set(e);
+    }
+    // Feature values that no longer use any parameter become plain numbers.
+    for (const f of doc.features) {
+      if (f.kind === "sketch") for (const c of f.constraints) if (c.expr && !hasNames(c.expr)) c.expr = undefined;
+      if ((f.kind === "extrude" || f.kind === "pushpull") && f.distanceExpr && !hasNames(f.distanceExpr)) f.distanceExpr = undefined;
+      if (f.kind === "shell" && f.thicknessExpr && !hasNames(f.thicknessExpr)) f.thicknessExpr = undefined;
+    }
+  });
+}
+
+function toggleParams() {
+  showParams = !showParams;
+  if (showParams) {
+    selectedFeature = null;
+    selectedFace = null;
+    vp.highlightFace(null);
+  }
+  renderAll();
+}
+
+function renderParamsPanel(el: HTMLElement) {
+  const params = doc.parameters ?? [];
+  const { scope, errors } = resolveParameters(params);
+  const h = document.createElement("div");
+  h.className = "p-head";
+  h.innerHTML = `<div><div class="p-title">Parameters</div><div class="p-sub">Use them in any dimension or value</div></div>`;
+  const x = document.createElement("button");
+  x.className = "p-close";
+  x.innerHTML = icon("close", 20);
+  x.setAttribute("aria-label", "Close");
+  x.onclick = toggleParams;
+  h.appendChild(x);
+  el.appendChild(h);
+  const list = document.createElement("div");
+  list.className = "param-list";
+  if (!params.length) {
+    const hint = document.createElement("p");
+    hint.className = "p-hint";
+    hint.textContent = "Name the values you reuse (width, wall, screw diameter…). Change one, and the whole part follows.";
+    list.appendChild(hint);
+  }
+  for (const p of params) {
+    const row = document.createElement("div");
+    row.className = "param-row";
+    const main = document.createElement("button");
+    main.className = "param-main";
+    const val = scope[p.name];
+    main.innerHTML = `<span class="param-name"></span><span class="param-expr"></span><span class="param-val"></span>`;
+    main.querySelector(".param-name")!.textContent = p.name;
+    main.querySelector(".param-expr")!.textContent = hasNames(p.expr) ? p.expr : "";
+    const v = main.querySelector(".param-val")!;
+    v.textContent = errors[p.id] ?? (val === undefined ? "?" : fmtNum(val));
+    v.classList.toggle("err", !!errors[p.id]);
+    main.onclick = () => void editParameter(p);
+    const ren = document.createElement("button");
+    ren.className = "param-icon";
+    ren.innerHTML = icon("rename", 18);
+    ren.title = "Rename";
+    ren.onclick = () => renameParameter(p);
+    const del = document.createElement("button");
+    del.className = "param-icon danger";
+    del.innerHTML = icon("trash", 18);
+    del.title = "Delete";
+    del.onclick = () => deleteParameter(p);
+    row.append(main, ren, del);
+    list.appendChild(row);
+  }
+  el.appendChild(list);
+  const add = document.createElement("div");
+  add.className = "p-actions";
+  const b = document.createElement("button");
+  b.className = "primary";
+  b.innerHTML = icon("plus", 20) + "<span>New parameter</span>";
+  b.onclick = () => void newParameter();
+  add.appendChild(b);
+  el.appendChild(add);
 }
 
 /** The selected sketch, or the last sketch not yet used by a feature. */
@@ -669,6 +853,8 @@ function renderTools() {
       toolRow("pushpull", "Press Pull", () => faceTool("pushpull"), { active: mode.kind === "pushpull" || pendingFaceTool === "pushpull", key: "Q" }),
     );
     el.appendChild(toolRow("shell", "Shell", () => faceTool("shell"), { active: mode.kind === "shell" || pendingFaceTool === "shell", key: "K" }));
+    el.appendChild(section("Design"));
+    el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
   }
 }
 
@@ -732,6 +918,7 @@ function renderPanel() {
     return;
   }
   if (mode.kind !== "part") return;
+  if (showParams) return renderParamsPanel(el);
 
   if (selectedFace) {
     const plane = selectedFace.plane;
@@ -825,6 +1012,7 @@ function renderTimeline() {
       selectedFace = null;
       vp.highlightFace(null);
       selectedFeature = selectedFeature === f.id ? null : f.id;
+      showParams = false;
       renderAll();
     };
     el.appendChild(b);
@@ -935,6 +1123,7 @@ const partTool: PointerTool = {
     if (mode.kind !== "part") return;
     vp.highlightFace(face);
     selectedFeature = null;
+    if (face != null) showParams = false;
     const pf = face == null ? undefined : lastBuild?.planarFaces.find((f) => f.faceId === face);
     selectedFace = face == null ? null : { faceId: face, plane: pf?.plane ?? null, center: pf?.center ?? null };
     if (pendingFaceTool && face != null) {
@@ -1142,6 +1331,7 @@ window.addEventListener("keydown", (e) => {
     if (key === "s") startNewSketch();
     else if (key === "e") void extrude();
     else if (key === "q") faceTool("pushpull");
+    else if (key === "p") toggleParams();
     else if (key === "k") faceTool("shell");
     else if (key === "f") vp.fit();
     else if (key === "delete" && selectedFeature) {

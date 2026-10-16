@@ -5,6 +5,7 @@ import { Solver } from "../src/sketch/solver";
 import { newSketch, uid } from "../src/sketch/model";
 import { findRegions } from "../src/sketch/profiles";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
+import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
 import type { CadDocument, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
 setOC(await opencascade());
@@ -172,6 +173,45 @@ const pfs = buildResult(block()).planarFaces;
 const topFace = pfs.find((f) => near(f.plane.normal[2], 1));
 const pp2 = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: topFace!.center, normal: topFace!.plane.normal }, distance: 2 }));
 check("planarFaces centre works as reference", !pp2.errors.pp && near(pp2.shape!.boundingBox.bounds[1][2], 7), JSON.stringify(pp2.errors));
+
+// --- Parameters and expressions.
+check("expression with names", evaluate("2 * w + 5", { w: 10 }) === 25);
+check("unknown name fails", evaluate("w + 1", {}) === null);
+const resolved = resolveParameters([
+  { id: "a", name: "depth", expr: "width / 2 + wall" },
+  { id: "b", name: "width", expr: "40" },
+  { id: "c", name: "wall", expr: "2" },
+  { id: "d", name: "x", expr: "y + 1" },
+  { id: "e", name: "y", expr: "x * 2" },
+]);
+check("parameters resolve in dependency order", resolved.scope.depth === 22, JSON.stringify(resolved.scope));
+check("cycle reported", !!resolved.errors.d && !!resolved.errors.e, JSON.stringify(resolved.errors));
+check("rename whole words only", renameInExpr("w + width * w2 - w", "w", "len") === "len + width * w2 - len");
+
+const pSk = newSketch("P", XY);
+const pr = rect(pSk, 0, 0, 30, 10);
+pSk.constraints.push(
+  { id: "ph1", type: "horizontal", refs: [pr.lines[0]] },
+  { id: "ph2", type: "horizontal", refs: [pr.lines[2]] },
+  { id: "pv1", type: "vertical", refs: [pr.lines[1]] },
+  { id: "pv2", type: "vertical", refs: [pr.lines[3]] },
+  { id: "pw", type: "distance", refs: [pr.lines[0]], value: 30, expr: "width" },
+);
+solver.solve(pSk);
+const pDoc: CadDocument = {
+  format: "touch-cad",
+  version: 1,
+  parameters: [
+    { id: "q1", name: "width", expr: "50" },
+    { id: "q2", name: "height", expr: "width / 5" },
+  ],
+  features: [pSk, { id: "pe", kind: "extrude", name: "PE", sketchId: pSk.id, distance: 3, distanceExpr: "height", symmetric: false, op: "add" }],
+};
+const problems = applyParameters(pDoc, solver);
+const pb = buildShape(pDoc).shape!.boundingBox.bounds;
+check("parameters drive sketch and extrusion", !problems.length && near(pb[1][0] - pb[0][0], 50) && near(pb[1][2], 10), `${JSON.stringify(problems)} ${JSON.stringify(pb)}`);
+pDoc.parameters![0].expr = "-5";
+check("negative length reported", applyParameters(pDoc, solver).length > 0);
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

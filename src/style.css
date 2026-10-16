@@ -586,6 +586,75 @@ body.busy #status-pill .dot {
   font-weight: 600;
 }
 
+/* Parameter chips in the keypad, and the parameter list. */
+.kp-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.kp-params:empty {
+  display: none;
+}
+.kp-param {
+  min-height: 36px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: none;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.kp-result.err,
+.param-val.err {
+  color: var(--danger);
+}
+.param-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.param-row {
+  display: flex;
+  gap: 6px;
+}
+.param-main {
+  flex: 1;
+  min-width: 0;
+  height: 52px;
+  justify-content: flex-start;
+  gap: 8px;
+  background: var(--card2);
+  border: none;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.param-name {
+  font-weight: 700;
+}
+.param-expr {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  text-align: left;
+}
+.param-val {
+  font-weight: 600;
+  margin-left: auto;
+}
+.param-icon {
+  width: 44px;
+  height: 52px;
+  padding: 0;
+  background: var(--card2);
+  border: none;
+}
+
 /* ---------- Timeline ---------- */
 
 #timeline {

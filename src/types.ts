@@ -81,6 +81,8 @@ export interface SkConstraint {
   value?: number;
   /** For "fix": the locked coordinates. */
   at?: [number, number];
+  /** Expression driving `value`, when it uses parameters (e.g. "width / 2"). */
+  expr?: string;
 }
 
 export interface SketchFeature {
@@ -101,6 +103,8 @@ export interface ExtrudeFeature {
   sketchId: string;
   /** Signed: negative goes against the sketch normal. */
   distance: number;
+  /** Expression for the distance's magnitude, when it uses parameters. */
+  distanceExpr?: string;
   symmetric: boolean;
   op: ExtrudeOp;
 }
@@ -121,6 +125,8 @@ export interface PushPullFeature {
   name: string;
   face: FaceRef;
   distance: number;
+  /** Expression for the (signed) distance, when it uses parameters. */
+  distanceExpr?: string;
 }
 
 /** Hollows the solid, opening the given faces, with walls of `thickness`. */
@@ -130,14 +136,24 @@ export interface ShellFeature {
   name: string;
   faces: FaceRef[];
   thickness: number;
+  thicknessExpr?: string;
 }
 
 export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature;
+
+/** A named value usable in any dimension or feature value. */
+export interface Parameter {
+  id: string;
+  name: string;
+  /** A number or an expression of other parameters. */
+  expr: string;
+}
 
 export interface CadDocument {
   format: "touch-cad";
   version: 1;
   features: Feature[];
+  parameters?: Parameter[];
 }
 
 // ---------- Profiles: closed regions found in a sketch ----------

@@ -26,6 +26,8 @@ export interface EditorHooks {
   /** Selection or available actions changed. */
   changed(): void;
   toast(msg: string): void;
+  /** Current parameter values, offered in the keypad. */
+  scope(): Record<string, number>;
 }
 
 export interface Action {
@@ -769,22 +771,40 @@ export class SketchEditor implements PointerTool {
       diameter: "Diameter",
       angle: "Angle",
     };
-    const value = await keypad({ title: titles[type] ?? "Value", value: Math.abs(current), unit: type === "angle" ? "°" : "mm" });
-    if (value === null) return;
+    const res = await keypad({
+      title: titles[type] ?? "Value",
+      subtitle: this.sk.name,
+      value: Math.abs(current),
+      unit: type === "angle" ? "°" : "mm",
+      scope: this.hooks.scope(),
+    });
+    if (res === null) return;
+    const value = res.value;
     if (type !== "angle" && value <= 0) return this.hooks.toast("The value must be positive");
-    const signed = type === "angle" && current < 0 ? -value : value;
-    this.constrainWith({ id: uid(), type, refs: r, value: signed }, titles[type] ?? "Dimension");
+    const signed = type === "angle" && current < 0 ? -Math.abs(value) : value;
+    this.constrainWith({ id: uid(), type, refs: r, value: signed, expr: res.expr }, titles[type] ?? "Dimension");
   }
 
   async editDimension(c: SkConstraint) {
     const old = c.value ?? 0;
-    const value = await keypad({ title: "Edit dimension", value: Math.abs(old), unit: c.type === "angle" ? "°" : "mm" });
-    if (value === null || value === Math.abs(old)) return;
+    const oldExpr = c.expr;
+    const res = await keypad({
+      title: "Edit dimension",
+      subtitle: this.sk.name,
+      value: Math.abs(old),
+      expr: c.expr,
+      unit: c.type === "angle" ? "°" : "mm",
+      scope: this.hooks.scope(),
+    });
+    if (res === null || (res.value === Math.abs(old) && res.expr === oldExpr)) return;
+    const value = res.value;
     if (c.type !== "angle" && value <= 0) return this.hooks.toast("The value must be positive");
-    c.value = old < 0 ? -value : value;
+    c.value = old < 0 ? -Math.abs(value) : value;
+    c.expr = res.expr;
     const r = this.solve();
     if (!r.ok || r.conflicting.length) {
       c.value = old;
+      c.expr = oldExpr;
       this.solve();
       this.hooks.toast("This value cannot be solved");
     } else this.hooks.commit("Edit dimension");
@@ -958,7 +978,7 @@ export class SketchEditor implements PointerTool {
       const el = document.createElement("button");
       el.className = "sk-label " + (isDim ? "dim" : "glyph");
       if (this.selection.has(c.id)) el.classList.add("sel");
-      el.textContent = isDim ? (c.type === "angle" ? fmt(Math.abs(c.value ?? 0)) + "°" : constraintLabel(c)) : constraintLabel(c);
+      el.textContent = isDim ? dimText(c) : constraintLabel(c);
       el.title = c.type;
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
       el.addEventListener("click", (e) => {
@@ -987,6 +1007,14 @@ export class SketchEditor implements PointerTool {
     }
     this.vp.setLabels(items);
   }
+}
+
+/** A dimension's label: its value, prefixed by its expression when it uses parameters. */
+function dimText(c: SkConstraint) {
+  const v = c.type === "angle" ? fmt(Math.abs(c.value ?? 0)) + "°" : constraintLabel(c);
+  if (!c.expr) return v;
+  const e = c.expr.length > 16 ? c.expr.slice(0, 15) + "…" : c.expr;
+  return `${e} = ${v}`;
 }
 
 function loopPoly(l: import("../types").ProfileLoop): P2[] {

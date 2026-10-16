@@ -1,6 +1,7 @@
 // Numeric keypad shown in the side panel (no system keyboard covering half the screen).
 // Accepts expressions; a physical keyboard works too while it is open.
 import { icon } from "./icons";
+import { evaluate, explain, hasNames, type Scope } from "../params";
 
 export interface Segmented {
   options: { value: string; label: string }[];
@@ -22,10 +23,20 @@ export interface KeypadOptions {
   confirmLabel?: string;
   /** Called on each valid edit, for live previews. */
   onInput?: (v: number) => void;
+  /** Parameters offered as chips, usable in the expression. */
+  scope?: Scope;
+  /** Expression to start from (instead of the plain value). */
+  expr?: string;
+}
+
+/** The typed value, and the expression when it uses parameters. */
+export interface KeypadResult {
+  value: number;
+  expr?: string;
 }
 
 export interface KeypadHandle {
-  result: Promise<number | null>;
+  result: Promise<KeypadResult | null>;
   /** Changes the value from outside (e.g. a drag handle). */
   set(v: number): void;
   close(): void;
@@ -43,7 +54,7 @@ export function isKeypadOpen() {
   return current !== null;
 }
 
-export function keypad(opt: KeypadOptions): Promise<number | null> {
+export function keypad(opt: KeypadOptions): Promise<KeypadResult | null> {
   return openKeypad(opt).result;
 }
 
@@ -61,6 +72,7 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
       <span class="kp-value"><span class="kp-expr"></span><span class="kp-unit"></span></span>
     </div>
     <div class="kp-result"></div>
+    <div class="kp-params"></div>
     <div class="kp-ops"></div>
     <div class="kp-keys"></div>
     <div class="kp-segs"></div>
@@ -75,20 +87,28 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
   root.querySelector(".kp-ok")!.innerHTML = icon("check", 18) + `<span>${opt.confirmLabel ?? "OK"}</span>`;
   const exprEl = root.querySelector(".kp-expr") as HTMLElement;
   const resEl = root.querySelector(".kp-result") as HTMLElement;
-  let expr = trimNum(opt.value);
+  const scope = opt.scope ?? {};
+  let expr = opt.expr ?? trimNum(opt.value);
   let fresh = true; // the first key replaces the value
 
   const update = (notify = true) => {
     exprEl.textContent = expr || "0";
     exprEl.classList.toggle("fresh", fresh);
-    const v = evaluate(expr);
-    resEl.textContent = v === null ? "…" : /[-+*/()]/.test(expr.replace(/^-/, "")) ? "= " + trimNum(v) : "";
+    const v = evaluate(expr, scope);
+    resEl.classList.toggle("err", v === null && expr !== "");
+    resEl.textContent =
+      v === null ? (expr ? explain(expr, scope) : "…") : /[-+*/()A-Za-z_]/.test(expr.replace(/^-/, "")) ? "= " + trimNum(v) : "";
     if (v !== null && notify) opt.onInput?.(v);
   };
 
   const press = (k: string) => {
-    if (k === "ok") return finish(evaluate(expr));
-    if (k === "back") expr = fresh ? "" : expr.slice(0, -1);
+    if (k === "ok") {
+      const v = evaluate(expr, scope);
+      if (v === null) return;
+      return finish({ value: v, expr: hasNames(expr) ? expr : undefined });
+    }
+    // Backspace removes a whole parameter name at once.
+    if (k === "back") expr = fresh ? "" : expr.replace(/([A-Za-z_][A-Za-z0-9_]*|.)$/, "");
     else {
       if (fresh && !"+-*/".includes(k)) expr = "";
       expr += k;
@@ -105,6 +125,13 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
     b.onclick = () => press(k);
     return b;
   };
+  const params = root.querySelector(".kp-params")!;
+  for (const name of Object.keys(scope)) {
+    const b = key("", name, "kp-param");
+    b.textContent = name;
+    b.title = `${name} = ${trimNum(scope[name])}`;
+    params.appendChild(b);
+  }
   const ops = root.querySelector(".kp-ops")!;
   for (const [l, k] of [["+", "+"], ["−", "-"], ["×", "*"], ["÷", "/"], ["(", "("], [")", ")"]]) ops.appendChild(key(l, k));
   const keys = root.querySelector(".kp-keys")!;
@@ -152,6 +179,7 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
     else if (e.key === "Escape") finish(null);
     else if (e.key === "Backspace") press("back");
     else if (/^[0-9.+\-*/()]$/.test(e.key)) press(e.key);
+    else if (/^[A-Za-z_]$/.test(e.key) && Object.keys(scope).length) press(e.key);
     else if (e.key === ",") press(".");
     else return;
     e.preventDefault();
@@ -159,9 +187,9 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
   };
   window.addEventListener("keydown", onKey, true);
 
-  let resolve!: (v: number | null) => void;
-  const result = new Promise<number | null>((r) => (resolve = r));
-  const finish = (v: number | null) => {
+  let resolve!: (v: KeypadResult | null) => void;
+  const result = new Promise<KeypadResult | null>((r) => (resolve = r));
+  const finish = (v: KeypadResult | null) => {
     window.removeEventListener("keydown", onKey, true);
     root.remove();
     target.classList.remove("keypad-open");
@@ -189,52 +217,4 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
 
 function trimNum(v: number) {
   return String(Math.round(v * 1e6) / 1e6);
-}
-
-/** Evaluates + − × ÷ and parentheses. Returns null on a syntax error. */
-export function evaluate(src: string): number | null {
-  const s = src.replace(/\s+/g, "");
-  let i = 0;
-  const peek = () => s[i];
-  const num = (): number | null => {
-    if (peek() === "(") {
-      i++;
-      const v = sum();
-      if (v === null || peek() !== ")") return null;
-      i++;
-      return v;
-    }
-    if (peek() === "-") {
-      i++;
-      const v = num();
-      return v === null ? null : -v;
-    }
-    const m = /^\d*\.?\d+|^\d+\.?/.exec(s.slice(i));
-    if (!m) return null;
-    i += m[0].length;
-    return parseFloat(m[0]);
-  };
-  const prod = (): number | null => {
-    let v = num();
-    while (v !== null && (peek() === "*" || peek() === "/")) {
-      const op = s[i++];
-      const r = num();
-      if (r === null) return null;
-      v = op === "*" ? v * r : v / r;
-    }
-    return v;
-  };
-  const sum = (): number | null => {
-    let v = prod();
-    while (v !== null && (peek() === "+" || peek() === "-")) {
-      const op = s[i++];
-      const r = prod();
-      if (r === null) return null;
-      v = op === "+" ? v + r : v - r;
-    }
-    return v;
-  };
-  if (!s) return null;
-  const v = sum();
-  return v !== null && i === s.length && Number.isFinite(v) ? v : null;
 }
