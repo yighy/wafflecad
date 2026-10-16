@@ -1,5 +1,5 @@
 // Pure helpers over the sketch data model (no DOM, no solver).
-import type { PlaneDef, SkArc, SkConstraint, SkCurve, SkEntity, SkPoint, SketchFeature, Vec3 } from "../types";
+import type { PlaneDef, SkArc, SkConstraint, SkCurve, SkEntity, SkPoint, SkSpline, SketchFeature, Vec3 } from "../types";
 
 export const ORIGIN = "O";
 export const X_AXIS = "AX";
@@ -83,8 +83,77 @@ export class SketchView {
         return [e.c];
       case "arc":
         return [e.c, e.s, e.e];
+      case "spline":
+        return e.pts;
     }
   }
+  /** The Bézier spans of a spline, with the ids of the points each one joins. */
+  splineSpans(s: SkSpline) {
+    const ids = s.pts;
+    return splineSpans(ids.map((id) => this.xy(id)), !!s.closed).map((sp, i) => ({ ...sp, from: ids[i], to: ids[(i + 1) % ids.length] }));
+  }
+}
+
+type P2 = [number, number];
+export interface BezierSpan {
+  a: P2;
+  c1: P2;
+  c2: P2;
+  b: P2;
+}
+
+/**
+ * Cubic Bézier spans through the points. The tangent at a point follows the line between
+ * its neighbours, scaled by the chord lengths so uneven spacing does not overshoot; the
+ * ends of an open spline point at their neighbour.
+ */
+export function splineSpans(pts: P2[], closed: boolean): BezierSpan[] {
+  const n = pts.length;
+  if (n < 2) return [];
+  const at = (i: number) => pts[closed ? (i + n) % n : Math.max(0, Math.min(n - 1, i))];
+  const dist = (p: P2, q: P2) => Math.hypot(q[0] - p[0], q[1] - p[1]);
+  // Unit-speed tangent at each point.
+  const tan = pts.map((p, i): P2 => {
+    const prev = at(i - 1);
+    const next = at(i + 1);
+    const len = dist(prev, p) + dist(p, next);
+    if (len < 1e-12) return [0, 0];
+    return [(next[0] - prev[0]) / len, (next[1] - prev[1]) / len];
+  });
+  const spans: BezierSpan[] = [];
+  for (let i = 0; i < (closed ? n : n - 1); i++) {
+    const j = (i + 1) % n;
+    const a = pts[i];
+    const b = pts[j];
+    const k = dist(a, b) / 3;
+    spans.push({ a, b, c1: [a[0] + tan[i][0] * k, a[1] + tan[i][1] * k], c2: [b[0] - tan[j][0] * k, b[1] - tan[j][1] * k] });
+  }
+  return spans;
+}
+
+/** Points along a cubic Bézier, both ends included. */
+export function sampleBezier(s: BezierSpan, n: number): P2[] {
+  const out: P2[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const u = 1 - t;
+    const w = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t];
+    out.push([
+      w[0] * s.a[0] + w[1] * s.c1[0] + w[2] * s.c2[0] + w[3] * s.b[0],
+      w[0] * s.a[1] + w[1] * s.c1[1] + w[2] * s.c2[1] + w[3] * s.b[1],
+    ]);
+  }
+  return out;
+}
+
+/** Polyline of a whole spline (for drawing and picking). */
+export function sampleSpline(view: SketchView, s: SkSpline, perSpan = 16): P2[] {
+  const out: P2[] = [];
+  for (const sp of view.splineSpans(s)) {
+    const ps = sampleBezier(sp, perSpan);
+    out.push(...(out.length ? ps.slice(1) : ps));
+  }
+  return out;
 }
 
 export function isReference(e: SkEntity) {
@@ -98,6 +167,12 @@ export function isReference(e: SkEntity) {
 export function deleteEntities(sk: SketchFeature, ids: Iterable<string>) {
   const doomed = new Set(ids);
   for (const e of sk.entities) if (isReference(e)) doomed.delete(e.id);
+  // Deleting a point of a spline only takes it out of the spline, while enough points remain.
+  for (const e of sk.entities) {
+    if (e.type !== "spline" || doomed.has(e.id) || !e.pts.some((p) => doomed.has(p))) continue;
+    const left = e.pts.filter((p) => !doomed.has(p));
+    if (left.length >= (e.closed ? 3 : 2)) e.pts = left;
+  }
   const view = new SketchView(sk);
   // Deleting a point also deletes the curves built on it.
   for (const e of sk.entities) {
@@ -135,12 +210,24 @@ export function mergePoints(sk: SketchFeature, keep: string, drop: string) {
           return { ...e, c: sub(e.c) };
         case "arc":
           return { ...e, c: sub(e.c), s: sub(e.s), e: sub(e.e) };
+        case "spline": {
+          const pts = e.pts.map(sub).filter((p, i, a) => i === 0 || p !== a[i - 1]);
+          let closed = e.closed;
+          // Joining the two ends closes the spline.
+          if (pts.length > 2 && pts[0] === pts[pts.length - 1]) {
+            pts.pop();
+            closed = true;
+          }
+          return { ...e, pts, closed };
+        }
         default:
           return e;
       }
     });
-  // Lines that collapsed to a single point are removed.
-  const collapsed = sk.entities.filter((e) => e.type === "line" && e.p1 === e.p2).map((e) => e.id);
+  // Lines and splines that collapsed to a single point are removed.
+  const collapsed = sk.entities
+    .filter((e) => (e.type === "line" && e.p1 === e.p2) || (e.type === "spline" && e.pts.length < (e.closed ? 3 : 2)))
+    .map((e) => e.id);
   sk.constraints = sk.constraints
     .map((c) => ({ ...c, refs: c.refs.map(sub) }))
     .filter((c) => new Set(c.refs).size === c.refs.length || c.type === "symmetric");

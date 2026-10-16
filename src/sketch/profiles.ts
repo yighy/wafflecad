@@ -2,10 +2,11 @@
 //
 // Lines and arcs that share points form a planar graph. Its bounded faces are traced
 // with the usual "turn as far right as possible" walk; circles are faces of their own.
+// Each span of a spline is an edge between two of its points.
 // Faces are then nested even-odd: a face inside another face becomes a hole of it,
 // a face inside a hole becomes an island again.
 import type { ProfileLoop, ProfileRegion, ProfileSegment, SkArc, SketchFeature } from "../types";
-import { SketchView } from "./model";
+import { SketchView, sampleBezier } from "./model";
 
 type P2 = [number, number];
 
@@ -56,6 +57,16 @@ export function findRegions(sk: SketchFeature): ProfileRegion[] {
       const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
       add({ curve: c.id, from: c.p1, to: c.p2, angle: ang, seg: { kind: "line", a, b } });
       add({ curve: c.id, from: c.p2, to: c.p1, angle: ang + Math.PI, seg: { kind: "line", a: b, b: a } });
+    } else if (c.type === "spline") {
+      // Direction leaving `p` towards its control point (or the far end if they coincide).
+      const dir = (p: P2, q: P2, r: P2) =>
+        Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9 ? Math.atan2(q[1] - p[1], q[0] - p[0]) : Math.atan2(r[1] - p[1], r[0] - p[0]);
+      view.splineSpans(c).forEach((sp, i) => {
+        if (sp.from === sp.to) return;
+        const curve = `${c.id}#${i}`;
+        add({ curve, from: sp.from, to: sp.to, angle: dir(sp.a, sp.c1, sp.b), seg: { kind: "bezier", a: sp.a, b: sp.b, c1: sp.c1, c2: sp.c2 } });
+        add({ curve, from: sp.to, to: sp.from, angle: dir(sp.b, sp.c2, sp.a), seg: { kind: "bezier", a: sp.b, b: sp.a, c1: sp.c2, c2: sp.c1 } });
+      });
     } else {
       const [s, e] = view.arcAngles(c);
       const ctr = view.xy(c.c);
@@ -158,6 +169,7 @@ export function sampleSegments(segs: ProfileSegment[]): P2[] {
   const pts: P2[] = [];
   for (const s of segs) {
     if (s.kind === "line") pts.push(s.a);
+    else if (s.kind === "bezier") pts.push(...sampleBezier(s, ARC_SAMPLES).slice(0, -1));
     else pts.push(...sampleArc(s.a, s.mid, s.b, ARC_SAMPLES).slice(0, -1));
   }
   return pts;

@@ -14,6 +14,7 @@ function loopDrawing(loop: ProfileLoop): Drawing {
   const n = loop.segments.length;
   loop.segments.forEach((s, i) => {
     if (s.kind === "arc") pen.threePointsArcTo(s.b, s.mid);
+    else if (s.kind === "bezier") pen.cubicBezierCurveTo(s.b, s.c1, s.c2);
     else if (i < n - 1) pen.lineTo(s.b);
   });
   return pen.close();

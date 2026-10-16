@@ -2,8 +2,8 @@
 import opencascade from "replicad-opencascadejs";
 import { measureVolume, setOC } from "replicad";
 import { Solver } from "../src/sketch/solver";
-import { newSketch, uid } from "../src/sketch/model";
-import { findRegions } from "../src/sketch/profiles";
+import { deleteEntities, mergePoints, newSketch, uid } from "../src/sketch/model";
+import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
 import type { CadDocument, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
@@ -295,6 +295,46 @@ const pb = buildShape(pDoc).shape!.boundingBox.bounds;
 check("parameters drive sketch and extrusion", !problems.length && near(pb[1][0] - pb[0][0], 50) && near(pb[1][2], 10), `${JSON.stringify(problems)} ${JSON.stringify(pb)}`);
 pDoc.parameters![0].expr = "-5";
 check("negative length reported", applyParameters(pDoc, solver).length > 0);
+
+// --- Splines.
+function splineSketch(pts: [number, number][], closed: boolean) {
+  const s = newSketch("Sp", XY);
+  const ids = pts.map(() => uid());
+  s.entities.push(...pts.map(([x, y], i): SkEntity => ({ id: ids[i], type: "point", x, y })));
+  s.entities.push({ id: "sp", type: "spline", pts: ids, closed });
+  return { s, ids };
+}
+const blob = splineSketch([[0, 0], [20, -2], [24, 12], [4, 14]], true);
+let spRegions = findRegions(blob.s);
+check("closed spline → 1 region", spRegions.length === 1 && spRegions[0].outer.kind === "path", String(spRegions.length));
+const spArea = spRegions[0].outer.kind === "path" ? signedArea(sampleSegments(spRegions[0].outer.segments)) : 0;
+const spDoc: CadDocument = { format: "touch-cad", version: 1, features: [blob.s, { id: "se", kind: "extrude", name: "SE", sketchId: blob.s.id, distance: 5, symmetric: false, op: "add" }] };
+const spBuilt = buildShape(spDoc);
+check("spline extrusion matches the drawn area", !spBuilt.errors.se && near(measureVolume(spBuilt.shape!), spArea * 5, spArea * 5 * 0.005), `${JSON.stringify(spBuilt.errors)} vol=${spBuilt.shape && measureVolume(spBuilt.shape)} area=${spArea}`);
+const spStep = await exportFile(spDoc, "step");
+const spStepText = spStep ? await spStep.text() : "";
+check("STEP keeps the spline exact", spStepText.includes("B_SPLINE_CURVE"), String(spStepText.length));
+check("solver accepts splines, points stay free", (() => {
+  const r = solver.solve(blob.s, { points: [{ id: blob.ids[1], x: 22, y: -4 }] });
+  return r.ok && near(ent<SkPoint>(blob.s, blob.ids[1]).x, 22);
+})());
+// Open spline closed by a line, with a line from its middle point splitting the area.
+const arch = splineSketch([[0, 0], [10, 6], [20, 0]], false);
+const mid0 = uid();
+arch.s.entities.push(
+  { id: mid0, type: "point", x: 10, y: 0 },
+  { id: uid(), type: "line", p1: arch.ids[2], p2: mid0 },
+  { id: uid(), type: "line", p1: mid0, p2: arch.ids[0] },
+);
+check("open spline + line → 1 region", findRegions(arch.s).length === 1);
+arch.s.entities.push({ id: uid(), type: "line", p1: arch.ids[1], p2: mid0 });
+check("line to a spline point splits it → 2 regions", findRegions(arch.s).length === 2, String(findRegions(arch.s).length));
+const arch2 = splineSketch([[0, 0], [10, 6], [20, 0], [10, -6], [0.1, 0.1]], false);
+mergePoints(arch2.s, arch2.ids[0], arch2.ids[4]);
+const merged = ent<{ pts: string[]; closed?: boolean }>(arch2.s, "sp");
+check("joining the ends closes the spline", !!merged.closed && merged.pts.length === 4 && findRegions(arch2.s).length === 1);
+deleteEntities(arch2.s, [arch2.ids[1]]);
+check("deleting a spline point keeps the spline", ent<{ pts: string[] }>(arch2.s, "sp")?.pts.length === 3);
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

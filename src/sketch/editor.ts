@@ -5,12 +5,12 @@ import type { ConstraintType, SkArc, SkConstraint, SkCurve, SkEntity, SkLine, Sk
 import { DIMENSION_TYPES } from "../types";
 import type { PointerTool, Ptr } from "../view/input";
 import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
-import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, uid } from "./model";
+import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleSpline, splineSpans, uid } from "./model";
 import { arcMid, findRegions, sampleSegments } from "./profiles";
 import type { Drag, SolveResult, Solver } from "./solver";
 import { keypad } from "../ui/keypad";
 
-export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "point";
+export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point";
 
 type P2 = [number, number];
 
@@ -128,8 +128,18 @@ export class SketchEditor implements PointerTool {
     this.hooks.changed();
   }
 
+  /** Points placed so far by a multi-tap tool (the spline's points, for instance). */
+  get pending() {
+    return this.anchors.length;
+  }
+
   /** Esc: drop what is in progress, then the selection. Returns false when nothing was left to cancel. */
   escape(): boolean {
+    // A spline being drawn is kept: Esc / Enter / the back gesture end it.
+    if (this.tool === "spline" && this.anchors.length >= 2) {
+      this.finishSpline(false);
+      return true;
+    }
     if (this.anchors.length || this.chainFrom || this.press) {
       this.resetTool();
       this.render();
@@ -221,6 +231,7 @@ export class SketchEditor implements PointerTool {
       if (!c.axis) t = Math.max(0, Math.min(1, t));
       return [a[0] + t * dx, a[1] + t * dy];
     }
+    if (c.type === "spline") return closestOnPolyline(sampleSpline(v, c), s);
     const ctr = v.xy(c.c);
     const r = c.type === "circle" ? c.r : v.arcRadius(c);
     let ang = Math.atan2(s[1] - ctr[1], s[0] - ctr[0]);
@@ -411,7 +422,43 @@ export class SketchEditor implements PointerTool {
           return;
         }
         return this.placeArc(this.anchors[0], this.anchors[1], s);
+      case "spline":
+        return this.placeSpline(s);
     }
+  }
+
+  /** Close enough on screen to count as tapping the same place. */
+  private near(a: P2, b: P2) {
+    return Math.hypot(b[0] - a[0], b[1] - a[1]) < 20 * this.vp.wpp;
+  }
+
+  /** Spline: each tap adds a point; tapping the last point again ends it, tapping the first closes it. */
+  private placeSpline(s: Snap) {
+    const n = this.anchors.length;
+    if (n >= 3 && this.near(this.anchorXY(this.anchors[0]), s.at)) return this.finishSpline(true);
+    if (n && this.near(this.anchorXY(this.anchors[n - 1]), s.at)) {
+      if (n >= 2) this.finishSpline(false);
+      return;
+    }
+    this.anchors.push(s);
+    // The panel offers "Finish spline" from the second point on.
+    if (this.anchors.length === 2) this.hooks.changed();
+  }
+
+  private finishSpline(closed: boolean) {
+    const ids = this.anchors.map((a) => this.realize(a)).filter((id, i, a) => i === 0 || id !== a[i - 1]);
+    // Ending on the first point closes the spline too.
+    if (ids.length > 3 && ids[0] === ids[ids.length - 1]) {
+      ids.pop();
+      closed = true;
+    }
+    this.anchors = [];
+    if (ids.length < (closed ? 3 : 2)) {
+      this.render();
+      return;
+    }
+    this.addCurve({ id: uid(), type: "spline", pts: ids, closed });
+    this.afterEdit("Spline");
   }
 
   private placeLine(s: Snap) {
@@ -885,6 +932,7 @@ export class SketchEditor implements PointerTool {
       const col = colorOf(c.id, c.construction ? COLORS.construction : base);
       if (c.type === "line") seg(b, v.xy(c.p1), v.xy(c.p2), col);
       else if (c.type === "circle") poly(b, circlePts(v.xy(c.c), c.r), col);
+      else if (c.type === "spline") poly(b, sampleSpline(v, c), col);
       else {
         const [a0, a1] = v.arcAngles(c);
         poly(b, circlePts(v.xy(c.c), v.arcRadius(c), a0, a1), col);
@@ -911,6 +959,12 @@ export class SketchEditor implements PointerTool {
           poly(preview, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], col);
         }
         if (this.tool === "circle") poly(preview, circlePts(from, Math.hypot(cur.at[0] - from[0], cur.at[1] - from[1])), col);
+        if (this.tool === "spline") {
+          const ps = this.anchors.map((a) => this.anchorXY(a));
+          const closing = ps.length >= 3 && this.near(ps[0], cur.at);
+          if (!closing && !this.near(ps[ps.length - 1], cur.at)) ps.push(cur.at);
+          for (const sp of splineSpans(ps, closing)) poly(preview, sampleBezier(sp, 16), col);
+        }
         if (this.tool === "arc") {
           if (this.anchors.length === 1) seg(preview, from, cur.at, col);
           else {
@@ -952,6 +1006,10 @@ export class SketchEditor implements PointerTool {
         const c = v.xy(e.c);
         return [c[0] - e.r * 0.7071, c[1] + e.r * 0.7071];
       }
+      if (e.type === "spline") {
+        const ps = sampleSpline(v, e);
+        return ps[Math.floor(ps.length / 2)];
+      }
       return arcMid(v, e);
     };
     for (const c of this.sk.constraints) {
@@ -962,7 +1020,7 @@ export class SketchEditor implements PointerTool {
         if (c.type === "distance" && a?.type === "line" && !b) at = mid(v.xy(a.p1), v.xy(a.p2));
         else if (c.type === "angle" && a?.type === "line" && b?.type === "line")
           at = mid(mid(v.xy(a.p1), v.xy(a.p2)), mid(v.xy(b.p1), v.xy(b.p2)));
-        else if ((c.type === "radius" || c.type === "diameter") && a && a.type !== "point" && a.type !== "line") {
+        else if ((c.type === "radius" || c.type === "diameter") && (a?.type === "circle" || a?.type === "arc")) {
           if (a.type === "circle") {
             const ctr = v.xy(a.c);
             at = [ctr[0] + a.r * 0.7071, ctr[1] + a.r * 0.7071];
@@ -1015,6 +1073,22 @@ function dimText(c: SkConstraint) {
   if (!c.expr) return v;
   const e = c.expr.length > 16 ? c.expr.slice(0, 15) + "…" : c.expr;
   return `${e} = ${v}`;
+}
+
+function closestOnPolyline(ps: P2[], s: P2): P2 | null {
+  let best: P2 | null = null;
+  let bestD = Infinity;
+  for (let i = 0; i + 1 < ps.length; i++) {
+    const [a, b] = [ps[i], ps[i + 1]];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const L2 = dx * dx + dy * dy;
+    const t = L2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((s[0] - a[0]) * dx + (s[1] - a[1]) * dy) / L2));
+    const p: P2 = [a[0] + t * dx, a[1] + t * dy];
+    const d = Math.hypot(p[0] - s[0], p[1] - s[1]);
+    if (d < bestD) [best, bestD] = [p, d];
+  }
+  return best;
 }
 
 function loopPoly(l: import("../types").ProfileLoop): P2[] {

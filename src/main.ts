@@ -7,7 +7,7 @@ import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
 import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
-import { SketchView, newSketch, sketchLineWorld, uid } from "./sketch/model";
+import { SketchView, newSketch, sampleSpline, sketchLineWorld, uid } from "./sketch/model";
 import { openKeypad, setKeypadHost, type KeypadHandle } from "./ui/keypad";
 import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
@@ -35,8 +35,9 @@ interface Prefs {
   collapsed: boolean;
   /** Where the user dragged the side panel (top-left corner, CSS px); null = default place. */
   panelPos: { x: number; y: number } | null;
+  perspective: boolean;
 }
-const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null };
+const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false };
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
 } catch {
@@ -89,6 +90,7 @@ const undoStack: string[] = [JSON.stringify(doc)];
 let undoPos = 0;
 
 const vp = new Viewport($("#view"));
+vp.perspective = prefs.perspective;
 let solver: Solver;
 
 // ---------- Worker ----------
@@ -433,7 +435,7 @@ function faceRefOfSelection(): FaceRef | null {
 /** Starts a face tool on the selected face, or waits for a face to be tapped. */
 function faceTool(tool: "pushpull" | "shell" | "hole") {
   if (mode.kind !== "part") return;
-  if (!doc.features.some((f) => f.kind === "extrude")) return toast("Make a solid first (Sketch, then Extrude)");
+  if (!hasSolid()) return toast(NEED_SOLID);
   const ref = faceRefOfSelection();
   if (!ref) {
     pendingFaceTool = tool;
@@ -860,7 +862,7 @@ function patternSummary(f: PatternFeature) {
 
 async function patternTool(type: PatternFeature["type"], existing?: PatternFeature) {
   if (mode.kind !== "part") return;
-  if (!existing && !doc.features.some((f) => f.kind === "extrude")) return toast("Make a solid first (Sketch, then Extrude)");
+  if (!existing && !hasSolid()) return toast(NEED_SOLID);
   const sel = doc.features.find((f) => f.id === selectedFeature);
   const prefix = { linear: "Linear pattern", circular: "Circular pattern", mirror: "Mirror" }[type];
   const feat: PatternFeature = existing ?? {
@@ -974,7 +976,7 @@ function togglePatternFeature(feat: PatternFeature, f: Feature) {
 
 async function filletTool(existing?: FilletFeature) {
   if (mode.kind !== "part") return;
-  if (!existing && !doc.features.some((f) => f.kind === "extrude")) return toast("Make a solid first (Sketch, then Extrude)");
+  if (!existing && !hasSolid()) return toast(NEED_SOLID);
   const feat: FilletFeature = existing ?? { id: uid(), kind: "fillet", name: nextName("Fillet"), mode: "fillet", edges: [], radius: 1 };
   const before = { mode: feat.mode, radius: feat.radius, radiusExpr: feat.radiusExpr, edges: [...feat.edges], name: feat.name };
   if (!existing) doc.features.push(feat);
@@ -1237,11 +1239,14 @@ function renderParamsPanel(el: HTMLElement) {
 }
 
 /** The selected sketch, or the last sketch not yet used by a feature. */
+const NEED_SOLID = "Make a solid first (Sketch, then Extrude)";
+const hasSolid = () => doc.features.some((f) => f.kind === "extrude" || f.kind === "revolve");
+
 function pickSketchForExtrude(): SketchFeature | null {
   if (mode.kind === "sketch") return mode.editor.sk;
   const sel = doc.features.find((f) => f.id === selectedFeature);
   if (sel?.kind === "sketch") return sel;
-  const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" ? [f.sketchId] : [])));
+  const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" || f.kind === "revolve" ? [f.sketchId] : [])));
   const free = doc.features.filter((f): f is SketchFeature => f.kind === "sketch" && !used.has(f.id));
   return free[free.length - 1] ?? null;
 }
@@ -1266,6 +1271,7 @@ function deleteFeature(f: Feature) {
 
 function renderAll() {
   document.body.dataset.mode = mode.kind;
+  vp.forceOrtho = mode.kind === "sketch";
   document.body.classList.toggle("busy", mode.kind !== "part");
   renderTools();
   renderPanel();
@@ -1281,12 +1287,20 @@ const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: st
   { tool: "rect", icon: "rect", label: "Rectangle", key: "R" },
   { tool: "circle", icon: "circle", label: "Circle", key: "C" },
   { tool: "arc", icon: "arc", label: "Arc", key: "A" },
+  { tool: "spline", icon: "spline", label: "Spline", key: "S" },
   { tool: "point", icon: "point", label: "Point", key: "P" },
 ];
 
-function toolRow(ic: string, label: string, run: () => void, opts: { active?: boolean; on?: boolean; key?: string } = {}) {
+/** `disabled`: why the tool cannot be used now; it stays in place, greyed, and tapping it says why. */
+function toolRow(ic: string, label: string, run: () => void, opts: { active?: boolean; on?: boolean; key?: string; disabled?: string } = {}) {
   const b = document.createElement("button");
   b.className = "tool";
+  if (opts.disabled) {
+    b.classList.add("disabled");
+    b.setAttribute("aria-disabled", "true");
+    const why = opts.disabled;
+    run = () => toast(why);
+  }
   if (opts.active) b.classList.add("active");
   if (opts.on) b.classList.add("on");
   b.innerHTML = `<span class="tile">${icon(ic)}</span><span class="label"></span>`;
@@ -1307,6 +1321,9 @@ function section(title: string) {
 function renderTools() {
   const el = $("#tools");
   el.replaceChildren();
+  // During an operation everything (confirm, cancel, options) is in the right panel.
+  el.hidden = isOperation(mode);
+  if (el.hidden) return;
   const collapse = document.createElement("button");
   collapse.id = "collapse";
   collapse.innerHTML = icon(prefs.collapsed ? "expand" : "collapse", 20);
@@ -1344,20 +1361,19 @@ function renderTools() {
   } else {
     el.appendChild(section("Sketch"));
     el.appendChild(toolRow("sketch", "New sketch", startNewSketch, { key: "S" }));
+    const needSketch = pickSketchForExtrude() ? undefined : "Draw a closed sketch first";
+    const needSolid = hasSolid() ? undefined : NEED_SOLID;
     el.appendChild(section("Features"));
-    el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { active: mode.kind === "extrude", key: "E" }));
-    el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { active: mode.kind === "revolve", key: "V" }));
-    el.appendChild(
-      toolRow("pushpull", "Press Pull", () => faceTool("pushpull"), { active: mode.kind === "pushpull" || pendingFaceTool === "pushpull", key: "Q" }),
-    );
-    el.appendChild(toolRow("shell", "Shell", () => faceTool("shell"), { active: mode.kind === "shell" || pendingFaceTool === "shell", key: "K" }));
-    el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { active: mode.kind === "fillet", key: "R" }));
-    el.appendChild(toolRow("hole", "Hole", startHoles, { active: mode.kind === "hole" || pendingFaceTool === "hole", key: "H" }));
+    el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { key: "E", disabled: needSketch }));
+    el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { key: "V", disabled: needSketch }));
+    el.appendChild(toolRow("pushpull", "Press Pull", () => faceTool("pushpull"), { active: pendingFaceTool === "pushpull", key: "Q", disabled: needSolid }));
+    el.appendChild(toolRow("shell", "Shell", () => faceTool("shell"), { active: pendingFaceTool === "shell", key: "K", disabled: needSolid }));
+    el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { key: "R", disabled: needSolid }));
+    el.appendChild(toolRow("hole", "Hole", startHoles, { active: pendingFaceTool === "hole", key: "H", disabled: needSolid }));
     el.appendChild(section("Repeat"));
-    const pat = mode.kind === "pattern" ? mode.feat.type : null;
-    el.appendChild(toolRow("mirror", "Mirror", () => void patternTool("mirror"), { active: pat === "mirror", key: "M" }));
-    el.appendChild(toolRow("linear", "Linear pattern", () => void patternTool("linear"), { active: pat === "linear", key: "L" }));
-    el.appendChild(toolRow("circular", "Circular pattern", () => void patternTool("circular"), { active: pat === "circular", key: "O" }));
+    el.appendChild(toolRow("mirror", "Mirror", () => void patternTool("mirror"), { key: "M", disabled: needSolid }));
+    el.appendChild(toolRow("linear", "Linear pattern", () => void patternTool("linear"), { key: "L", disabled: needSolid }));
+    el.appendChild(toolRow("circular", "Circular pattern", () => void patternTool("circular"), { key: "O", disabled: needSolid }));
     el.appendChild(section("Design"));
     el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
   }
@@ -1405,6 +1421,8 @@ function renderPanel() {
     const acts = ed.actions();
     if (ed.tool === "line")
       acts.unshift({ id: "endline", label: "⏎", title: "End line", key: "Enter", run: () => ed.escape() });
+    if (ed.tool === "spline" && ed.pending >= 2)
+      acts.unshift({ id: "endspline", label: "⏎", title: "Finish spline", key: "Enter", run: () => ed.escape() });
     if (acts.length) {
       const grid = document.createElement("div");
       grid.className = "p-grid";
@@ -1592,6 +1610,13 @@ function renderViewButtons() {
   };
   add("fit", "Fit (F)", () => vp.fit());
   add("iso", "Isometric view", () => vp.setStandardView("iso"));
+  // Sketches are always shown without perspective, so the toggle is only offered outside them.
+  if (mode.kind !== "sketch")
+    add("perspective", vp.perspective ? "Perspective (tap for orthographic)" : "Orthographic (tap for perspective)", () => {
+      vp.perspective = prefs.perspective = !vp.perspective;
+      savePrefs();
+      renderViewButtons();
+    }, vp.perspective);
   add("grid", "Grid", () => {
     vp.setGridVisible(!vp.isGridVisible);
     renderViewButtons();
@@ -1605,7 +1630,7 @@ function renderViewButtons() {
 /** Sketches not consumed by a feature stay visible in the part view. */
 function renderPartOverlays() {
   if (mode.kind === "sketch") return;
-  const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" ? [f.sketchId] : [])));
+  const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" || f.kind === "revolve" ? [f.sketchId] : [])));
   const sel = doc.features.find((f) => f.id === selectedFeature);
   const highlight = sel?.kind === "sketch" ? sel.id : sel?.kind === "extrude" || sel?.kind === "revolve" ? sel.sketchId : null;
   const batch: LineBatch = { positions: [], colors: [], width: 2, overlay: true };
@@ -1681,7 +1706,10 @@ function appendSketchLines(b: LineBatch, sk: SketchFeature, col: number[]) {
     if (c.construction) continue;
     if (c.type === "line") seg(v.xy(c.p1), v.xy(c.p2));
     else if (c.type === "circle") arc(v.xy(c.c), c.r, 0, 2 * Math.PI);
-    else arc(v.xy(c.c), v.arcRadius(c), ...v.arcAngles(c));
+    else if (c.type === "spline") {
+      const ps = sampleSpline(v, c);
+      for (let i = 0; i + 1 < ps.length; i++) seg(ps[i], ps[i + 1]);
+    } else arc(v.xy(c.c), v.arcRadius(c), ...v.arcAngles(c));
   }
 }
 

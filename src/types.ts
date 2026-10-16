@@ -50,7 +50,19 @@ export interface SkArc {
   construction?: boolean;
 }
 
-export type SkCurve = SkLine | SkCircle | SkArc;
+/**
+ * Smooth curve passing through its points, in order. Each span between two points is a
+ * cubic Bézier whose tangents come from the neighbouring points (see `splineSpans`).
+ */
+export interface SkSpline {
+  id: string;
+  type: "spline";
+  pts: string[];
+  closed?: boolean;
+  construction?: boolean;
+}
+
+export type SkCurve = SkLine | SkCircle | SkArc | SkSpline;
 export type SkEntity = SkPoint | SkCurve;
 
 export type ConstraintType =
@@ -252,7 +264,8 @@ export interface CadDocument {
 
 export type ProfileSegment =
   | { kind: "line"; a: [number, number]; b: [number, number] }
-  | { kind: "arc"; a: [number, number]; b: [number, number]; mid: [number, number] };
+  | { kind: "arc"; a: [number, number]; b: [number, number]; mid: [number, number] }
+  | { kind: "bezier"; a: [number, number]; b: [number, number]; c1: [number, number]; c2: [number, number] };
 
 export type ProfileLoop =
   | { kind: "circle"; c: [number, number]; r: number }

@@ -142,6 +142,9 @@ button.danger {
 #tools > * {
   pointer-events: auto;
 }
+#tools[hidden] {
+  display: none;
+}
 .section {
   font-size: 11px;
   font-weight: 700;
@@ -191,6 +194,12 @@ button.danger {
 .tool.on .tile {
   background: var(--accent-soft);
   color: var(--accent);
+}
+.tool.disabled .tile,
+.tool.disabled .label {
+  color: var(--muted);
+  opacity: 0.55;
+  box-shadow: none;
 }
 .tool:active .tile,
 .tool:active .label {
@@ -666,17 +675,18 @@ body.busy #status-pill .dot {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px;
-  background: var(--card2);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
+  padding: 8px 0;
+  /* No bar behind the buttons: only they catch touches, the rest goes to the 3D view. */
+  pointer-events: none;
   z-index: 11;
+}
+#timeline > *,
+#chips > * {
+  pointer-events: auto;
 }
 #timeline .history {
   display: flex;
   gap: 6px;
-  padding-right: 8px;
-  border-right: 1px solid var(--line);
 }
 #timeline .history button,
 #menu {
@@ -689,6 +699,9 @@ body.busy #status-pill .dot {
 #chips {
   flex: 1;
   min-width: 0;
+  pointer-events: none;
+  padding: 8px 4px;
+  margin: -8px 0;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -698,7 +711,10 @@ body.busy #status-pill .dot {
 #chips .empty {
   color: var(--muted);
   font-size: 13px;
-  padding: 0 8px;
+  padding: 6px 12px;
+  background: var(--card);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
 }
 .chip {
   flex: none;
@@ -725,6 +741,7 @@ body.busy #status-pill .dot {
   flex: none;
   color: var(--muted);
   display: flex;
+  filter: drop-shadow(0 0 2px var(--card));
 }
 .menu-wrap {
   position: relative;

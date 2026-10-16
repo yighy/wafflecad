@@ -1,4 +1,4 @@
-// three.js scene: orthographic CAD camera (Z up), model, sketch layer, loupe.
+// three.js scene: orthographic or perspective CAD camera (Z up), model, sketch layer, loupe.
 import * as THREE from "three";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
@@ -26,7 +26,14 @@ export interface PointBatch {
 export class Viewport {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
-  readonly camera = new THREE.OrthographicCamera();
+  private ortho = new THREE.OrthographicCamera();
+  private persp = new THREE.PerspectiveCamera(30);
+  /** The user's choice of projection; sketches are always shown orthographic (`forceOrtho`). */
+  private perspectiveOn = false;
+  private orthoForced = false;
+  get camera(): THREE.OrthographicCamera | THREE.PerspectiveCamera {
+    return this.perspectiveOn && !this.orthoForced ? this.persp : this.ortho;
+  }
   readonly overlay: HTMLDivElement;
 
   // Camera state: looks at `target` from the direction of the quaternion's +Z.
@@ -86,10 +93,12 @@ export class Viewport {
     const top = new THREE.DirectionalLight(0xffffff, 1.3);
     top.position.set(0.3, -0.5, 1);
     this.scene.add(top);
-    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
-    sun.position.set(-0.4, 0.6, 1);
-    this.camera.add(sun);
-    this.scene.add(this.camera);
+    for (const cam of [this.ortho, this.persp]) {
+      const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+      sun.position.set(-0.4, 0.6, 1);
+      cam.add(sun);
+      this.scene.add(cam);
+    }
 
     this.setStandardView("iso", false);
     new ResizeObserver(() => this.resize()).observe(container);
@@ -124,15 +133,37 @@ export class Viewport {
     this.needsRender = true;
   }
 
+  get perspective() {
+    return this.perspectiveOn;
+  }
+  set perspective(on: boolean) {
+    this.perspectiveOn = on;
+    this.changed();
+  }
+  set forceOrtho(on: boolean) {
+    if (on === this.orthoForced) return;
+    this.orthoForced = on;
+    this.changed();
+  }
+
   private updateCamera() {
     const dir = new THREE.Vector3(0, 0, 1).applyQuaternion(this.quat);
-    this.camera.position.copy(this.target).addScaledVector(dir, 5000);
-    this.camera.quaternion.copy(this.quat);
     const h = this.viewHeight / 2;
-    const w = h * (this.width / Math.max(this.height, 1));
-    Object.assign(this.camera, { left: -w, right: w, top: h, bottom: -h, near: 1, far: 20000 });
-    this.camera.updateProjectionMatrix();
-    this.camera.updateMatrixWorld();
+    const aspect = this.width / Math.max(this.height, 1);
+    const w = h * aspect;
+    const cam = this.camera;
+    if (cam instanceof THREE.PerspectiveCamera) {
+      // Same scale as the orthographic view on the plane through the target.
+      const d = h / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+      cam.position.copy(this.target).addScaledVector(dir, d);
+      Object.assign(cam, { aspect, near: d / 200, far: d * 50 + 20000 });
+    } else {
+      cam.position.copy(this.target).addScaledVector(dir, 5000);
+      Object.assign(cam, { left: -w, right: w, top: h, bottom: -h, near: 1, far: 20000 });
+    }
+    cam.quaternion.copy(this.quat);
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld();
   }
 
   get right() {
@@ -296,7 +327,7 @@ export class Viewport {
   }
 
   private renderLoupe() {
-    const l = this.loupe;
+    const l = this.camera === this.ortho ? this.loupe : null;
     this.loupeEl.style.display = l ? "block" : "none";
     if (!l) return;
     const size = Math.min(150, this.width * 0.4);
@@ -311,7 +342,7 @@ export class Viewport {
       width: `${size}px`,
       height: `${size}px`,
     });
-    const cam = this.camera.clone();
+    const cam = this.ortho.clone();
     const c = this.screenToView(l.x, l.y);
     const half = (size / 2) * this.wpp / zoom;
     cam.position.copy(c).addScaledVector(V([0, 0, 1]).applyQuaternion(this.quat), 5000);

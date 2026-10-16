@@ -40,11 +40,15 @@ While a stylus touches the screen, finger contacts are ignored (palm rejection).
 The 3D view fills the screen; the controls float above it.
 
 - **Left**: the tools of the current mode, grouped by section. The panel folds down to icons only.
+  A tool that needs something first (a sketch, a solid) stays in place, greyed; tapping it says what is missing.
+  While an operation is open, the left panel hides: its options, Confirm and Cancel are all in the right panel.
 - **Right**: a panel for the current selection: constraints in a sketch, actions for a feature or a face,
   and the keypad when a value is being typed. Drag its top bar to move it anywhere (double tap the bar to put it back).
 - **Top right**: an axis gizmo (tap X, Y, Z or their opposites to look along that axis, tap the house for the
-  isometric view, drag the gizmo to rotate), then Fit, Isometric, Grid, and Look at sketch.
+  isometric view, drag the gizmo to rotate), then Fit, Isometric, Perspective / orthographic, Grid, and Look at sketch.
+  Sketches are always shown orthographic.
 - **Bottom**: the feature history as a timeline (tap a step to edit, rename or delete it), Undo/Redo, and the menu.
+  The buttons float on the view with no bar behind them, so the empty space between them still rotates and zooms.
 - An extrusion shows a handle that can be pulled along the sketch normal, next to the keypad.
 
 Menu → Light / dark theme. On phones the tools shrink to icons and the panel becomes a bottom sheet.
@@ -52,7 +56,10 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
 ## Sketching
 
 1. **Sketch**, then tap a reference plane (XY, XZ, YZ) or a flat face of the model.
-2. Draw with Line, Rect, Circle, Arc (centre → start → end) or Point. A drag or two taps both work.
+2. Draw with Line, Rect, Circle, Arc (centre → start → end), Spline or Point. A drag or two taps both work.
+   A spline passes through the points you tap; tap the last point again (or **Finish spline**) to end it,
+   tap the first point to close it. Its points can be dragged, constrained and dimensioned like any other,
+   and STEP export keeps it as an exact B-spline.
    Points snap to existing points and curves; nearly horizontal/vertical lines get the constraint automatically.
 3. Tap geometry to select it (tap empty space to clear, drag on empty space for a box selection).
    The bar above the tools offers the constraints that fit the selection:
@@ -137,8 +144,8 @@ so the rounding appears after Confirm. A radius too large for the chosen edges i
 Faces are found again by a point on them and their normal, edges by the point at the middle of their length. If an earlier change moves the face,
 the feature turns red in the timeline instead of applying somewhere else.
 
-Optional keyboard shortcuts: `L` line, `R` rectangle, `C` circle, `A` arc, `P` point, `G` construction,
-`Esc` cancel, `Enter` end a line / finish, `Del` delete, `Ctrl+Z` / `Ctrl+Y`;
+Optional keyboard shortcuts: `L` line, `R` rectangle, `C` circle, `A` arc, `S` spline, `P` point, `G` construction,
+`Esc` cancel, `Enter` end a line or spline / finish, `Del` delete, `Ctrl+Z` / `Ctrl+Y`;
 with a selection: `H`, `V`, `E`, `T`, `D`, `X`, `Y`, `O`, `M`, `S`, `F`.
 In the part view: `S` sketch, `E` extrude, `F` fit, `V` cycle views.
 
