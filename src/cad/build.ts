@@ -1,6 +1,6 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, type Drawing, type Face, type Shape3D } from "replicad";
+import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
 import type { Axis, BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { sketchLineWorld } from "../sketch/model";
@@ -67,7 +67,19 @@ function revolveSolid(sk: SketchFeature, f: RevolveFeature): Shape3D {
   return f.symmetric && Math.abs(f.angle) < 360 ? solid.rotate(-f.angle / 2, a, axis) : solid;
 }
 
-/** The flat face containing `ref.center` with the same outward normal, or an error. */
+/** Called when a reference had to be found again after an earlier change moved it. */
+let noteMoved: (() => void) | null = null;
+
+/** How far a referenced face or edge may have moved and still be found: a share of the model's size. */
+function moveLimit(shape: Shape3D) {
+  const [lo, hi] = shape.boundingBox.bounds;
+  return 0.3 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+}
+
+/**
+ * The flat face containing `ref.center` with the same outward normal. If an earlier change
+ * moved it (a taller block, a longer extrusion…), the closest flat face facing the same way.
+ */
 export function findFace(shape: Shape3D, ref: FaceRef): Face {
   const candidates = new FaceFinder().containsPoint(ref.center).find(shape);
   for (const f of candidates) {
@@ -75,7 +87,46 @@ export function findFace(shape: Shape3D, ref: FaceRef): Face {
     const n = f.normalAt(ref.center);
     if (dot([n.x, n.y, n.z], ref.normal) > 0.999) return f;
   }
+  const at = makeVertex(ref.center);
+  let best: { face: Face; d: number } | null = null;
+  for (const f of shape.faces) {
+    if (f.geomType !== "PLANE") continue;
+    const n = f.normalAt();
+    if (dot([n.x, n.y, n.z], ref.normal) < 0.999) continue;
+    const d = measureDistanceBetween(f, at);
+    if (!best || d < best.d) best = { face: f, d };
+  }
+  if (best && best.d <= moveLimit(shape)) {
+    noteMoved?.();
+    return best.face;
+  }
   throw new Error("The face is no longer there (an earlier feature changed it)");
+}
+
+/** A point inside the face that `ref` designates now (see findFace). */
+function faceAnchor(shape: Shape3D, ref: FaceRef): Vec3 {
+  const face = findFace(shape, ref);
+  const c = face.center;
+  return interiorPoint(face, [c.x, c.y, c.z]);
+}
+
+/** The point to look an edge up by: its stored midpoint, or a point of the closest edge if it moved. */
+function edgeAnchor(shape: Shape3D, mid: Vec3): Vec3 {
+  if (new EdgeFinder().withinDistance(EDGE_MATCH_TOL, mid).find(shape).length) return mid;
+  const at = makeVertex(mid);
+  let best: { p: Vec3; d: number } | null = null;
+  for (const e of shape.edges) {
+    const d = measureDistanceBetween(e, at);
+    if (!best || d < best.d) {
+      const p = e.pointAt(0.5);
+      best = { p: [p.x, p.y, p.z], d };
+    }
+  }
+  if (best && best.d <= moveLimit(shape)) {
+    noteMoved?.();
+    return best.p;
+  }
+  throw new Error("An edge is no longer there (an earlier feature changed it)");
 }
 
 /** The prism swept by the face; added when pulled out, removed when pushed in. */
@@ -89,9 +140,9 @@ function pushPullTool(shape: Shape3D, f: PushPullFeature): Tool {
 function shell(shape: Shape3D, f: ShellFeature): Shape3D {
   if (!f.faces.length) throw new Error("Choose at least one face to open");
   if (f.thickness <= 0) throw new Error("The thickness must be positive");
-  for (const ref of f.faces) findFace(shape, ref);
+  const anchors = f.faces.map((ref) => faceAnchor(shape, ref));
   // Positive thickness: the walls grow inwards, the outside keeps its size.
-  return shape.shell(f.thickness, (finder) => finder.either(f.faces.map((ref) => (g: FaceFinder) => g.containsPoint(ref.center))));
+  return shape.shell(f.thickness, (finder) => finder.either(anchors.map((p) => (g: FaceFinder) => g.containsPoint(p))));
 }
 
 /** Distance (mm) between a stored edge midpoint and the edge it designates. */
@@ -100,11 +151,8 @@ const EDGE_MATCH_TOL = 0.05;
 function fillet(shape: Shape3D, f: FilletFeature): Shape3D {
   if (!f.edges.length) throw new Error("Choose at least one edge");
   if (f.radius <= 0) throw new Error(f.mode === "fillet" ? "The radius must be positive" : "The distance must be positive");
-  for (const e of f.edges) {
-    if (!new EdgeFinder().withinDistance(EDGE_MATCH_TOL, e.mid).find(shape).length)
-      throw new Error("An edge is no longer there (an earlier feature changed it)");
-  }
-  const filter = new EdgeFinder().either(f.edges.map((e) => (g: EdgeFinder) => g.withinDistance(EDGE_MATCH_TOL, e.mid)));
+  const anchors = f.edges.map((e) => edgeAnchor(shape, e.mid));
+  const filter = new EdgeFinder().either(anchors.map((p) => (g: EdgeFinder) => g.withinDistance(EDGE_MATCH_TOL, p)));
   try {
     return f.mode === "fillet" ? shape.fillet({ filter, radius: f.radius }) : shape.chamfer({ filter, radius: f.radius });
   } catch {
@@ -219,10 +267,12 @@ function pattern(shape: Shape3D, f: PatternFeature, tools: Map<string, Tool>, na
 export function buildShape(doc: CadDocument) {
   let shape: Shape3D | null = null;
   const errors: Record<string, string> = {};
+  const warnings: Record<string, string> = {};
   const sketches = new Map<string, SketchFeature>();
   const tools = new Map<string, Tool>();
   const names = new Map(doc.features.map((f) => [f.id, f.name]));
   for (const f of doc.features) {
+    noteMoved = () => (warnings[f.id] = "Its face or edge moved: the closest one was used. Check it, or edit the step to pick again.");
     if (f.kind === "pattern") {
       try {
         if (!shape) throw new Error("There is no solid yet");
@@ -280,12 +330,14 @@ export function buildShape(doc: CadDocument) {
       errors[f.id] = e instanceof Error ? e.message : String(e);
     }
   }
-  return { shape, errors };
+  noteMoved = null;
+  for (const id of Object.keys(errors)) delete warnings[id];
+  return { shape, errors, warnings };
 }
 
 export function buildResult(doc: CadDocument): BuildResult {
-  const { shape, errors } = buildShape(doc);
-  if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors };
+  const { shape, errors, warnings } = buildShape(doc);
+  if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings };
   const m = shape.mesh(MESH_OPTS);
   const e = shape.meshEdges(MESH_OPTS);
   return {
@@ -298,6 +350,7 @@ export function buildResult(doc: CadDocument): BuildResult {
     edges: new Float32Array(e.lines),
     edgeGroups: e.edgeGroups.map((g): EdgeGroup => ({ start: g.start, count: g.count, mid: polylineMid(e.lines, g.start, g.count) })),
     planarFaces: planarFaces(shape),
+    warnings,
     errors,
   };
 }

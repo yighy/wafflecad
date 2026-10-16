@@ -167,11 +167,15 @@ const block = (...more: CadDocument["features"]): CadDocument => ({
 });
 const topRef = { center: [10, 5, 5] as [number, number, number], normal: [0, 0, 1] as [number, number, number] };
 let pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: topRef, distance: 3 }));
-check("pull top face +3", !pp.errors.pp && near(pp.shape!.boundingBox.bounds[1][2], 8), JSON.stringify(pp.errors));
+check("pull top face +3", !pp.errors.pp && !pp.warnings.pp && near(pp.shape!.boundingBox.bounds[1][2], 8), JSON.stringify(pp.errors));
 pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: topRef, distance: -2 }));
 check("push top face −2", !pp.errors.pp && near(pp.shape!.boundingBox.bounds[1][2], 3), JSON.stringify(pp.errors));
 pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: [10, 5, 9], normal: [0, 0, 1] }, distance: 1 }));
+check("moved face found again, with a warning", !pp.errors.pp && !!pp.warnings.pp && near(pp.shape!.boundingBox.bounds[1][2], 6), JSON.stringify([pp.errors, pp.warnings]));
+pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: [10, 5, 5], normal: [0.6, 0, 0.8] }, distance: 1 }));
 check("missing face reported", !!pp.errors.pp, JSON.stringify(pp.errors));
+pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: [10, 5, 80], normal: [0, 0, 1] }, distance: 1 }));
+check("face too far away reported", !!pp.errors.pp, JSON.stringify(pp.errors));
 const sh = buildShape(block({ id: "sh", kind: "shell", name: "SH", faces: [topRef], thickness: 1 }));
 check("shell open top, 1 mm walls", !sh.errors.sh && near(measureVolume(sh.shape!), 1000 - 18 * 8 * 4, 1e-3), `${JSON.stringify(sh.errors)} vol=${sh.shape && measureVolume(sh.shape)}`);
 check("shell keeps outer size", near(sh.shape!.boundingBox.bounds[1][0], 20) && near(sh.shape!.boundingBox.bounds[1][2], 5));
@@ -192,7 +196,9 @@ const ch = buildShape(block({ id: "ch", kind: "fillet", name: "C", mode: "chamfe
 check("chamfer one edge", !ch.errors.ch && near(measureVolume(ch.shape!), blockVol - 20 * 2, 1e-3), `${JSON.stringify(ch.errors)} vol=${ch.shape && measureVolume(ch.shape)}`);
 const big = buildShape(block({ id: "bg", kind: "fillet", name: "B", mode: "fillet", edges: [topFront], radius: 50 }));
 check("too large radius reported", !!big.errors.bg, JSON.stringify(big.errors));
-const gone = buildShape(block({ id: "gn", kind: "fillet", name: "G", mode: "fillet", edges: [{ mid: [10, 0, 9] }], radius: 1 }));
+const moved = buildShape(block({ id: "gn", kind: "fillet", name: "G", mode: "fillet", edges: [{ mid: [10, 0, 7] }], radius: 1 }));
+check("moved edge found again, with a warning", !moved.errors.gn && !!moved.warnings.gn && near(measureVolume(moved.shape!), blockVol - 20 * (1 - Math.PI / 4), 1e-3), JSON.stringify(moved.errors));
+const gone = buildShape(block({ id: "gn", kind: "fillet", name: "G", mode: "fillet", edges: [{ mid: [10, 0, 90] }], radius: 1 }));
 check("missing edge reported", !!gone.errors.gn, JSON.stringify(gone.errors));
 const groups = buildResult(block()).edgeGroups;
 check("12 edge groups with midpoints", groups.length === 12 && groups.some((g) => near(g.mid[0], 10) && near(g.mid[1], 0) && near(g.mid[2], 5)), String(groups.length));

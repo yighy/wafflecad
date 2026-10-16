@@ -309,6 +309,8 @@ export interface BuildResult {
   planarFaces: PlanarFace[];
   /** Feature id → error message, for features that could not be built. */
   errors: Record<string, string>;
+  /** Steps that built, but only after finding a moved face or edge again. */
+  warnings?: Record<string, string>;
 }
 
 export type WorkerRequest =

@@ -1491,7 +1491,7 @@ function renderPanel() {
   }
   const f = doc.features.find((x) => x.id === selectedFeature);
   if (f) {
-    const err = lastBuild?.errors[f.id];
+    const err = lastBuild?.errors[f.id] ?? lastBuild?.warnings?.[f.id];
     head(f.name, err ?? featureDetail(f), !!err, true);
     const items: [string, string, () => void, string?][] = [];
     if (f.kind === "sketch") {
@@ -1585,6 +1585,7 @@ function renderTimeline() {
     if (f.id === current) b.classList.add("sel");
     if (mode.kind === "pattern" && mode.feat.featureIds.includes(f.id)) b.classList.add("picked");
     if (lastBuild?.errors[f.id]) b.classList.add("error");
+    else if (lastBuild?.warnings?.[f.id]) b.classList.add("warn");
     b.innerHTML = icon(featureIcon(f), 20) + "<span></span>";
     b.querySelector("span")!.textContent = f.kind === "extrude" ? `${f.name} · ${fmtNum(Math.abs(f.distance))}` : f.name;
     b.onclick = () => {
