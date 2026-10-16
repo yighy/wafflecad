@@ -1345,7 +1345,8 @@ function renderTools() {
       if (t.tool === "trim") el.appendChild(section("Modify"));
       el.appendChild(
         toolRow(t.icon, t.label, () => {
-          ed.setTool(t.tool);
+          // Tapping the active tool again puts it down.
+          ed.setTool(ed.tool === t.tool ? "select" : t.tool);
           renderAll();
         }, { active: ed.tool === t.tool, key: t.key }),
       );
@@ -1369,10 +1370,16 @@ function renderTools() {
     el.appendChild(section("Features"));
     el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { key: "E", disabled: needSketch }));
     el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { key: "V", disabled: needSketch }));
-    el.appendChild(toolRow("pushpull", "Press Pull", () => faceTool("pushpull"), { active: pendingFaceTool === "pushpull", key: "Q", disabled: needSolid }));
-    el.appendChild(toolRow("shell", "Shell", () => faceTool("shell"), { active: pendingFaceTool === "shell", key: "K", disabled: needSolid }));
+    // A tool waiting for a face is put down by tapping it again.
+    const faceToggle = (tool: NonNullable<typeof pendingFaceTool>, start: () => void) => () => {
+      if (pendingFaceTool !== tool) return start();
+      pendingFaceTool = null;
+      renderAll();
+    };
+    el.appendChild(toolRow("pushpull", "Press Pull", faceToggle("pushpull", () => faceTool("pushpull")), { active: pendingFaceTool === "pushpull", key: "Q", disabled: needSolid }));
+    el.appendChild(toolRow("shell", "Shell", faceToggle("shell", () => faceTool("shell")), { active: pendingFaceTool === "shell", key: "K", disabled: needSolid }));
     el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { key: "R", disabled: needSolid }));
-    el.appendChild(toolRow("hole", "Hole", startHoles, { active: pendingFaceTool === "hole", key: "H", disabled: needSolid }));
+    el.appendChild(toolRow("hole", "Hole", faceToggle("hole", startHoles), { active: pendingFaceTool === "hole", key: "H", disabled: needSolid }));
     el.appendChild(section("Repeat"));
     el.appendChild(toolRow("mirror", "Mirror", () => void patternTool("mirror"), { key: "M", disabled: needSolid }));
     el.appendChild(toolRow("linear", "Linear pattern", () => void patternTool("linear"), { key: "L", disabled: needSolid }));
@@ -1614,7 +1621,6 @@ function renderViewButtons() {
     el.appendChild(b);
   };
   add("fit", "Fit (F)", () => vp.fit());
-  add("iso", "Isometric view", () => vp.setStandardView("iso"));
   // Sketches are always shown without perspective, so the toggle is only offered outside them.
   if (mode.kind !== "sketch")
     add("perspective", vp.perspective ? "Perspective (tap for orthographic)" : "Orthographic (tap for perspective)", () => {

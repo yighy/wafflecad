@@ -157,6 +157,8 @@ button.danger {
    tapping either card works. */
 .tool {
   flex: none;
+  align-self: flex-start;
+  max-width: 100%;
   justify-content: flex-start;
   height: var(--tap);
   padding: 0;
@@ -179,9 +181,14 @@ button.danger {
   justify-content: center;
   flex: none;
 }
+/* The label card is as wide as its text, not the whole panel. */
 .tool .label {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 0 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .tool.active .tile {
   background: var(--accent);
