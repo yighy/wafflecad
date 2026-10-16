@@ -395,17 +395,49 @@ body.busy #status-pill .dot {
 .gizmo-bubble.neg text {
   fill: var(--c);
 }
-#view-buttons {
+/* Button groups (view buttons, undo/redo): one shared card, thin separators between buttons. */
+#view-buttons,
+#timeline .history {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  background: var(--card);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
 }
-#view-buttons button {
+#view-buttons {
+  flex-direction: column;
+}
+#view-buttons button,
+#timeline .history button {
+  position: relative;
   width: 48px;
   height: 48px;
   padding: 0;
   border: none;
-  box-shadow: var(--shadow);
+  background: transparent;
+  box-shadow: none;
+}
+#view-buttons button + button::before,
+#timeline .history button + button::before {
+  content: "";
+  position: absolute;
+  background: var(--line);
+}
+#view-buttons button + button::before {
+  left: 10px;
+  right: 10px;
+  top: 0;
+  height: 1px;
+}
+#timeline .history button + button::before {
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 1px;
+}
+#view-buttons button:active,
+#timeline .history button:active {
+  background: var(--line);
+  box-shadow: inset 0 0 0 4px var(--card);
 }
 #view-buttons button.on {
   color: var(--accent);
@@ -752,11 +784,6 @@ body.busy #status-pill .dot {
 #chips > * {
   pointer-events: auto;
 }
-#timeline .history {
-  display: flex;
-  gap: 6px;
-}
-#timeline .history button,
 #menu {
   width: 48px;
   height: 48px;
