@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import type { BuildResult, MeshData, PlaneDef, Vec3 } from "../types";
+import type { BuildResult, EdgeGroup, MeshData, PlaneDef, Vec3 } from "../types";
 
 export const V = (v: Vec3) => new THREE.Vector3(v[0], v[1], v[2]);
 
@@ -40,6 +40,9 @@ export class Viewport {
   private gridGroup = new THREE.Group();
   private mesh: THREE.Mesh | null = null;
   private faceGroups: MeshData["faceGroups"] = [];
+  private edgeLines: Float32Array<ArrayBufferLike> = new Float32Array();
+  private edgeGroups: EdgeGroup[] = [];
+  private edgeHighlight: THREE.Object3D | null = null;
   private highlight: THREE.Mesh | null = null;
   private lineMaterials: LineMaterial[] = [];
   private needsRender = true;
@@ -357,6 +360,9 @@ export class Viewport {
   setModel(r: BuildResult | null) {
     disposeChildren(this.modelGroup);
     this.mesh = null;
+    this.edgeHighlight = null;
+    this.edgeLines = new Float32Array();
+    this.edgeGroups = [];
     this.clearHighlight();
     if (!r?.mesh) {
       this.requestRender();
@@ -376,6 +382,8 @@ export class Viewport {
     });
     this.mesh = new THREE.Mesh(g, mat);
     this.faceGroups = r.mesh.faceGroups;
+    this.edgeLines = r.edges;
+    this.edgeGroups = r.edgeGroups;
     this.modelGroup.add(this.mesh);
     if (r.edges.length) {
       const edge = new THREE.Color(cssVar("--edge", "#141414"));
@@ -429,6 +437,72 @@ export class Viewport {
     );
     this.highlight.renderOrder = 5;
     this.modelGroup.add(this.highlight);
+    this.requestRender();
+  }
+
+  /**
+   * B-rep edge under a screen point (index into the build's edgeGroups), within `radius` px.
+   * Edges hidden behind the model are ignored.
+   */
+  pickEdge(x: number, y: number, radius: number): number | null {
+    const L = this.edgeLines;
+    let best: { i: number; d: number; p: THREE.Vector3 } | null = null;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    this.edgeGroups.forEach((g, i) => {
+      for (let k = g.start; k < g.start + g.count; k += 2) {
+        a.fromArray(L, k * 3);
+        b.fromArray(L, (k + 1) * 3);
+        const [ax, ay] = this.toScreen(a);
+        const [bx, by] = this.toScreen(b);
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2)) : 0;
+        const d = Math.hypot(ax + t * dx - x, ay + t * dy - y);
+        if (d < radius && (!best || d < best.d)) best = { i, d, p: a.clone().lerp(b, t) };
+      }
+    });
+    if (!best) return null;
+    const hit = best as { i: number; d: number; p: THREE.Vector3 };
+    // Visible only if nothing of the model is clearly in front of that point.
+    if (this.mesh) {
+      const rc = this.ray(x, y);
+      const front = rc.intersectObject(this.mesh)[0];
+      const toEdge = hit.p.clone().sub(rc.ray.origin).dot(rc.ray.direction);
+      if (front && front.distance < toEdge - Math.max(this.viewHeight * 0.01, 0.05)) return null;
+    }
+    return hit.i;
+  }
+
+  /** Index of the build's edge whose midpoint is at `mid`, if any. */
+  edgeAt(mid: Vec3): number | null {
+    const i = this.edgeGroups.findIndex((g) => Math.hypot(g.mid[0] - mid[0], g.mid[1] - mid[1], g.mid[2] - mid[2]) < 0.05);
+    return i < 0 ? null : i;
+  }
+
+  edgeMid(i: number): Vec3 {
+    return this.edgeGroups[i].mid;
+  }
+
+  /** Draws chosen edges thick, in the accent colour, over the model. */
+  highlightEdges(indices: number[]) {
+    if (this.edgeHighlight) {
+      this.modelGroup.remove(this.edgeHighlight);
+      this.edgeHighlight = null;
+    }
+    const pos: number[] = [];
+    for (const i of indices) {
+      const g = this.edgeGroups[i];
+      if (g) pos.push(...this.edgeLines.slice(g.start * 3, (g.start + g.count) * 3));
+    }
+    if (pos.length) {
+      const c = new THREE.Color(cssVar("--accent", "#ffb648"));
+      const colors: number[] = [];
+      for (let k = 0; k < pos.length / 3; k++) colors.push(c.r, c.g, c.b);
+      this.edgeHighlight = this.makeLines({ positions: pos, colors, width: 5, overlay: true });
+      this.modelGroup.add(this.edgeHighlight);
+    }
     this.requestRender();
   }
 

@@ -1,7 +1,7 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, type Drawing, type Face, type Shape3D } from "replicad";
-import type { BuildResult, CadDocument, ExtrudeFeature, FaceRef, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, type Drawing, type Face, type Shape3D } from "replicad";
+import type { BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, FaceRef, FilletFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { findRegions } from "../sketch/profiles";
 
 const MESH_OPTS = { tolerance: 0.01, angularTolerance: 0.1 };
@@ -70,6 +70,24 @@ function shell(shape: Shape3D, f: ShellFeature): Shape3D {
   return shape.shell(f.thickness, (finder) => finder.either(f.faces.map((ref) => (g: FaceFinder) => g.containsPoint(ref.center))));
 }
 
+/** Distance (mm) between a stored edge midpoint and the edge it designates. */
+const EDGE_MATCH_TOL = 0.05;
+
+function fillet(shape: Shape3D, f: FilletFeature): Shape3D {
+  if (!f.edges.length) throw new Error("Choose at least one edge");
+  if (f.radius <= 0) throw new Error(f.mode === "fillet" ? "The radius must be positive" : "The distance must be positive");
+  for (const e of f.edges) {
+    if (!new EdgeFinder().withinDistance(EDGE_MATCH_TOL, e.mid).find(shape).length)
+      throw new Error("An edge is no longer there (an earlier feature changed it)");
+  }
+  const filter = new EdgeFinder().either(f.edges.map((e) => (g: EdgeFinder) => g.withinDistance(EDGE_MATCH_TOL, e.mid)));
+  try {
+    return f.mode === "fillet" ? shape.fillet({ filter, radius: f.radius }) : shape.chamfer({ filter, radius: f.radius });
+  } catch {
+    throw new Error(`${f.mode === "fillet" ? "Radius" : "Distance"} too large for these edges`);
+  }
+}
+
 /** Replays the features; a failing feature is skipped and reported. */
 export function buildShape(doc: CadDocument) {
   let shape: Shape3D | null = null;
@@ -80,10 +98,12 @@ export function buildShape(doc: CadDocument) {
       sketches.set(f.id, f);
       continue;
     }
-    if (f.kind === "pushpull" || f.kind === "shell") {
+    if (f.kind === "pushpull" || f.kind === "shell" || f.kind === "fillet") {
       try {
         if (!shape) throw new Error("There is no solid yet");
-        shape = (f.kind === "pushpull" ? pushPull(shape, f) : shell(shape, f)).simplify();
+        const next: Shape3D = f.kind === "pushpull" ? pushPull(shape, f) : f.kind === "shell" ? shell(shape, f) : fillet(shape, f);
+        // Simplifying after a fillet would merge its faces with flat neighbours: skip it there.
+        shape = f.kind === "fillet" ? next : next.simplify();
       } catch (e) {
         errors[f.id] = e instanceof Error ? e.message : String(e);
       }
@@ -108,7 +128,7 @@ export function buildShape(doc: CadDocument) {
 
 export function buildResult(doc: CadDocument): BuildResult {
   const { shape, errors } = buildShape(doc);
-  if (!shape) return { mesh: null, edges: new Float32Array(), planarFaces: [], errors };
+  if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors };
   const m = shape.mesh(MESH_OPTS);
   const e = shape.meshEdges(MESH_OPTS);
   return {
@@ -119,6 +139,7 @@ export function buildResult(doc: CadDocument): BuildResult {
       faceGroups: m.faceGroups,
     },
     edges: new Float32Array(e.lines),
+    edgeGroups: e.edgeGroups.map((g): EdgeGroup => ({ start: g.start, count: g.count, mid: polylineMid(e.lines, g.start, g.count) })),
     planarFaces: planarFaces(shape),
     errors,
   };
@@ -143,6 +164,30 @@ function planarFaces(shape: Shape3D): PlanarFace[] {
     out.push({ faceId, center: interiorPoint(face, center), plane: { origin, xDir: scale(xDir, 1 / len), normal, label: "Face" } satisfies PlaneDef });
   }
   return out;
+}
+
+/** Point at half the length of an edge polyline (within the mesh tolerance of the real edge). */
+function polylineMid(lines: number[], start: number, count: number): Vec3 {
+  const seg = lines.slice(start * 3, (start + count) * 3);
+  const n = seg.length / 6;
+  const lengths: number[] = [];
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const j = i * 6;
+    const l = Math.hypot(seg[j + 3] - seg[j], seg[j + 4] - seg[j + 1], seg[j + 5] - seg[j + 2]);
+    lengths.push(l);
+    total += l;
+  }
+  let target = total / 2;
+  for (let i = 0; i < n; i++) {
+    const j = i * 6;
+    if (target <= lengths[i] || i === n - 1) {
+      const t = lengths[i] > 0 ? Math.min(target / lengths[i], 1) : 0;
+      return [seg[j] + (seg[j + 3] - seg[j]) * t, seg[j + 1] + (seg[j + 4] - seg[j + 1]) * t, seg[j + 2] + (seg[j + 5] - seg[j + 2]) * t];
+    }
+    target -= lengths[i];
+  }
+  return [seg[0], seg[1], seg[2]];
 }
 
 /**

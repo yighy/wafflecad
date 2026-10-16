@@ -133,6 +133,8 @@ export function* expressionSlots(doc: CadDocument): Generator<{ get: () => strin
       if (f.distanceExpr) yield { get: () => f.distanceExpr!, set: (e) => (f.distanceExpr = e) };
     } else if (f.kind === "shell" && f.thicknessExpr) {
       yield { get: () => f.thicknessExpr!, set: (e) => (f.thicknessExpr = e) };
+    } else if (f.kind === "fillet" && f.radiusExpr) {
+      yield { get: () => f.radiusExpr!, set: (e) => (f.radiusExpr = e) };
     }
   }
 }
@@ -146,7 +148,9 @@ export function usedNames(doc: CadDocument, except?: string): Set<string> {
         ? f.constraints.map((c) => c.expr ?? "")
         : f.kind === "shell"
           ? [f.thicknessExpr ?? ""]
-          : [f.distanceExpr ?? ""];
+          : f.kind === "fillet"
+            ? [f.radiusExpr ?? ""]
+            : [f.distanceExpr ?? ""];
     for (const e of exprs) for (const n of identifiers(e)) out.add(n);
   }
   for (const p of doc.parameters ?? []) if (p.name !== except) for (const n of identifiers(p.expr)) out.add(n);
@@ -185,6 +189,11 @@ export function applyParameters(doc: CadDocument, solver: Solver): string[] {
       if (v === null) continue;
       if (v <= 0) problems.push(`${f.name}: the thickness must be positive`);
       else f.thickness = v;
+    } else if (f.kind === "fillet" && f.radiusExpr) {
+      const v = val(f.radiusExpr, f.name);
+      if (v === null) continue;
+      if (v <= 0) problems.push(`${f.name}: the size must be positive`);
+      else f.radius = v;
     }
   }
   return problems;

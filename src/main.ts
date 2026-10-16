@@ -1,7 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, Parameter, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, Parameter, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
@@ -63,7 +63,8 @@ type Mode =
   | { kind: "sketch"; editor: SketchEditor }
   | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle }
   | { kind: "pushpull"; feat: PushPullFeature; keypad: KeypadHandle }
-  | { kind: "shell"; feat: ShellFeature; keypad: KeypadHandle };
+  | { kind: "shell"; feat: ShellFeature; keypad: KeypadHandle }
+  | { kind: "fillet"; feat: FilletFeature; keypad: KeypadHandle };
 
 /** Modes where a feature is being edited with the keypad open. */
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
@@ -113,6 +114,7 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     if (first && m.mesh) vp.fit();
     if (mode.kind === "sketch") vp.setModelOpacity(0.45);
     if (mode.kind === "shell") highlightShellFaces(mode.feat);
+    if (mode.kind === "fillet") highlightFilletEdges(mode.feat);
     renderTimeline();
     renderPanel();
     renderPartOverlays();
@@ -556,6 +558,89 @@ async function shell(existing?: ShellFeature, ref?: FaceRef) {
   commit();
 }
 
+// ---------- Fillet / chamfer (on edges of the solid) ----------
+
+async function filletTool(existing?: FilletFeature) {
+  if (mode.kind !== "part") return;
+  if (!existing && !doc.features.some((f) => f.kind === "extrude")) return toast("Make a solid first (Sketch, then Extrude)");
+  const feat: FilletFeature = existing ?? { id: uid(), kind: "fillet", name: nextName("Fillet"), mode: "fillet", edges: [], radius: 1 };
+  const before = { mode: feat.mode, radius: feat.radius, radiusExpr: feat.radiusExpr, edges: [...feat.edges], name: feat.name };
+  if (!existing) doc.features.push(feat);
+  selectedFeature = feat.id;
+  selectedFace = null;
+  showParams = false;
+  vp.highlightFace(null);
+  // Edges are chosen on the solid as it is before the fillet.
+  previewExclude = feat.id;
+  const kp = openKeypad({
+    title: feat.name,
+    subtitle: "Tap the edges to round or bevel",
+    label: "Size",
+    value: feat.radius,
+    expr: feat.radiusExpr,
+    scope: paramScope(),
+    confirmLabel: "Confirm",
+    segments: [
+      {
+        options: [
+          { value: "fillet", label: "Fillet (round)" },
+          { value: "chamfer", label: "Chamfer (bevel)" },
+        ],
+        get: () => feat.mode,
+        set: (v) => {
+          feat.mode = v as FilletFeature["mode"];
+          // Keep the default names in step with the choice.
+          if (!existing && /^(Fillet|Chamfer) \d+$/.test(feat.name)) {
+            feat.name = nextName(feat.mode === "fillet" ? "Fillet" : "Chamfer");
+            renderTimeline();
+          }
+        },
+      },
+    ],
+    onInput: (v) => {
+      if (v > 0) feat.radius = v;
+    },
+  });
+  mode = { kind: "fillet", feat, keypad: kp };
+  renderAll();
+  rebuild(true);
+
+  const res = await kp.result;
+  const value = res?.value ?? null;
+  previewExclude = null;
+  mode = { kind: "part" };
+  vp.highlightEdges([]);
+  if (value === null || value <= 0 || !feat.edges.length) {
+    if (value !== null && !feat.edges.length) toast("Tap at least one edge");
+    if (existing) Object.assign(feat, before);
+    else {
+      doc.features = doc.features.filter((x) => x !== feat);
+      selectedFeature = null;
+    }
+    rebuild(true);
+    renderAll();
+    return;
+  }
+  feat.radius = value;
+  feat.radiusExpr = res?.expr;
+  commit();
+}
+
+function highlightFilletEdges(feat: FilletFeature) {
+  vp.highlightEdges(feat.edges.map((e) => vp.edgeAt(e.mid)).filter((i): i is number => i !== null));
+}
+
+function toggleFilletEdge(feat: FilletFeature, p: Ptr) {
+  const i = vp.pickEdge(p.x, p.y, p.kind === "touch" ? 24 : p.kind === "pen" ? 14 : 9);
+  if (i === null) return;
+  const mid = vp.edgeMid(i);
+  const k = feat.edges.findIndex((e) => Math.hypot(e.mid[0] - mid[0], e.mid[1] - mid[1], e.mid[2] - mid[2]) < 0.05);
+  if (k >= 0) feat.edges.splice(k, 1);
+  else feat.edges.push({ mid });
+  highlightFilletEdges(feat);
+  renderStatus();
+}
+
 const sameFace = (a: FaceRef, center: Vec3, normal: Vec3) =>
   Math.hypot(a.center[0] - center[0], a.center[1] - center[1], a.center[2] - center[2]) < 1e-3 &&
   a.normal[0] * normal[0] + a.normal[1] * normal[1] + a.normal[2] * normal[2] > 0.999;
@@ -853,6 +938,7 @@ function renderTools() {
       toolRow("pushpull", "Press Pull", () => faceTool("pushpull"), { active: mode.kind === "pushpull" || pendingFaceTool === "pushpull", key: "Q" }),
     );
     el.appendChild(toolRow("shell", "Shell", () => faceTool("shell"), { active: mode.kind === "shell" || pendingFaceTool === "shell", key: "K" }));
+    el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { active: mode.kind === "fillet", key: "R" }));
     el.appendChild(section("Design"));
     el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
   }
@@ -943,6 +1029,7 @@ function renderPanel() {
       items.push(["extrude", "Extrude", () => void extrude()]);
     } else if (f.kind === "extrude") items.push(["edit", "Edit", () => void extrude(f)]);
     else if (f.kind === "pushpull") items.push(["edit", "Edit", () => void pushPull(f)]);
+    else if (f.kind === "fillet") items.push(["edit", "Edit", () => void filletTool(f)]);
     else items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
     items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
@@ -973,6 +1060,8 @@ function featureDetail(f: Feature) {
   if (f.kind === "sketch") return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}`;
   if (f.kind === "pushpull") return `${f.distance >= 0 ? "Pull" : "Push"} · ${fmtNum(Math.abs(f.distance))} mm`;
   if (f.kind === "shell") return `${fmtNum(f.thickness)} mm walls · ${f.faces.length} open face${f.faces.length > 1 ? "s" : ""}`;
+  if (f.kind === "fillet")
+    return `${f.mode === "fillet" ? "Radius" : "Chamfer"} ${fmtNum(f.radius)} mm · ${f.edges.length} edge${f.edges.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
   return `${op} · ${fmtNum(Math.abs(f.distance))} mm${f.symmetric ? " · symmetric" : ""}`;
 }
@@ -981,6 +1070,7 @@ function featureIcon(f: Feature) {
   if (f.kind === "sketch") return "rect";
   if (f.kind === "pushpull") return "pushpull";
   if (f.kind === "shell") return "shell";
+  if (f.kind === "fillet") return f.mode === "fillet" ? "fillet" : "chamfer";
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
 }
 
@@ -1032,6 +1122,10 @@ function renderStatus() {
   } else if (mode.kind === "extrude") s = "Extrude · drag the handle or type a value";
   else if (mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
   else if (mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
+  else if (mode.kind === "fillet") {
+    const n = mode.feat.edges.length;
+    s = `${mode.feat.mode === "fillet" ? "Fillet" : "Chamfer"} · ${n ? `${n} edge${n > 1 ? "s" : ""} chosen` : "tap the edges"}, type the size`;
+  }
   else if (pendingFaceTool) s = `${pendingFaceTool === "shell" ? "Shell" : "Press Pull"} · tap a flat face`;
   $("#status").textContent = s;
 }
@@ -1120,6 +1214,7 @@ const partTool: PointerTool = {
       if (face != null) toggleShellFace(mode.feat, face);
       return;
     }
+    if (mode.kind === "fillet") return toggleFilletEdge(mode.feat, p);
     if (mode.kind !== "part") return;
     vp.highlightFace(face);
     selectedFeature = null;
@@ -1332,6 +1427,7 @@ window.addEventListener("keydown", (e) => {
     else if (key === "e") void extrude();
     else if (key === "q") faceTool("pushpull");
     else if (key === "p") toggleParams();
+    else if (key === "r") void filletTool();
     else if (key === "k") faceTool("shell");
     else if (key === "f") vp.fit();
     else if (key === "delete" && selectedFeature) {

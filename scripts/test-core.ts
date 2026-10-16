@@ -174,6 +174,22 @@ const topFace = pfs.find((f) => near(f.plane.normal[2], 1));
 const pp2 = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: topFace!.center, normal: topFace!.plane.normal }, distance: 2 }));
 check("planarFaces centre works as reference", !pp2.errors.pp && near(pp2.shape!.boundingBox.bounds[1][2], 7), JSON.stringify(pp2.errors));
 
+// --- Fillets and chamfers on the 20 × 10 × 5 block.
+const topFront = { mid: [10, 0, 5] as [number, number, number] };
+const topBack = { mid: [10, 10, 5] as [number, number, number] };
+const fl = buildShape(block({ id: "fl", kind: "fillet", name: "F", mode: "fillet", edges: [topFront, topBack], radius: 1 }));
+const blockVol = 1000;
+const filletLoss = 2 * 20 * (1 - Math.PI / 4); // two 20 mm edges, r = 1
+check("fillet two edges", !fl.errors.fl && near(measureVolume(fl.shape!), blockVol - filletLoss, 1e-3), `${JSON.stringify(fl.errors)} vol=${fl.shape && measureVolume(fl.shape)}`);
+const ch = buildShape(block({ id: "ch", kind: "fillet", name: "C", mode: "chamfer", edges: [topFront], radius: 2 }));
+check("chamfer one edge", !ch.errors.ch && near(measureVolume(ch.shape!), blockVol - 20 * 2, 1e-3), `${JSON.stringify(ch.errors)} vol=${ch.shape && measureVolume(ch.shape)}`);
+const big = buildShape(block({ id: "bg", kind: "fillet", name: "B", mode: "fillet", edges: [topFront], radius: 50 }));
+check("too large radius reported", !!big.errors.bg, JSON.stringify(big.errors));
+const gone = buildShape(block({ id: "gn", kind: "fillet", name: "G", mode: "fillet", edges: [{ mid: [10, 0, 9] }], radius: 1 }));
+check("missing edge reported", !!gone.errors.gn, JSON.stringify(gone.errors));
+const groups = buildResult(block()).edgeGroups;
+check("12 edge groups with midpoints", groups.length === 12 && groups.some((g) => near(g.mid[0], 10) && near(g.mid[1], 0) && near(g.mid[2], 5)), String(groups.length));
+
 // --- Parameters and expressions.
 check("expression with names", evaluate("2 * w + 5", { w: 10 }) === 25);
 check("unknown name fails", evaluate("w + 1", {}) === null);

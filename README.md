@@ -6,7 +6,7 @@ A parametric 3D CAD that runs in the browser and is designed first for **fingers
 - Constrained 2D sketches, solved by FreeCAD's solver ([planegcs](https://github.com/Salusoft89/planegcs), WebAssembly)
 - Exact B-rep solids with OpenCascade ([replicad](https://replicad.xyz), WebAssembly, in a worker)
 - Feature history in the style of Onshape/FreeCAD: Sketch → Extrude (join / cut / intersect), Press Pull, Shell,
-  every feature editable
+  Fillet / Chamfer, every feature editable
 - **STEP** export for other CAD software, **STL** for slicers
 - Installable PWA, works offline once loaded
 
@@ -84,7 +84,14 @@ Tap a flat face of the solid: the right panel offers **Sketch on this face**, **
 - **Shell**: hollows the solid with walls of the given thickness, leaving the chosen faces open.
   While the keypad is open, tap more faces to open or close them.
 
-Faces are found again by a point on them and their normal. If an earlier change moves the face,
+## Fillets and chamfers
+
+**Fillet / Chamfer** (or `R`): tap the edges to round or bevel (tap again to drop one), type the size,
+choose Fillet or Chamfer, then Confirm. Edges hidden behind the model cannot be picked: rotate the view
+with two fingers to reach them. Like Shell, the edges are chosen on the solid as it is before the feature,
+so the rounding appears after Confirm. A radius too large for the chosen edges is reported in red in the timeline.
+
+Faces are found again by a point on them and their normal, edges by the point at the middle of their length. If an earlier change moves the face,
 the feature turns red in the timeline instead of applying somewhere else.
 
 Optional keyboard shortcuts: `L` line, `R` rectangle, `C` circle, `A` arc, `P` point, `G` construction,
@@ -115,6 +122,6 @@ It is saved automatically in the browser; **Save** / **Open** use `.json` files.
 ## Known limitations
 
 - A sketch on a face stores a copy of the face's plane: it does not follow the face if earlier features change.
-- No fillets, chamfers, revolve or patterns yet.
+- No revolve, holes or patterns yet.
 - Shell faces are chosen on the solid as it is before the shell, so the preview shows the shell only after Confirm.
 - One body: every extrusion adds to, cuts or intersects the same solid.

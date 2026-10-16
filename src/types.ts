@@ -139,7 +139,24 @@ export interface ShellFeature {
   thicknessExpr?: string;
 }
 
-export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature;
+/** An edge of the solid, found again on rebuild by the point at the middle of its length. */
+export interface EdgeRef {
+  mid: Vec3;
+}
+
+/** Rounds (fillet) or bevels (chamfer) edges of the solid. */
+export interface FilletFeature {
+  id: string;
+  kind: "fillet";
+  name: string;
+  mode: "fillet" | "chamfer";
+  edges: EdgeRef[];
+  /** Fillet radius, or chamfer distance. */
+  radius: number;
+  radiusExpr?: string;
+}
+
+export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature | FilletFeature;
 
 /** A named value usable in any dimension or feature value. */
 export interface Parameter {
@@ -182,6 +199,12 @@ export interface MeshData {
   faceGroups: { start: number; count: number; faceId: number }[];
 }
 
+export interface EdgeGroup {
+  start: number;
+  count: number;
+  mid: Vec3;
+}
+
 export interface PlanarFace {
   faceId: number;
   plane: PlaneDef;
@@ -193,6 +216,8 @@ export interface BuildResult {
   mesh: MeshData | null;
   /** Polylines of B-rep edges: pairs of points x,y,z,x,y,z… */
   edges: Float32Array;
+  /** One entry per B-rep edge: its segments in `edges` (in points) and its mid-length point. */
+  edgeGroups: EdgeGroup[];
   planarFaces: PlanarFace[];
   /** Feature id → error message, for features that could not be built. */
   errors: Record<string, string>;

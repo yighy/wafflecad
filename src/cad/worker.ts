@@ -33,6 +33,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         reqId: req.reqId,
         mesh: null,
         edges: new Float32Array(),
+        edgeGroups: [],
         planarFaces: [],
         errors: { _: String(e) },
       });
