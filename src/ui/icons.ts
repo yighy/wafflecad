@@ -29,6 +29,7 @@ const P: Record<string, string> = {
   chevron: '<path d="M9 6l6 6-6 6"/>',
   cut: '<path d="M12 21v-9M8.5 17.5 12 21l3.5-3.5"/><path d="M4 6l8-3.5L20 6l-8 3.5z"/>',
   intersect: '<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/>',
+  home: '<path d="M4 11 12 4l8 7"/><path d="M6 10v10h12V10"/><path d="M10 20v-5h4v5"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
 };
 

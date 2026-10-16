@@ -39,8 +39,9 @@ The 3D view fills the screen; the controls float above it.
 
 - **Left**: the tools of the current mode, grouped by section. The panel folds down to icons only.
 - **Right**: a panel for the current selection: constraints in a sketch, actions for a feature or a face,
-  and the keypad when a value is being typed.
-- **Top right**: a view cube (tap a face to look from that side), then Fit, Isometric, Grid, and Look at sketch.
+  and the keypad when a value is being typed. Drag its top bar to move it anywhere (double tap the bar to put it back).
+- **Top right**: an axis gizmo (tap X, Y, Z or their opposites to look along that axis, tap the house for the
+  isometric view, drag the gizmo to rotate), then Fit, Isometric, Grid, and Look at sketch.
 - **Bottom**: the feature history as a timeline (tap a step to edit, rename or delete it), Undo/Redo, and the menu.
 - An extrusion shows a handle that can be pulled along the sketch normal, next to the keypad.
 

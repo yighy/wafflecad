@@ -9,7 +9,7 @@ import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor"
 import { SketchView, newSketch, uid } from "./sketch/model";
 import { openKeypad, setKeypadHost, type KeypadHandle } from "./ui/keypad";
 import { icon } from "./ui/icons";
-import { createViewCube } from "./ui/viewcube";
+import { createAxisGizmo } from "./ui/axisGizmo";
 import { ExtrudeHandle } from "./ui/extrudeHandle";
 import { findRegions } from "./sketch/profiles";
 
@@ -31,8 +31,10 @@ const buttons = (sel: string) => [...document.querySelectorAll<HTMLButtonElement
 interface Prefs {
   theme: "light" | "dark";
   collapsed: boolean;
+  /** Where the user dragged the side panel (top-left corner, CSS px); null = default place. */
+  panelPos: { x: number; y: number } | null;
 }
-const prefs: Prefs = { theme: "light", collapsed: false };
+const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null };
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
 } catch {
@@ -834,6 +836,68 @@ function setupMenu() {
   });
 }
 
+// ---------- Movable side panel ----------
+
+/** Phones show the panel as a bottom sheet: no free placement there. */
+const narrow = window.matchMedia("(max-width: 760px)");
+
+function placePanel() {
+  const panel = $("#panel");
+  const pos = prefs.panelPos;
+  if (!pos || narrow.matches) {
+    panel.style.left = panel.style.top = panel.style.right = panel.style.transform = "";
+    return;
+  }
+  const w = panel.offsetWidth || 272;
+  const h = panel.offsetHeight || 200;
+  // Stay clear of the timeline at the bottom when there is room for it.
+  const bottom = window.innerHeight - ($("#timeline").offsetHeight + 24);
+  const x = Math.min(Math.max(pos.x, 8), window.innerWidth - w - 8);
+  const y = Math.max(Math.min(pos.y, (h <= bottom - 8 ? bottom : window.innerHeight - 8) - h), 8);
+  Object.assign(panel.style, { left: `${x}px`, top: `${y}px`, right: "auto", transform: "none" });
+}
+
+function setupPanelDrag() {
+  const panel = $("#panel");
+  const grip = panel.querySelector<HTMLElement>(".panel-grip")!;
+  let drag: { id: number; dx: number; dy: number } | null = null;
+  grip.addEventListener("pointerdown", (e) => {
+    if (narrow.matches) return;
+    e.preventDefault();
+    try {
+      grip.setPointerCapture(e.pointerId);
+    } catch {
+      // Synthetic pointer.
+    }
+    const r = panel.getBoundingClientRect();
+    drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
+    panel.classList.add("dragging");
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!drag || drag.id !== e.pointerId) return;
+    prefs.panelPos = { x: e.clientX - drag.dx, y: e.clientY - drag.dy };
+    placePanel();
+  });
+  const end = () => {
+    if (!drag) return;
+    drag = null;
+    panel.classList.remove("dragging");
+    savePrefs();
+  };
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+  // Double tap on the bar puts the panel back in its default place.
+  grip.addEventListener("dblclick", () => {
+    prefs.panelPos = null;
+    savePrefs();
+    placePanel();
+  });
+  window.addEventListener("resize", placePanel);
+  narrow.addEventListener("change", placePanel);
+  // The panel changes height with its content (keypad, constraints): keep it on screen.
+  new MutationObserver(placePanel).observe(panel, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+}
+
 // ---------- Toasts ----------
 
 let toastTimer = 0;
@@ -902,6 +966,8 @@ window.addEventListener("popstate", () => {
 
 async function boot() {
   setKeypadHost($("#panel"));
+  setupPanelDrag();
+  placePanel();
   setupMenu();
   for (const b of buttons(".undo-btn")) {
     b.innerHTML = icon("undo", 22);
@@ -911,7 +977,7 @@ async function boot() {
     b.innerHTML = icon("redo", 22);
     b.onclick = redo;
   }
-  createViewCube($("#viewcube"), vp, 62);
+  createAxisGizmo($("#gizmo"), vp, 124);
   $("#help-close").onclick = () => $("#help").classList.remove("open");
   renderAll();
   solver = await Solver.create(planegcsWasm);

@@ -25,6 +25,7 @@
   --sk-fill: #4dabf7;
   --axis-x: #e03131;
   --axis-y: #2f9e44;
+  --axis-z: #1c7ed6;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 4px 14px rgba(16, 24, 40, 0.08);
   --radius: 14px;
   --tap: 52px;
@@ -149,38 +150,51 @@ button.danger {
   color: var(--muted);
   margin: 10px 4px 2px;
 }
-/* One tool = one button: icon tile and label in a single target. */
+/* A tool looks like two separate cards (icon, label) but is a single button:
+   tapping either card works. */
 .tool {
   flex: none;
   justify-content: flex-start;
   height: var(--tap);
-  padding: 0 14px 0 6px;
+  padding: 0;
   border: none;
-  box-shadow: var(--shadow);
+  background: transparent;
   font-weight: 600;
-  gap: 12px;
+  gap: 6px;
 }
-.tool .tile {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+.tool .tile,
+.tool .label {
+  height: 100%;
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: var(--shadow);
   display: flex;
   align-items: center;
+}
+.tool .tile {
+  width: var(--tap);
   justify-content: center;
-  background: var(--card2);
   flex: none;
 }
-.tool.active {
-  background: var(--dark);
-  color: var(--on-dark);
+.tool .label {
+  flex: 1;
+  padding: 0 14px;
 }
 .tool.active .tile {
   background: var(--accent);
   color: var(--on-accent);
 }
+.tool.active .label {
+  background: var(--dark);
+  color: var(--on-dark);
+}
 .tool.on .tile {
   background: var(--accent-soft);
   color: var(--accent);
+}
+.tool:active .tile,
+.tool:active .label {
+  filter: brightness(0.94);
 }
 #collapse {
   flex: none;
@@ -193,9 +207,6 @@ button.danger {
 }
 body.collapsed #tools {
   width: 64px;
-}
-body.collapsed .tool {
-  padding: 0 6px;
 }
 body.collapsed .tool .label,
 body.collapsed .section {
@@ -250,32 +261,62 @@ body.busy #status-pill .dot {
   right: calc(var(--gap) + 6px);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-end;
   gap: 16px;
   z-index: 10;
 }
-.viewcube {
+.gizmo {
   position: relative;
-  transform-style: preserve-3d;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
-.vc-face {
+.gizmo-home {
   position: absolute;
-  left: 0;
-  top: 0;
+  left: -6px;
+  top: -6px;
+  width: 40px;
+  height: 40px;
   min-width: 0;
   min-height: 0;
   padding: 0;
-  border-radius: 4px;
-  border: 1px solid var(--edge);
-  background: var(--card);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  backface-visibility: hidden;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  z-index: 1;
 }
-.vc-face:active {
-  background: var(--accent-soft);
+.gizmo-svg {
+  touch-action: none;
+  cursor: grab;
+  overflow: visible;
+}
+.gizmo-line {
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.gizmo-bubble {
+  cursor: pointer;
+}
+.gizmo-bubble circle {
+  stroke: var(--c);
+  stroke-width: 2;
+}
+.gizmo-bubble text {
+  font: 700 13px system-ui, sans-serif;
+  pointer-events: none;
+}
+.gizmo-bubble.pos circle {
+  fill: var(--c);
+}
+.gizmo-bubble.pos text {
+  fill: #fff;
+}
+.gizmo-bubble.neg circle {
+  fill: color-mix(in srgb, var(--c) 22%, var(--card));
+  stroke: color-mix(in srgb, var(--c) 70%, transparent);
+}
+.gizmo-bubble.neg text {
+  fill: var(--c);
 }
 #view-buttons {
   display: flex;
@@ -309,6 +350,29 @@ body.busy #status-pill .dot {
   border-radius: 18px;
   box-shadow: var(--shadow);
   padding: 14px;
+}
+/* Grab bar: the panel (and its keypad) can be dragged anywhere. */
+.panel-grip {
+  height: 22px;
+  margin: -8px -8px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none;
+}
+.panel-grip::before {
+  content: "";
+  width: 44px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--line);
+}
+#panel.dragging {
+  opacity: 0.92;
+}
+#panel.dragging .panel-grip {
+  cursor: grabbing;
 }
 #panel:has(#panel-content:empty):not(.keypad-open) {
   display: none;
@@ -783,9 +847,6 @@ body.busy #status-pill .dot {
   #tools,
   body.collapsed #tools {
     width: 56px;
-  }
-  .tool {
-    padding: 0 6px;
   }
   .tool .label,
   .section,
