@@ -1387,6 +1387,20 @@ function renderTools() {
     el.appendChild(section("Design"));
     el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
   }
+  // Consecutive tools of a section share one icon column; their labels stay separate cards.
+  let group: HTMLElement | null = null;
+  for (const child of [...el.children]) {
+    if (!child.classList.contains("tool")) {
+      group = null;
+      continue;
+    }
+    if (!group) {
+      group = document.createElement("div");
+      group.className = "tool-group";
+      child.before(group);
+    }
+    group.appendChild(child);
+  }
 }
 
 /** Right panel: what can be done with the current selection. */
