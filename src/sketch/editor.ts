@@ -48,6 +48,8 @@ const COLORS = {
 };
 const TAP = 8;
 const AUTO_HV_DEG = 4;
+/** Magnifier under the finger while drawing. Off for now: the target is tablets, with room to see. */
+const LOUPE = false;
 
 const hitRadius = (k: Ptr["kind"]) => (k === "touch" ? 26 : k === "pen" ? 16 : 10);
 
@@ -274,7 +276,7 @@ export class SketchEditor implements PointerTool {
     this.press = { p, snap: this.snap(p), hit: hit?.id ?? null, moved: false };
     if (this.tool !== "select") {
       this.cursor = this.toolSnap(p);
-      if (p.kind === "touch") this.vp.loupe = { x: p.x, y: p.y };
+      if (LOUPE && p.kind === "touch") this.vp.loupe = { x: p.x, y: p.y };
       this.render();
     }
   }
@@ -286,7 +288,7 @@ export class SketchEditor implements PointerTool {
       pr.moved = true;
       if (this.tool === "select") this.beginDrag(pr);
     }
-    if (p.kind === "touch" && (this.tool !== "select" || this.dragState)) this.vp.loupe = { x: p.x, y: p.y };
+    if (LOUPE && p.kind === "touch" && (this.tool !== "select" || this.dragState)) this.vp.loupe = { x: p.x, y: p.y };
 
     if (this.tool === "select") {
       if (this.dragState) this.dragTo(p);

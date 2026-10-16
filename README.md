@@ -32,7 +32,6 @@ npm run dev
 | Right mouse drag / middle drag / wheel | Rotate / pan / zoom |
 
 While a stylus touches the screen, finger contacts are ignored (palm rejection).
-When drawing with a finger, a loupe shows the area under it.
 
 ## Sketching
 
