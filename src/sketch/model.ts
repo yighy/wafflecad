@@ -1,5 +1,5 @@
 // Pure helpers over the sketch data model (no DOM, no solver).
-import type { PlaneDef, SkArc, SkConstraint, SkCurve, SkEntity, SkPoint, SketchFeature } from "../types";
+import type { PlaneDef, SkArc, SkConstraint, SkCurve, SkEntity, SkPoint, SketchFeature, Vec3 } from "../types";
 
 export const ORIGIN = "O";
 export const X_AXIS = "AX";
@@ -145,6 +145,21 @@ export function mergePoints(sk: SketchFeature, keep: string, drop: string) {
     .map((c) => ({ ...c, refs: c.refs.map(sub) }))
     .filter((c) => new Set(c.refs).size === c.refs.length || c.type === "symmetric");
   if (collapsed.length) deleteEntities(sk, collapsed);
+}
+
+/** World points of a sketch line's two ends. */
+export function sketchLineWorld(sk: SketchFeature, lineId: string): [Vec3, Vec3] {
+  const line = sk.entities.find((e) => e.id === lineId);
+  if (!line || line.type !== "line") throw new Error("The revolve axis line is no longer in the sketch");
+  const pt = (id: string): [number, number] => {
+    const p = sk.entities.find((e) => e.id === id);
+    if (!p || p.type !== "point") throw new Error("The revolve axis line is broken");
+    return [p.x, p.y];
+  };
+  const { origin: o, xDir: xd, normal: n } = sk.plane;
+  const yd: Vec3 = [n[1] * xd[2] - n[2] * xd[1], n[2] * xd[0] - n[0] * xd[2], n[0] * xd[1] - n[1] * xd[0]];
+  const w = ([x, y]: [number, number]): Vec3 => [0, 1, 2].map((i) => o[i] + xd[i] * x + yd[i] * y) as Vec3;
+  return [w(pt(line.p1)), w(pt(line.p2))];
 }
 
 export function constraintLabel(c: SkConstraint): string {

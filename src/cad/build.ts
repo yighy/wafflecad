@@ -1,8 +1,9 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
 import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, type Drawing, type Face, type Shape3D } from "replicad";
-import type { Axis, BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import type { Axis, BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
+import { sketchLineWorld } from "../sketch/model";
 import { findRegions } from "../sketch/profiles";
 
 const MESH_OPTS = { tolerance: 0.01, angularTolerance: 0.1 };
@@ -43,6 +44,26 @@ function extrudeSolid(sk: SketchFeature, f: ExtrudeFeature): Shape3D {
   const plane = new Plane(origin, sk.plane.xDir, n);
   const sketch = drawing.sketchOnPlane(plane);
   return sketch.extrude(f.symmetric ? 2 * d : d, { extrusionDirection: dir }) as Shape3D;
+}
+
+function revolveSolid(sk: SketchFeature, f: RevolveFeature): Shape3D {
+  const drawing = sketchDrawing(sk);
+  if (!drawing) throw new Error("The sketch has no closed region");
+  if (Math.abs(f.angle) < 1e-6) throw new Error("The angle is zero");
+  if (Math.abs(f.angle) > 360) throw new Error("The angle is more than a full turn");
+  const [a, b] = sketchLineWorld(sk, f.axisLine);
+  const dir = add(b, scale(a, -1));
+  const len = Math.hypot(...dir);
+  if (len < 1e-9) throw new Error("The axis line has no length");
+  const axis = scale(dir, 1 / len);
+  const sketch = drawing.sketchOnPlane(new Plane(sk.plane.origin, sk.plane.xDir, sk.plane.normal));
+  let solid: Shape3D;
+  try {
+    solid = (sketch as unknown as { revolve: (ax: Vec3, o: { origin: Vec3; angle: number }) => Shape3D }).revolve(axis, { origin: a, angle: f.angle });
+  } catch {
+    throw new Error("Cannot revolve: the profile must stay on one side of the axis");
+  }
+  return f.symmetric && Math.abs(f.angle) < 360 ? solid.rotate(-f.angle / 2, a, axis) : solid;
 }
 
 /** The flat face containing `ref.center` with the same outward normal, or an error. */
@@ -246,7 +267,7 @@ export function buildShape(doc: CadDocument) {
     try {
       const sk = sketches.get(f.sketchId);
       if (!sk) throw new Error("Sketch not found");
-      const solid = extrudeSolid(sk, f);
+      const solid = f.kind === "revolve" ? revolveSolid(sk, f) : extrudeSolid(sk, f);
       if (f.op !== "intersect") tools.set(f.id, { solid, op: f.op });
       if (f.op === "add" || !shape) {
         if (f.op !== "add") throw new Error("Nothing to " + f.op);

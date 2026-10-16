@@ -5,7 +5,7 @@ A parametric 3D CAD that runs in the browser and is designed first for **fingers
 
 - Constrained 2D sketches, solved by FreeCAD's solver ([planegcs](https://github.com/Salusoft89/planegcs), WebAssembly)
 - Exact B-rep solids with OpenCascade ([replicad](https://replicad.xyz), WebAssembly, in a worker)
-- Feature history in the style of Onshape/FreeCAD: Sketch → Extrude (join / cut / intersect), Press Pull, Shell,
+- Feature history in the style of Onshape/FreeCAD: Sketch → Extrude or Revolve (join / cut / intersect), Press Pull, Shell,
   Fillet / Chamfer, Hole (M2.5 to M5, counterbore, countersink), Mirror, linear/rectangular and circular
   patterns, every feature editable
 - **STEP** export for other CAD software, **STL** for slicers
@@ -74,6 +74,14 @@ Changing a parameter updates every value that uses it, re-solves the sketches an
 if a sketch cannot be solved with the new value, the change is refused with a message.
 Renaming a parameter updates every expression; deleting one that is used replaces it by its value.
 Dragging a handle replaces an expression by the dragged number.
+
+## Revolve
+
+**Revolve** (or `V`) turns the closed regions of a sketch around an axis: the sketch's X or Y axis, or a line
+of the sketch (tap it while the panel is open; a construction line is the usual choice and is picked
+automatically). Draw half of the profile on one side of the axis. The angle is 360° for a full turn;
+*Symmetric* spreads a partial turn on both sides of the sketch, *Flip direction* turns the other way.
+Revolutions can join, cut or intersect, and be repeated by patterns.
 
 ## Working on faces
 
@@ -157,7 +165,7 @@ It is saved automatically in the browser; **Save** / **Open** use `.json` files.
 ## Known limitations
 
 - A sketch on a face stores a copy of the face's plane: it does not follow the face if earlier features change.
-- No revolve yet. Patterns rotate around axes through the origin only, and their counts and spacings
+- Patterns rotate around axes through the origin only, and their counts and spacings
   cannot use parameters yet.
 - Shell faces are chosen on the solid as it is before the shell, so the preview shows the shell only after Confirm.
 - One body: every extrusion adds to, cuts or intersects the same solid.

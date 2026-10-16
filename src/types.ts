@@ -180,6 +180,21 @@ export interface HoleFeature {
   depthExpr?: string;
 }
 
+/** Turns a sketch's closed regions around a line of the sketch (or one of its axes). */
+export interface RevolveFeature {
+  id: string;
+  kind: "revolve";
+  name: string;
+  sketchId: string;
+  /** Id of a line of the sketch: "AX" / "AY" for the sketch axes, or any drawn line. */
+  axisLine: string;
+  /** Degrees; 360 = full turn. Negative turns the other way. */
+  angle: number;
+  angleExpr?: string;
+  symmetric: boolean;
+  op: ExtrudeOp;
+}
+
 export type Axis = "X" | "Y" | "Z";
 
 /**
@@ -208,7 +223,15 @@ export interface PatternFeature {
   offset: number;
 }
 
-export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature | FilletFeature | HoleFeature | PatternFeature;
+export type Feature =
+  | SketchFeature
+  | ExtrudeFeature
+  | RevolveFeature
+  | PushPullFeature
+  | ShellFeature
+  | FilletFeature
+  | HoleFeature
+  | PatternFeature;
 
 /** A named value usable in any dimension or feature value. */
 export interface Parameter {

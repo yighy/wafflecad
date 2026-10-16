@@ -1,13 +1,13 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, CadDocument, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
 import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
-import { SketchView, newSketch, uid } from "./sketch/model";
+import { SketchView, newSketch, sketchLineWorld, uid } from "./sketch/model";
 import { openKeypad, setKeypadHost, type KeypadHandle } from "./ui/keypad";
 import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
@@ -67,7 +67,8 @@ type Mode =
   | { kind: "shell"; feat: ShellFeature; keypad: KeypadHandle }
   | { kind: "fillet"; feat: FilletFeature; keypad: KeypadHandle }
   | { kind: "hole"; feat: HoleFeature; keypad: KeypadHandle }
-  | { kind: "pattern"; feat: PatternFeature; keypad: KeypadHandle };
+  | { kind: "pattern"; feat: PatternFeature; keypad: KeypadHandle }
+  | { kind: "revolve"; feat: RevolveFeature; keypad: KeypadHandle };
 
 /** Modes where a feature is being edited with the keypad open. */
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
@@ -683,6 +684,156 @@ function toggleHolePoint(feat: HoleFeature, p: Ptr) {
   renderStatus();
 }
 
+// ---------- Revolve ----------
+
+function axisName(sk: SketchFeature, lineId: string) {
+  if (lineId === "AX") return "the sketch X axis";
+  if (lineId === "AY") return "the sketch Y axis";
+  return sk.entities.some((e) => e.id === lineId) ? "a line of the sketch" : "a missing line";
+}
+
+async function revolveTool(existing?: RevolveFeature) {
+  if (isOperation(mode)) return;
+  let feat = existing;
+  if (!feat) {
+    const sk = pickSketchForExtrude();
+    if (!sk) return toast("Draw a closed sketch first (half of the profile, next to the axis)");
+    if (mode.kind === "sketch") exitSketch();
+    // A construction line is the usual way to draw a revolve axis.
+    const axis = sk.entities.find((e) => e.type === "line" && e.construction && !e.axis)?.id ?? "AY";
+    feat = { id: uid(), kind: "revolve", name: nextName("Revolve"), sketchId: sk.id, axisLine: axis, angle: 360, symmetric: false, op: "add" };
+    doc.features.push(feat);
+  }
+  const f = feat;
+  const sk = doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
+  if (!sk) return toast("This revolve's sketch is missing");
+  const before = structuredClone(f);
+  selectedFeature = f.id;
+  selectedFace = null;
+  showParams = false;
+  vp.highlightFace(null);
+  let drawnLine = f.axisLine !== "AX" && f.axisLine !== "AY" ? f.axisLine : null;
+  const subtitle = () => `${sk.name} · around ${axisName(sk, f.axisLine)}`;
+  const kp = openKeypad({
+    title: f.name,
+    subtitle: subtitle(),
+    label: "Angle (360 = full turn)",
+    unit: "°",
+    value: Math.abs(f.angle),
+    expr: f.angleExpr,
+    scope: paramScope(),
+    confirmLabel: "Confirm",
+    segments: [
+      {
+        options: [
+          { value: "AX", label: "Sketch X" },
+          { value: "AY", label: "Sketch Y" },
+          { value: "line", label: "Tapped line" },
+        ],
+        get: () => (f.axisLine === "AX" || f.axisLine === "AY" ? f.axisLine : "line"),
+        set: (v) => {
+          if (v === "line") {
+            if (!drawnLine) return toast("Tap a line of the sketch to use it as the axis");
+            f.axisLine = drawnLine;
+          } else f.axisLine = v;
+          kp.setSubtitle(subtitle());
+          renderPartOverlays();
+          rebuild();
+        },
+      },
+      {
+        options: [
+          { value: "one", label: "One side" },
+          { value: "sym", label: "Symmetric" },
+        ],
+        get: () => (f.symmetric ? "sym" : "one"),
+        set: (v) => {
+          f.symmetric = v === "sym";
+          rebuild();
+        },
+      },
+      {
+        options: [
+          { value: "add", label: "Join" },
+          { value: "cut", label: "Cut" },
+          { value: "intersect", label: "Intersect" },
+        ],
+        get: () => f.op,
+        set: (v) => {
+          f.op = v as ExtrudeOp;
+          rebuild();
+        },
+      },
+    ],
+    extras: [
+      {
+        label: "Flip direction",
+        icon: "flip",
+        run: () => {
+          f.angle = -f.angle;
+          rebuild();
+        },
+      },
+    ],
+    onInput: (v) => {
+      if (v > 0 && v <= 360) {
+        f.angle = Math.sign(f.angle || 1) * v;
+        rebuild();
+      }
+    },
+  });
+  mode = { kind: "revolve", feat: f, keypad: kp };
+  const pickAxis = (lineId: string) => {
+    drawnLine = lineId;
+    f.axisLine = lineId;
+    kp.setSubtitle(subtitle());
+    renderPartOverlays();
+    rebuild();
+  };
+  revolveAxisPicker = pickAxis;
+  renderAll();
+  rebuild(true);
+
+  const res = await kp.result;
+  revolveAxisPicker = null;
+  mode = { kind: "part" };
+  const value = res?.value ?? null;
+  if (value === null || value <= 0 || value > 360) {
+    if (value !== null) toast("The angle must be between 0 and 360°");
+    if (existing) Object.assign(f, before);
+    else {
+      doc.features = doc.features.filter((x) => x !== f);
+      selectedFeature = null;
+    }
+    rebuild(true);
+    renderAll();
+    return;
+  }
+  f.angle = Math.sign(f.angle || 1) * value;
+  f.angleExpr = res?.expr;
+  commit();
+}
+
+/** Set while a revolve is being edited: receives the line tapped as the new axis. */
+let revolveAxisPicker: ((lineId: string) => void) | null = null;
+
+/** A line of the sketch near a screen point (drawn and construction lines). */
+function pickSketchLine(sk: SketchFeature, p: Ptr): string | null {
+  const R = p.kind === "touch" ? 24 : p.kind === "pen" ? 14 : 9;
+  let best: { id: string; d: number } | null = null;
+  for (const e of sk.entities) {
+    if (e.type !== "line" || e.axis) continue;
+    const [a, b] = sketchLineWorld(sk, e.id).map((q) => vp.toScreen(new THREE.Vector3(...q)));
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const L2 = dx * dx + dy * dy;
+    const t = L2 > 0 ? Math.max(0, Math.min(1, ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / L2)) : 0;
+    const d = Math.hypot(a[0] + t * dx - p.x, a[1] + t * dy - p.y);
+    if (d < R && (!best || d < best.d)) best = { id: e.id, d };
+  }
+  return best?.id ?? null;
+}
+
 // ---------- Mirror and patterns ----------
 
 /** Features whose material can be repeated by a pattern. */
@@ -1195,6 +1346,7 @@ function renderTools() {
     el.appendChild(toolRow("sketch", "New sketch", startNewSketch, { key: "S" }));
     el.appendChild(section("Features"));
     el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { active: mode.kind === "extrude", key: "E" }));
+    el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { active: mode.kind === "revolve", key: "V" }));
     el.appendChild(
       toolRow("pushpull", "Press Pull", () => faceTool("pushpull"), { active: mode.kind === "pushpull" || pendingFaceTool === "pushpull", key: "Q" }),
     );
@@ -1295,12 +1447,14 @@ function renderPanel() {
     if (f.kind === "sketch") {
       items.push(["edit", "Edit sketch", () => enterSketch(f)]);
       items.push(["extrude", "Extrude", () => void extrude()]);
+      items.push(["revolve", "Revolve", () => void revolveTool()]);
       if (sketchHolePoints(f).length) items.push(["hole", "Holes at its points", startHoles]);
     } else if (f.kind === "extrude") items.push(["edit", "Edit", () => void extrude(f)]);
     else if (f.kind === "pushpull") items.push(["edit", "Edit", () => void pushPull(f)]);
     else if (f.kind === "fillet") items.push(["edit", "Edit", () => void filletTool(f)]);
     else if (f.kind === "hole") items.push(["edit", "Edit", () => void holeTool(f)]);
     else if (f.kind === "pattern") items.push(["edit", "Edit", () => void patternTool(f.type, f)]);
+    else if (f.kind === "revolve") items.push(["edit", "Edit", () => void revolveTool(f)]);
     else items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
     items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
@@ -1332,6 +1486,11 @@ function featureDetail(f: Feature) {
   if (f.kind === "pushpull") return `${f.distance >= 0 ? "Pull" : "Push"} · ${fmtNum(Math.abs(f.distance))} mm`;
   if (f.kind === "shell") return `${fmtNum(f.thickness)} mm walls · ${f.faces.length} open face${f.faces.length > 1 ? "s" : ""}`;
   if (f.kind === "pattern") return patternSummary(f);
+  if (f.kind === "revolve") {
+    const sk = doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
+    const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
+    return `${op} · ${fmtNum(Math.abs(f.angle))}°${f.symmetric ? " symmetric" : ""} around ${sk ? axisName(sk, f.axisLine) : "?"}`;
+  }
   if (f.kind === "hole") {
     const n = f.sketchId ? "at sketch points" : `× ${f.points?.length ?? 0}`;
     const head = f.head === "counterbore" ? " · counterbore" : f.head === "countersink" ? " · countersink" : "";
@@ -1350,6 +1509,7 @@ function featureIcon(f: Feature) {
   if (f.kind === "fillet") return f.mode === "fillet" ? "fillet" : "chamfer";
   if (f.kind === "hole") return "hole";
   if (f.kind === "pattern") return f.type;
+  if (f.kind === "revolve") return "revolve";
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
 }
 
@@ -1403,6 +1563,7 @@ function renderStatus() {
   } else if (mode.kind === "extrude") s = "Extrude · drag the handle or type a value";
   else if (mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
   else if (mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
+  else if (mode.kind === "revolve") s = "Revolve · tap a line of the sketch to use it as the axis";
   else if (mode.kind === "pattern") {
     const f = mode.feat;
     s = f.featureIds.length || f.type === "mirror" ? `${f.name} · tap timeline steps to add or remove them` : `${f.name} · tap the features to repeat in the timeline`;
@@ -1446,7 +1607,7 @@ function renderPartOverlays() {
   if (mode.kind === "sketch") return;
   const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" ? [f.sketchId] : [])));
   const sel = doc.features.find((f) => f.id === selectedFeature);
-  const highlight = sel?.kind === "sketch" ? sel.id : sel?.kind === "extrude" ? sel.sketchId : null;
+  const highlight = sel?.kind === "sketch" ? sel.id : sel?.kind === "extrude" || sel?.kind === "revolve" ? sel.sketchId : null;
   const batch: LineBatch = { positions: [], colors: [], width: 2, overlay: true };
   const hi = rgb("--sk-selected");
   const normal = rgb("--sk-line");
@@ -1454,6 +1615,31 @@ function renderPartOverlays() {
     if (f.kind !== "sketch") continue;
     if (used.has(f.id) && f.id !== highlight) continue;
     appendSketchLines(batch, f, f.id === highlight ? hi : normal);
+  }
+  if (mode.kind === "revolve") {
+    const f = mode.feat;
+    const sk = doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
+    if (sk) {
+      const muted = rgb("--sk-construction");
+      for (const e of sk.entities) {
+        if (e.type !== "line" || !e.construction || e.axis) continue;
+        const [a, b] = sketchLineWorld(sk, e.id);
+        batch.positions.push(...a, ...b);
+        batch.colors.push(...muted, ...muted);
+      }
+      try {
+        // The axis, drawn long in the accent colour.
+        const [a, b] = sketchLineWorld(sk, f.axisLine);
+        const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const len = Math.hypot(d[0], d[1], d[2]) || 1;
+        const L = vp.viewHeight * 2;
+        const acc = rgb("--accent");
+        batch.positions.push(...[0, 1, 2].map((i) => a[i] - (d[i] / len) * L), ...[0, 1, 2].map((i) => a[i] + (d[i] / len) * L));
+        batch.colors.push(...acc, ...acc);
+      } catch {
+        // Missing axis line: the build reports it.
+      }
+    }
   }
   const marks = { positions: [] as number[], colors: [] as number[], size: 14 };
   if (mode.kind === "hole") {
@@ -1513,6 +1699,12 @@ const partTool: PointerTool = {
     }
     if (mode.kind === "fillet") return toggleFilletEdge(mode.feat, p);
     if (mode.kind === "hole") return toggleHolePoint(mode.feat, p);
+    if (mode.kind === "revolve") {
+      const sk = doc.features.find((x): x is SketchFeature => x.id === (mode as { feat: RevolveFeature }).feat.sketchId && x.kind === "sketch");
+      const line = sk ? pickSketchLine(sk, p) : null;
+      if (line) revolveAxisPicker?.(line);
+      return;
+    }
     if (mode.kind !== "part") return;
     vp.highlightFace(face);
     selectedFeature = null;
@@ -1731,6 +1923,7 @@ window.addEventListener("keydown", (e) => {
     else if (key === "m") void patternTool("mirror");
     else if (key === "l") void patternTool("linear");
     else if (key === "o") void patternTool("circular");
+    else if (key === "v") void revolveTool();
     else if (key === "k") faceTool("shell");
     else if (key === "f") vp.fit();
     else if (key === "delete" && selectedFeature) {

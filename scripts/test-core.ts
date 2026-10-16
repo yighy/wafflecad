@@ -234,6 +234,29 @@ check("mirror the whole solid about YZ", !whole.errors.mw && near(wb[0][0], -20)
 const shellPat = buildShape(block({ id: "sh", kind: "shell", name: "SH", faces: [topRef], thickness: 1 }, { id: "pp", kind: "pattern", name: "PP", type: "linear", featureIds: ["sh"], axis: "X", count: 2, spacing: 30, axis2: "Y", count2: 1, spacing2: 0, angle: 360, offset: 0 }));
 check("shell cannot be repeated", !!shellPat.errors.pp, JSON.stringify(shellPat.errors));
 
+// --- Revolve: a 5 × 20 rectangle at 5 mm from the axis, on the XZ plane (sketch Y = world Z).
+const rvSk = newSketch("RV", XZ);
+const rvRect = rect(rvSk, 5, 0, 10, 20);
+const rv = (p: object) =>
+  buildShape({
+    format: "touch-cad",
+    version: 1,
+    features: [rvSk, { id: "rv", kind: "revolve", name: "RV", sketchId: rvSk.id, axisLine: "AY", angle: 360, symmetric: false, op: "add", ...p } as never],
+  });
+const tube = Math.PI * (10 * 10 - 5 * 5) * 20;
+let rs = rv({});
+check("revolve 360° around sketch Y = tube", !rs.errors.rv && near(measureVolume(rs.shape!), tube, 1e-2), `${JSON.stringify(rs.errors)} vol=${rs.shape && measureVolume(rs.shape)}`);
+check("tube axis is world Z", near(rs.shape!.boundingBox.bounds[1][2], 20) && near(rs.shape!.boundingBox.bounds[0][0], -10));
+rs = rv({ angle: 90 });
+check("revolve 90°", !rs.errors.rv && near(measureVolume(rs.shape!), tube / 4, 1e-2));
+rs = rv({ angle: 90, symmetric: true });
+check("symmetric 90° spans both sides", !rs.errors.rv && near(measureVolume(rs.shape!), tube / 4, 1e-2) && rs.shape!.boundingBox.bounds[0][1] < -1 && rs.shape!.boundingBox.bounds[1][1] > 1, JSON.stringify(rs.shape?.boundingBox.bounds));
+// Around a drawn line: the rectangle's own left edge (x = 5) → a solid cylinder of radius 5.
+rs = rv({ axisLine: rvRect.lines[3] });
+check("revolve around the profile's own edge", !rs.errors.rv && near(measureVolume(rs.shape!), Math.PI * 25 * 20, 1e-2), `vol=${rs.shape && measureVolume(rs.shape)}`);
+rs = rv({ axisLine: "nope" });
+check("missing axis reported", !!rs.errors.rv, JSON.stringify(rs.errors));
+
 // --- Parameters and expressions.
 check("expression with names", evaluate("2 * w + 5", { w: 10 }) === 25);
 check("unknown name fails", evaluate("w + 1", {}) === null);

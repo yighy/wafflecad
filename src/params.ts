@@ -137,6 +137,8 @@ export function* expressionSlots(doc: CadDocument): Generator<{ get: () => strin
       yield { get: () => f.radiusExpr!, set: (e) => (f.radiusExpr = e) };
     } else if (f.kind === "hole" && f.depthExpr) {
       yield { get: () => f.depthExpr!, set: (e) => (f.depthExpr = e) };
+    } else if (f.kind === "revolve" && f.angleExpr) {
+      yield { get: () => f.angleExpr!, set: (e) => (f.angleExpr = e) };
     }
   }
 }
@@ -156,7 +158,9 @@ export function usedNames(doc: CadDocument, except?: string): Set<string> {
               ? [f.depthExpr ?? ""]
               : f.kind === "pattern"
                 ? []
-                : [f.distanceExpr ?? ""];
+                : f.kind === "revolve"
+                  ? [f.angleExpr ?? ""]
+                  : [f.distanceExpr ?? ""];
     for (const e of exprs) for (const n of identifiers(e)) out.add(n);
   }
   for (const p of doc.parameters ?? []) if (p.name !== except) for (const n of identifiers(p.expr)) out.add(n);
@@ -195,6 +199,11 @@ export function applyParameters(doc: CadDocument, solver: Solver): string[] {
       if (v === null) continue;
       if (v <= 0) problems.push(`${f.name}: the thickness must be positive`);
       else f.thickness = v;
+    } else if (f.kind === "revolve" && f.angleExpr) {
+      const v = val(f.angleExpr, f.name);
+      if (v === null) continue;
+      if (v === 0 || Math.abs(v) > 360) problems.push(`${f.name}: the angle must be between 0 and 360°`);
+      else f.angle = Math.sign(f.angle || 1) * Math.abs(v);
     } else if (f.kind === "hole" && f.depthExpr) {
       const v = val(f.depthExpr, f.name);
       if (v === null) continue;
