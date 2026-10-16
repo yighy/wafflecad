@@ -90,7 +90,47 @@ export class SketchView {
   /** The Bézier spans of a spline, with the ids of the points each one joins. */
   splineSpans(s: SkSpline) {
     const ids = s.pts;
-    return splineSpans(ids.map((id) => this.xy(id)), !!s.closed).map((sp, i) => ({ ...sp, from: ids[i], to: ids[(i + 1) % ids.length] }));
+    const ends = s.closed ? {} : this.splineEndTangents(s);
+    return splineSpans(ids.map((id) => this.xy(id)), !!s.closed, ends.start, ends.end).map((sp, i) => ({ ...sp, from: ids[i], to: ids[(i + 1) % ids.length] }));
+  }
+  /**
+   * Directions forced at the ends of an open spline by tangent constraints with a line or an
+   * arc ending at the same point: the spline carries on smoothly from that curve.
+   */
+  splineEndTangents(s: SkSpline): { start?: P2; end?: P2 } {
+    const out: { start?: P2; end?: P2 } = {};
+    for (const c of this.sketch.constraints) {
+      if (c.type !== "tangent" || !c.refs.includes(s.id)) continue;
+      const other = this.get(c.refs.find((r) => r !== s.id) ?? "");
+      if (!other) continue;
+      const first = s.pts[0];
+      const last = s.pts[s.pts.length - 1];
+      const intoStart = this.directionInto(other, first);
+      const intoEnd = this.directionInto(other, last);
+      if (intoStart) out.start = [-intoStart[0], -intoStart[1]];
+      else if (intoEnd) out.end = intoEnd;
+    }
+    return out;
+  }
+  /** Unit direction going from point `at` into curve `c`, when `at` is one of its ends. */
+  directionInto(c: SkEntity, at: string): P2 | null {
+    const unitOf = (x: number, y: number): P2 | null => {
+      const l = Math.hypot(x, y);
+      return l < 1e-12 ? null : [x / l, y / l];
+    };
+    if (c.type === "line" && (c.p1 === at || c.p2 === at)) {
+      const [a, b] = c.p1 === at ? [c.p1, c.p2] : [c.p2, c.p1];
+      const [ax, ay] = this.xy(a);
+      const [bx, by] = this.xy(b);
+      return unitOf(bx - ax, by - ay);
+    }
+    if (c.type === "arc" && (c.s === at || c.e === at)) {
+      const [cx, cy] = this.xy(c.c);
+      const [px, py] = this.xy(at);
+      // From s the arc turns counter-clockwise; from e it comes back clockwise.
+      return c.s === at ? unitOf(-(py - cy), px - cx) : unitOf(py - cy, -(px - cx));
+    }
+    return null;
   }
 }
 
@@ -107,7 +147,7 @@ export interface BezierSpan {
  * its neighbours, scaled by the chord lengths so uneven spacing does not overshoot; the
  * ends of an open spline point at their neighbour.
  */
-export function splineSpans(pts: P2[], closed: boolean): BezierSpan[] {
+export function splineSpans(pts: P2[], closed: boolean, startTan?: P2, endTan?: P2): BezierSpan[] {
   const n = pts.length;
   if (n < 2) return [];
   const at = (i: number) => pts[closed ? (i + n) % n : Math.max(0, Math.min(n - 1, i))];
@@ -120,6 +160,8 @@ export function splineSpans(pts: P2[], closed: boolean): BezierSpan[] {
     if (len < 1e-12) return [0, 0];
     return [(next[0] - prev[0]) / len, (next[1] - prev[1]) / len];
   });
+  if (!closed && startTan) tan[0] = startTan;
+  if (!closed && endTan) tan[n - 1] = endTan;
   const spans: BezierSpan[] = [];
   for (let i = 0; i < (closed ? n : n - 1); i++) {
     const j = (i + 1) % n;

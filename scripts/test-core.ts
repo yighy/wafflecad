@@ -5,6 +5,8 @@ import { Solver } from "../src/sketch/solver";
 import { deleteEntities, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
 import { trimPlan } from "../src/sketch/trim";
+import { filletCorner, mirrorEntities } from "../src/sketch/ops";
+import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
 import type { CadDocument, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
@@ -388,6 +390,52 @@ const halfRegions = findRegions(disc.s);
 const halfArea = halfRegions.length === 1 && halfRegions[0].outer.kind === "path" ? signedArea(sampleSegments(halfRegions[0].outer.segments)) : 0;
 check("trimmed circle + line → half disc", half.type === "arc" && near(halfArea, (Math.PI * 25) / 2, 0.3) && solver.solve(disc.s).ok, `${half.type} ${halfArea}`);
 check("splines are not trimmed", trimPlan(blob.s, "sp", [10, 0]) === null);
+
+// --- Sketch fillet, mirror, spline tangency.
+const fsk = newSketch("F", XY);
+const fr = rect(fsk, 0, 0, 20, 10);
+fsk.constraints.push(
+  { id: uid(), type: "horizontal", refs: [fr.lines[0]] },
+  { id: uid(), type: "vertical", refs: [fr.lines[1]] },
+  { id: uid(), type: "horizontal", refs: [fr.lines[2]] },
+  { id: uid(), type: "vertical", refs: [fr.lines[3]] },
+);
+const ferr = filletCorner(fsk, fr.pts[2], 3);
+const fres = solver.solve(fsk);
+const fRegion = findRegions(fsk);
+const fArea = fRegion[0]?.outer.kind === "path" ? signedArea(sampleSegments(fRegion[0].outer.segments)) : 0;
+check("fillet a rectangle corner", !ferr && fres.ok && fRegion.length === 1 && near(fArea, 200 - (9 - (Math.PI * 9) / 4), 0.05), `${ferr} ${fres.ok} ${fArea}`);
+check("fillet removes the sharp corner point", !fsk.entities.some((e) => e.id === fr.pts[2]));
+check("fillet too large refused", filletCorner(fsk, fr.pts[0], 50) !== null);
+const fDoc: CadDocument = { format: "touch-cad", version: 1, features: [fsk, { id: "fe", kind: "extrude", name: "FE", sketchId: fsk.id, distance: 2, symmetric: false, op: "add" }] };
+const fBuilt = buildShape(fDoc);
+check("filleted sketch extrudes", !fBuilt.errors.fe && near(measureVolume(fBuilt.shape!), 2 * (200 - (9 - (Math.PI * 9) / 4)), 0.05), `${JSON.stringify(fBuilt.errors)}`);
+
+const msk = newSketch("M", XY);
+const mr = rect(msk, 2, 0, 8, 5);
+const madded = mirrorEntities(msk, [...mr.lines, "AY"], "AY");
+const mres = solver.solve(msk);
+const mpts = msk.entities.filter((e): e is SkPoint => e.type === "point" && !e.fixed);
+check("mirror about the Y axis", madded === 4 && mres.ok && mpts.length === 8 && mpts.some((p) => near(p.x, -8) && near(p.y, 5)) && findRegions(msk).length === 2, `${madded} ${mpts.length}`);
+const mp0 = mpts.find((p) => near(p.x, 2) && near(p.y, 0))!;
+solver.solve(msk, { points: [{ id: mp0.id, x: 3, y: 0 }] });
+check("mirrored copy follows the original", msk.entities.some((e) => e.type === "point" && near(e.x, -3) && near(e.y, 0)));
+
+const tsk = newSketch("T", XY);
+const ta = uid(), tb = uid(), tc = uid(), td = uid();
+tsk.entities.push(
+  { id: ta, type: "point", x: -10, y: 0 },
+  { id: tb, type: "point", x: 0, y: 0 },
+  { id: tc, type: "point", x: 10, y: 10 },
+  { id: td, type: "point", x: 20, y: 0 },
+  { id: "tl", type: "line", p1: ta, p2: tb },
+  { id: "ts", type: "spline", pts: [tb, tc, td] },
+);
+const before0 = new SketchView(tsk).splineSpans(ent(tsk, "ts"))[0];
+tsk.constraints.push({ id: "tt", type: "tangent", refs: ["ts", "tl"] });
+const after0 = new SketchView(tsk).splineSpans(ent(tsk, "ts"))[0];
+check("spline tangent to a line leaves along it", near(after0.c1[1], 0) && after0.c1[0] > 0 && !near(before0.c1[1], 0), JSON.stringify(after0.c1));
+check("solver ignores the spline tangency", solver.solve(tsk).ok);
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

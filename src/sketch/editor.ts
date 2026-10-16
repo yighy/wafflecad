@@ -8,10 +8,11 @@ import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } f
 import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleSpline, splineSpans, uid } from "./model";
 import { arcMid, findRegions, sampleSegments } from "./profiles";
 import { trimPlan, type TrimPlan } from "./trim";
+import { cornerLines, filletCorner, mirrorAxis, mirrorEntities } from "./ops";
 import type { Drag, SolveResult, Solver } from "./solver";
 import { keypad } from "../ui/keypad";
 
-export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point" | "trim";
+export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point" | "trim" | "fillet";
 
 type P2 = [number, number];
 
@@ -450,7 +451,59 @@ export class SketchEditor implements PointerTool {
         return this.placeArc(this.anchors[0], this.anchors[1], s);
       case "spline":
         return this.placeSpline(s);
+      case "fillet":
+        if (s.kind === "point") void this.filletAt(s.id);
+        else this.hooks.toast("Tap the corner point where two lines meet");
+        return;
     }
+  }
+
+  /** Fillet tool: rounds the corner at a point, asking for the radius. */
+  async filletAt(pointId: string) {
+    const pair = cornerLines(this.sk, pointId);
+    if (!pair) return this.hooks.toast("Tap a corner where exactly two lines meet");
+    const v = this.view;
+    const lengthOf = (l: SkLine) => Math.hypot(...([0, 1] as const).map((i) => v.xy(l.p2)[i] - v.xy(l.p1)[i]));
+    const guess = Math.min(...pair.map(lengthOf)) * 0.25;
+    const step = gridStep(this.vp.viewHeight) / 10;
+    const res = await keypad({
+      title: "Fillet",
+      subtitle: this.sk.name,
+      label: "Radius",
+      value: Math.max(step, Math.round(guess / step) * step),
+      unit: "mm",
+      scope: this.hooks.scope(),
+    });
+    if (res === null) return;
+    const backup = structuredClone(this.sk);
+    const err = filletCorner(this.sk, pointId, res.value);
+    if (err) return this.hooks.toast(err);
+    const fil = this.sk.constraints[this.sk.constraints.length - 1];
+    if (res.expr) fil.expr = res.expr;
+    this.checkOrRevert(backup, "Fillet", "This fillet conflicts with the existing constraints");
+  }
+
+  /** Solves after an edit; keeps it as an undo step, or puts the sketch back with a message. */
+  private checkOrRevert(backup: SketchFeature, label: string, failure: string) {
+    const r = this.solve();
+    if (!r.ok || r.conflicting.length) {
+      this.sk.entities = backup.entities;
+      this.sk.constraints = backup.constraints;
+      this.solve();
+      this.hooks.toast(failure);
+    } else {
+      for (const id of [...this.selection]) if (!this.view.get(id) && !this.sk.constraints.some((c) => c.id === id)) this.selection.delete(id);
+      this.hooks.commit(label);
+    }
+    this.render();
+    this.hooks.changed();
+  }
+
+  private mirror(ids: string[], axis: string) {
+    const backup = structuredClone(this.sk);
+    mirrorEntities(this.sk, ids, axis);
+    this.selection.clear();
+    this.checkOrRevert(backup, "Mirror", "Cannot mirror: the copy conflicts with the existing constraints");
   }
 
   /** Close enough on screen to count as tapping the same place. */
@@ -779,6 +832,18 @@ export class SketchEditor implements PointerTool {
       out.push({ id: "conc", label: "◎", title: "Concentric", run: () => this.coincident(c0, c1) });
     }
     if (n === 2 && L.length === 1 && R.length === 1) con("tan", "T", "Tangent", "tangent", [L[0].id, R[0].id], "T");
+    // A spline can carry on smoothly from a line or an arc ending where it starts or ends.
+    const S = ents.filter((e): e is SkCurve & { type: "spline" } => e.type === "spline");
+    if (n === 2 && S.length === 1 && !S[0].closed) {
+      const other = ents.find((e) => e !== S[0])!;
+      const ends = [S[0].pts[0], S[0].pts[S[0].pts.length - 1]];
+      const joined = ends.some((p) => v.directionInto(other, p));
+      const already = this.sk.constraints.some((c) => c.type === "tangent" && c.refs.includes(S[0].id) && c.refs.includes(other.id));
+      if (joined && !already) con("tan", "T", "Tangent", "tangent", [S[0].id, other.id], "T");
+    }
+    const axis = mirrorAxis(this.sk, sel.filter((id) => v.get(id)));
+    if (axis && ents.some((e) => e.id !== axis && !isReference(e)))
+      out.push({ id: "mirror", label: "⇋", title: "Mirror about line", key: "I", run: () => this.mirror(sel, axis) });
     if (n === 3 && P.length === 2 && L.length === 1) con("sym", "⇹", "Symmetric about line", "symmetric", [P[0].id, P[1].id, L[0].id], "S");
     if (n === 3 && P.length === 3) con("sym", "⇹", "Symmetric about point", "symmetric", [P[0].id, P[1].id, P[2].id], "S");
     if (n === 1 && P.length === 1 && !P[0].fixed) {

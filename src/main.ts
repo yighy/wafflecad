@@ -1290,6 +1290,7 @@ const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: st
   { tool: "spline", icon: "spline", label: "Spline", key: "S" },
   { tool: "point", icon: "point", label: "Point", key: "P" },
   { tool: "trim", icon: "trim", label: "Trim", key: "T" },
+  { tool: "fillet", icon: "fillet", label: "Fillet", key: "F" },
 ];
 
 /** `disabled`: why the tool cannot be used now; it stays in place, greyed, and tapping it says why. */
@@ -1460,6 +1461,8 @@ function renderPanel() {
           ? "Tap lines, circles or points to constrain them. Drag a point to move it."
           : ed.tool === "trim"
             ? "Press a piece of a curve: it turns red, and goes when you lift, up to the nearest crossings."
+            : ed.tool === "fillet"
+              ? "Tap the corner point between two lines, then type the radius."
           : "Tap or drag to draw. Points snap to existing geometry.";
       el.appendChild(hint);
     }
