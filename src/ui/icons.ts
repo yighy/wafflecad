@@ -36,6 +36,9 @@ const P: Record<string, string> = {
   fillet: '<path d="M5 20V12a7 7 0 0 1 7-7h7"/><path d="M5 5h3M5 5v3" stroke-dasharray="2 2"/>',
   chamfer: '<path d="M5 20v-9l6-6h8"/><path d="M5 5h3M5 5v3" stroke-dasharray="2 2"/>',
   hole: '<circle cx="12" cy="9" r="5"/><path d="M7 9v9a5 2 0 0 0 10 0V9"/>',
+  mirror: '<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M9 6 4 18h5zM15 6l5 12h-5z"/>',
+  linear: '<rect x="3" y="9" width="5" height="6" rx="1"/><rect x="10" y="9" width="5" height="6" rx="1"/><rect x="17" y="9" width="4" height="6" rx="1"/>',
+  circular: '<circle cx="12" cy="12" r="7" stroke-dasharray="2 3"/><circle cx="12" cy="5" r="2"/><circle cx="18" cy="15.5" r="2"/><circle cx="6" cy="15.5" r="2"/>',
   home: '<path d="M4 11 12 4l8 7"/><path d="M6 10v10h12V10"/><path d="M10 20v-5h4v5"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
 };

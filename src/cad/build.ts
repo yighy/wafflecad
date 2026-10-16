@@ -1,7 +1,7 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
 import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, type Drawing, type Face, type Shape3D } from "replicad";
-import type { BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, FaceRef, FilletFeature, HoleFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import type { Axis, BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { findRegions } from "../sketch/profiles";
 
@@ -56,11 +56,12 @@ export function findFace(shape: Shape3D, ref: FaceRef): Face {
   throw new Error("The face is no longer there (an earlier feature changed it)");
 }
 
-function pushPull(shape: Shape3D, f: PushPullFeature): Shape3D {
+/** The prism swept by the face; added when pulled out, removed when pushed in. */
+function pushPullTool(shape: Shape3D, f: PushPullFeature): Tool {
   if (Math.abs(f.distance) < 1e-6) throw new Error("Distance is zero");
   const face = findFace(shape, f.face);
   const prism = basicFaceExtrusion(face, new Vector(scale(f.face.normal, f.distance)));
-  return f.distance > 0 ? shape.fuse(prism) : shape.cut(prism);
+  return { solid: prism, op: f.distance > 0 ? "add" : "cut" };
 }
 
 function shell(shape: Shape3D, f: ShellFeature): Shape3D {
@@ -110,7 +111,7 @@ function holeTool(p: Vec3, dir: Vec3, f: HoleFeature, length: number): Shape3D {
   return (sketch as unknown as { revolve: (axis: Vec3, o: { origin: Vec3 }) => Shape3D }).revolve(dir, { origin: p });
 }
 
-function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeature>): Shape3D {
+function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeature>): { shape: Shape3D; tool: Shape3D } {
   let pts: Vec3[];
   if (f.sketchId) {
     const sk = sketches.get(f.sketchId);
@@ -125,9 +126,71 @@ function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeatu
   const through = Math.hypot(bb.width, bb.height, bb.depth) * 2 + 10;
   if (f.depth < 0) throw new Error("The depth must be positive");
   const length = f.depth > 0 ? f.depth : through;
+  const tool = fuseAll(pts.map((p) => holeTool(p, dir, f, length)));
+  return { shape: shape.cut(tool), tool };
+}
+
+/** The material a feature adds or removes, kept so patterns can repeat it. */
+interface Tool {
+  solid: Shape3D;
+  op: "add" | "cut";
+}
+
+const AXIS: Record<Axis, Vec3> = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] };
+const MIRROR_PLANE: Record<Axis, "YZ" | "XZ" | "XY"> = { X: "YZ", Y: "XZ", Z: "XY" };
+
+/** Copies of a solid for each instance of the pattern (the original excluded). */
+function patternCopies(solid: Shape3D, f: PatternFeature): Shape3D[] {
+  const out: Shape3D[] = [];
+  if (f.type === "mirror") {
+    out.push(solid.clone().mirror(MIRROR_PLANE[f.axis], scale(AXIS[f.axis], f.offset)));
+    return out;
+  }
+  const n = Math.round(f.count);
+  if (n < 1 || n > 200) throw new Error("The count must be between 1 and 200");
+  if (f.type === "circular") {
+    if (n < 2) throw new Error("A circular pattern needs at least 2 instances");
+    const full = Math.abs(Math.abs(f.angle) - 360) < 1e-9;
+    const step = full ? 360 / n : f.angle / (n - 1);
+    for (let i = 1; i < n; i++) out.push(solid.clone().rotate(step * i, [0, 0, 0], AXIS[f.axis]));
+    return out;
+  }
+  const n2 = Math.max(1, Math.round(f.count2));
+  if (n2 > 200 || n * n2 > 400) throw new Error("Too many instances (400 at most)");
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n2; j++) {
+      if (i === 0 && j === 0) continue;
+      out.push(solid.clone().translate(add(scale(AXIS[f.axis], f.spacing * i), scale(AXIS[f.axis2], f.spacing2 * j))));
+    }
+  }
+  return out;
+}
+
+function fuseAll(parts: Shape3D[]): Shape3D {
+  return parts.slice(1).reduce((acc, p) => acc.fuse(p), parts[0]);
+}
+
+function pattern(shape: Shape3D, f: PatternFeature, tools: Map<string, Tool>, names: Map<string, string>): { shape: Shape3D; tool: Tool | null } {
+  if (f.type === "mirror" && !f.featureIds.length) {
+    // Whole solid: mirror it and join both halves.
+    return { shape: shape.fuse(shape.clone().mirror(MIRROR_PLANE[f.axis], scale(AXIS[f.axis], f.offset))), tool: null };
+  }
+  if (!f.featureIds.length) throw new Error("Choose the features to repeat");
   let result = shape;
-  for (const p of pts) result = result.cut(holeTool(p, dir, f, length));
-  return result;
+  const made: Record<"add" | "cut", Shape3D[]> = { add: [], cut: [] };
+  for (const id of f.featureIds) {
+    const t = tools.get(id);
+    if (!t) throw new Error(`${names.get(id) ?? "This feature"} cannot be repeated (only extrusions, Press Pull, holes and patterns)`);
+    made[t.op].push(t.solid);
+    for (const c of patternCopies(t.solid, f)) {
+      result = t.op === "add" ? result.fuse(c) : result.cut(c);
+      made[t.op].push(c);
+    }
+  }
+  // A pattern made of a single kind of operation can itself be repeated (e.g. mirrored).
+  const ops = (["add", "cut"] as const).filter((o) => made[o].length);
+  const tool = ops.length === 1 ? { op: ops[0], solid: fuseAll(made[ops[0]]) } : null;
+  return { shape: result, tool };
 }
 
 /** Replays the features; a failing feature is skipped and reported. */
@@ -135,7 +198,20 @@ export function buildShape(doc: CadDocument) {
   let shape: Shape3D | null = null;
   const errors: Record<string, string> = {};
   const sketches = new Map<string, SketchFeature>();
+  const tools = new Map<string, Tool>();
+  const names = new Map(doc.features.map((f) => [f.id, f.name]));
   for (const f of doc.features) {
+    if (f.kind === "pattern") {
+      try {
+        if (!shape) throw new Error("There is no solid yet");
+        const r = pattern(shape, f, tools, names);
+        shape = r.shape.simplify();
+        if (r.tool) tools.set(f.id, r.tool);
+      } catch (e) {
+        errors[f.id] = e instanceof Error ? e.message : String(e);
+      }
+      continue;
+    }
     if (f.kind === "sketch") {
       sketches.set(f.id, f);
       continue;
@@ -143,7 +219,9 @@ export function buildShape(doc: CadDocument) {
     if (f.kind === "hole") {
       try {
         if (!shape) throw new Error("There is no solid yet");
-        shape = holes(shape, f, sketches).simplify();
+        const r = holes(shape, f, sketches);
+        shape = r.shape.simplify();
+        tools.set(f.id, { op: "cut", solid: r.tool });
       } catch (e) {
         errors[f.id] = e instanceof Error ? e.message : String(e);
       }
@@ -152,7 +230,12 @@ export function buildShape(doc: CadDocument) {
     if (f.kind === "pushpull" || f.kind === "shell" || f.kind === "fillet") {
       try {
         if (!shape) throw new Error("There is no solid yet");
-        const next: Shape3D = f.kind === "pushpull" ? pushPull(shape, f) : f.kind === "shell" ? shell(shape, f) : fillet(shape, f);
+        let next: Shape3D;
+        if (f.kind === "pushpull") {
+          const t = pushPullTool(shape, f);
+          next = t.op === "add" ? shape.fuse(t.solid) : shape.cut(t.solid);
+          tools.set(f.id, t);
+        } else next = f.kind === "shell" ? shell(shape, f) : fillet(shape, f);
         // Simplifying after a fillet would merge its faces with flat neighbours: skip it there.
         shape = f.kind === "fillet" ? next : next.simplify();
       } catch (e) {
@@ -164,6 +247,7 @@ export function buildShape(doc: CadDocument) {
       const sk = sketches.get(f.sketchId);
       if (!sk) throw new Error("Sketch not found");
       const solid = extrudeSolid(sk, f);
+      if (f.op !== "intersect") tools.set(f.id, { solid, op: f.op });
       if (f.op === "add" || !shape) {
         if (f.op !== "add") throw new Error("Nothing to " + f.op);
         shape = shape ? shape.fuse(solid) : solid;

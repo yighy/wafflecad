@@ -1,7 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
@@ -66,7 +66,8 @@ type Mode =
   | { kind: "pushpull"; feat: PushPullFeature; keypad: KeypadHandle }
   | { kind: "shell"; feat: ShellFeature; keypad: KeypadHandle }
   | { kind: "fillet"; feat: FilletFeature; keypad: KeypadHandle }
-  | { kind: "hole"; feat: HoleFeature; keypad: KeypadHandle };
+  | { kind: "hole"; feat: HoleFeature; keypad: KeypadHandle }
+  | { kind: "pattern"; feat: PatternFeature; keypad: KeypadHandle };
 
 /** Modes where a feature is being edited with the keypad open. */
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
@@ -682,6 +683,142 @@ function toggleHolePoint(feat: HoleFeature, p: Ptr) {
   renderStatus();
 }
 
+// ---------- Mirror and patterns ----------
+
+/** Features whose material can be repeated by a pattern. */
+const repeatable = (f: Feature) => (f.kind === "extrude" && f.op !== "intersect") || f.kind === "pushpull" || f.kind === "hole" || f.kind === "pattern";
+
+type PatternField = "count" | "spacing" | "count2" | "spacing2" | "angle" | "offset";
+const FIELD_LABEL: Record<PatternField, [string, string]> = {
+  count: ["Count (original included)", ""],
+  spacing: ["Spacing", "mm"],
+  count2: ["Count, 2nd direction", ""],
+  spacing2: ["Spacing, 2nd direction", "mm"],
+  angle: ["Total angle (360 = all around)", "°"],
+  offset: ["Plane position", "mm"],
+};
+
+function patternSummary(f: PatternFeature) {
+  const n = f.featureIds.length;
+  const what = n ? `${n} feature${n > 1 ? "s" : ""}` : f.type === "mirror" ? "whole solid" : "no feature yet";
+  if (f.type === "mirror") return `${what} · ${{ X: "YZ", Y: "XZ", Z: "XY" }[f.axis]} plane at ${fmtNum(f.offset)} mm`;
+  if (f.type === "circular") return `${what} · ${f.count} around ${f.axis} · ${fmtNum(f.angle)}°`;
+  const second = f.count2 > 1 ? ` × ${f.count2} along ${f.axis2}` : "";
+  return `${what} · ${f.count} along ${f.axis}${second}`;
+}
+
+async function patternTool(type: PatternFeature["type"], existing?: PatternFeature) {
+  if (mode.kind !== "part") return;
+  if (!existing && !doc.features.some((f) => f.kind === "extrude")) return toast("Make a solid first (Sketch, then Extrude)");
+  const sel = doc.features.find((f) => f.id === selectedFeature);
+  const prefix = { linear: "Linear pattern", circular: "Circular pattern", mirror: "Mirror" }[type];
+  const feat: PatternFeature = existing ?? {
+    id: uid(),
+    kind: "pattern",
+    name: nextName(prefix),
+    type,
+    featureIds: sel && repeatable(sel) ? [sel.id] : [],
+    axis: type === "circular" ? "Z" : "X",
+    count: type === "circular" ? 6 : 3,
+    spacing: 10,
+    axis2: "Y",
+    count2: 1,
+    spacing2: 10,
+    angle: 360,
+    offset: 0,
+  };
+  const before = structuredClone(feat);
+  if (!existing) doc.features.push(feat);
+  selectedFeature = feat.id;
+  selectedFace = null;
+  showParams = false;
+  vp.highlightFace(null);
+
+  let field: PatternField = type === "mirror" ? "offset" : "count";
+  const axisSeg = (get: () => Axis, set: (a: Axis) => void, labels: [string, string, string]) => ({
+    options: (["X", "Y", "Z"] as Axis[]).map((a, i) => ({ value: a, label: labels[i] })),
+    get,
+    set: (v: string) => {
+      set(v as Axis);
+      update();
+    },
+  });
+  const fieldSeg = (fields: PatternField[], labels: string[]) => ({
+    options: fields.map((f, i) => ({ value: f, label: labels[i] })),
+    get: () => field,
+    set: (v: string) => {
+      field = v as PatternField;
+      kp.set(feat[field]);
+      kp.setLabel(...FIELD_LABEL[field]);
+    },
+  });
+  const segments =
+    type === "mirror"
+      ? [axisSeg(() => feat.axis, (a) => (feat.axis = a), ["YZ plane", "XZ plane", "XY plane"])]
+      : type === "circular"
+        ? [fieldSeg(["count", "angle"], ["Count", "Angle"]), axisSeg(() => feat.axis, (a) => (feat.axis = a), ["X axis", "Y axis", "Z axis"])]
+        : [
+            fieldSeg(["count", "spacing", "count2", "spacing2"], ["Count", "Spacing", "Count 2", "Spacing 2"]),
+            axisSeg(() => feat.axis, (a) => (feat.axis = a), ["Along X", "Along Y", "Along Z"]),
+            axisSeg(() => feat.axis2, (a) => (feat.axis2 = a), ["2nd X", "2nd Y", "2nd Z"]),
+          ];
+  const setField = (v: number) => {
+    feat[field] = field === "count" || field === "count2" ? Math.max(1, Math.round(v)) : v;
+  };
+  const update = () => {
+    kp.setSubtitle(patternSummary(feat));
+    renderTimeline();
+    rebuild();
+  };
+  const kp = openKeypad({
+    title: feat.name,
+    subtitle: patternSummary(feat),
+    label: FIELD_LABEL[field][0],
+    unit: FIELD_LABEL[field][1],
+    value: feat[field],
+    confirmLabel: "Confirm",
+    segments,
+    onInput: (v) => {
+      setField(v);
+      update();
+    },
+  });
+  mode = { kind: "pattern", feat, keypad: kp };
+  renderAll();
+  rebuild(true);
+
+  const res = await kp.result;
+  mode = { kind: "part" };
+  const needsFeatures = feat.type !== "mirror" && !feat.featureIds.length;
+  if (res === null || needsFeatures) {
+    if (res !== null) toast("Tap the features to repeat in the timeline");
+    if (existing) Object.assign(feat, before);
+    else {
+      doc.features = doc.features.filter((x) => x !== feat);
+      selectedFeature = null;
+    }
+    rebuild(true);
+    renderAll();
+    return;
+  }
+  setField(res.value);
+  commit();
+}
+
+/** In a pattern, tapping a timeline step adds it to (or removes it from) the repeated features. */
+function togglePatternFeature(feat: PatternFeature, f: Feature) {
+  const idx = doc.features.indexOf(feat);
+  if (doc.features.indexOf(f) >= idx) return toast("Only earlier features can be repeated");
+  if (!repeatable(f)) return toast(`${f.name} cannot be repeated (only extrusions, Press Pull, holes and patterns)`);
+  const i = feat.featureIds.indexOf(f.id);
+  if (i >= 0) feat.featureIds.splice(i, 1);
+  else feat.featureIds.push(f.id);
+  if (mode.kind === "pattern") mode.keypad.setSubtitle(patternSummary(feat));
+  renderTimeline();
+  renderStatus();
+  rebuild();
+}
+
 // ---------- Fillet / chamfer (on edges of the solid) ----------
 
 async function filletTool(existing?: FilletFeature) {
@@ -1064,6 +1201,11 @@ function renderTools() {
     el.appendChild(toolRow("shell", "Shell", () => faceTool("shell"), { active: mode.kind === "shell" || pendingFaceTool === "shell", key: "K" }));
     el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { active: mode.kind === "fillet", key: "R" }));
     el.appendChild(toolRow("hole", "Hole", startHoles, { active: mode.kind === "hole" || pendingFaceTool === "hole", key: "H" }));
+    el.appendChild(section("Repeat"));
+    const pat = mode.kind === "pattern" ? mode.feat.type : null;
+    el.appendChild(toolRow("mirror", "Mirror", () => void patternTool("mirror"), { active: pat === "mirror", key: "M" }));
+    el.appendChild(toolRow("linear", "Linear pattern", () => void patternTool("linear"), { active: pat === "linear", key: "L" }));
+    el.appendChild(toolRow("circular", "Circular pattern", () => void patternTool("circular"), { active: pat === "circular", key: "O" }));
     el.appendChild(section("Design"));
     el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
   }
@@ -1158,6 +1300,7 @@ function renderPanel() {
     else if (f.kind === "pushpull") items.push(["edit", "Edit", () => void pushPull(f)]);
     else if (f.kind === "fillet") items.push(["edit", "Edit", () => void filletTool(f)]);
     else if (f.kind === "hole") items.push(["edit", "Edit", () => void holeTool(f)]);
+    else if (f.kind === "pattern") items.push(["edit", "Edit", () => void patternTool(f.type, f)]);
     else items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
     items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
@@ -1188,6 +1331,7 @@ function featureDetail(f: Feature) {
   if (f.kind === "sketch") return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}`;
   if (f.kind === "pushpull") return `${f.distance >= 0 ? "Pull" : "Push"} · ${fmtNum(Math.abs(f.distance))} mm`;
   if (f.kind === "shell") return `${fmtNum(f.thickness)} mm walls · ${f.faces.length} open face${f.faces.length > 1 ? "s" : ""}`;
+  if (f.kind === "pattern") return patternSummary(f);
   if (f.kind === "hole") {
     const n = f.sketchId ? "at sketch points" : `× ${f.points?.length ?? 0}`;
     const head = f.head === "counterbore" ? " · counterbore" : f.head === "countersink" ? " · countersink" : "";
@@ -1205,6 +1349,7 @@ function featureIcon(f: Feature) {
   if (f.kind === "shell") return "shell";
   if (f.kind === "fillet") return f.mode === "fillet" ? "fillet" : "chamfer";
   if (f.kind === "hole") return "hole";
+  if (f.kind === "pattern") return f.type;
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
 }
 
@@ -1228,10 +1373,12 @@ function renderTimeline() {
     const b = document.createElement("button");
     b.className = "chip";
     if (f.id === current) b.classList.add("sel");
+    if (mode.kind === "pattern" && mode.feat.featureIds.includes(f.id)) b.classList.add("picked");
     if (lastBuild?.errors[f.id]) b.classList.add("error");
     b.innerHTML = icon(featureIcon(f), 20) + "<span></span>";
     b.querySelector("span")!.textContent = f.kind === "extrude" ? `${f.name} · ${fmtNum(Math.abs(f.distance))}` : f.name;
     b.onclick = () => {
+      if (mode.kind === "pattern") return togglePatternFeature(mode.feat, f);
       if (mode.kind !== "part") return toast("Finish the current step first");
       selectedFace = null;
       vp.highlightFace(null);
@@ -1256,7 +1403,10 @@ function renderStatus() {
   } else if (mode.kind === "extrude") s = "Extrude · drag the handle or type a value";
   else if (mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
   else if (mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
-  else if (mode.kind === "hole") {
+  else if (mode.kind === "pattern") {
+    const f = mode.feat;
+    s = f.featureIds.length || f.type === "mirror" ? `${f.name} · tap timeline steps to add or remove them` : `${f.name} · tap the features to repeat in the timeline`;
+  } else if (mode.kind === "hole") {
     const f = mode.feat;
     s = f.sketchId ? `Hole · ${f.size} at the sketch points` : `Hole · ${f.size} × ${f.points?.length ?? 0} · tap to add or remove`;
   } else if (mode.kind === "fillet") {
@@ -1578,6 +1728,9 @@ window.addEventListener("keydown", (e) => {
     else if (key === "p") toggleParams();
     else if (key === "r") void filletTool();
     else if (key === "h") startHoles();
+    else if (key === "m") void patternTool("mirror");
+    else if (key === "l") void patternTool("linear");
+    else if (key === "o") void patternTool("circular");
     else if (key === "k") faceTool("shell");
     else if (key === "f") vp.fit();
     else if (key === "delete" && selectedFeature) {

@@ -180,7 +180,35 @@ export interface HoleFeature {
   depthExpr?: string;
 }
 
-export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature | FilletFeature | HoleFeature;
+export type Axis = "X" | "Y" | "Z";
+
+/**
+ * Repeats earlier features (their added or removed material) by translation, rotation or
+ * mirror. A mirror with no feature chosen mirrors the whole solid.
+ */
+export interface PatternFeature {
+  id: string;
+  kind: "pattern";
+  name: string;
+  type: "linear" | "circular" | "mirror";
+  featureIds: string[];
+  /** Linear: first direction. Circular: rotation axis (through the origin). Mirror: plane normal. */
+  axis: Axis;
+  /** Instances, the original included. */
+  count: number;
+  /** Linear: distance between instances (negative = the other way). */
+  spacing: number;
+  /** Linear: second direction of a rectangular pattern (count2 = 1 means none). */
+  axis2: Axis;
+  count2: number;
+  spacing2: number;
+  /** Circular: total angle in degrees (360 = evenly around). */
+  angle: number;
+  /** Mirror: position of the plane along its normal. */
+  offset: number;
+}
+
+export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature | FilletFeature | HoleFeature | PatternFeature;
 
 /** A named value usable in any dimension or feature value. */
 export interface Parameter {

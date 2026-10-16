@@ -6,7 +6,8 @@ A parametric 3D CAD that runs in the browser and is designed first for **fingers
 - Constrained 2D sketches, solved by FreeCAD's solver ([planegcs](https://github.com/Salusoft89/planegcs), WebAssembly)
 - Exact B-rep solids with OpenCascade ([replicad](https://replicad.xyz), WebAssembly, in a worker)
 - Feature history in the style of Onshape/FreeCAD: Sketch → Extrude (join / cut / intersect), Press Pull, Shell,
-  Fillet / Chamfer, Hole (M2.5 to M5, counterbore, countersink), every feature editable
+  Fillet / Chamfer, Hole (M2.5 to M5, counterbore, countersink), Mirror, linear/rectangular and circular
+  patterns, every feature editable
 - **STEP** export for other CAD software, **STL** for slicers
 - Installable PWA, works offline once loaded
 
@@ -101,6 +102,23 @@ Two ways to place them:
   sketch in the timeline and tap **Holes at its points**. The holes then follow the sketch's dimensions and
   parameters. **Flip direction** drills the other way for sketches on reference planes.
 
+## Mirror and patterns
+
+**Mirror**, **Linear pattern** and **Circular pattern** repeat the material added or removed by earlier
+features: extrusions (join or cut), Press Pull, holes, and other patterns. While the panel is open, tap steps
+in the timeline to add or remove them (they get an orange outline). The step selected before starting is
+included automatically.
+
+- **Linear pattern**: count and spacing along X, Y or Z; set *Count 2* above 1 for a second direction
+  (rectangular grid). A negative spacing goes the other way.
+- **Circular pattern**: count around the X, Y or Z axis through the origin, over a total angle
+  (360° spreads them evenly).
+- **Mirror**: about the YZ, XZ or XY plane, moved by *Plane position*. With no step chosen, the whole solid
+  is mirrored and joined to itself: model one half, mirror it.
+
+The segmented control at the top chooses which value the keypad is typing (Count, Spacing, Angle…).
+Shells and fillets cannot be repeated; repeat what they apply to instead.
+
 ## Fillets and chamfers
 
 **Fillet / Chamfer** (or `R`): tap the edges to round or bevel (tap again to drop one), type the size,
@@ -139,6 +157,7 @@ It is saved automatically in the browser; **Save** / **Open** use `.json` files.
 ## Known limitations
 
 - A sketch on a face stores a copy of the face's plane: it does not follow the face if earlier features change.
-- No revolve or patterns yet.
+- No revolve yet. Patterns rotate around axes through the origin only, and their counts and spacings
+  cannot use parameters yet.
 - Shell faces are chosen on the solid as it is before the shell, so the preview shows the shell only after Confirm.
 - One body: every extrusion adds to, cuts or intersects the same solid.

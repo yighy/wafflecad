@@ -154,7 +154,9 @@ export function usedNames(doc: CadDocument, except?: string): Set<string> {
             ? [f.radiusExpr ?? ""]
             : f.kind === "hole"
               ? [f.depthExpr ?? ""]
-              : [f.distanceExpr ?? ""];
+              : f.kind === "pattern"
+                ? []
+                : [f.distanceExpr ?? ""];
     for (const e of exprs) for (const n of identifiers(e)) out.add(n);
   }
   for (const p of doc.parameters ?? []) if (p.name !== except) for (const n of identifiers(p.expr)) out.add(n);

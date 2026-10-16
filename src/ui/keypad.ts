@@ -39,6 +39,9 @@ export interface KeypadHandle {
   result: Promise<KeypadResult | null>;
   /** Changes the value from outside (e.g. a drag handle). */
   set(v: number): void;
+  /** Changes the label in the display (when the keypad edits another field). */
+  setLabel(text: string, unit?: string): void;
+  setSubtitle(text: string): void;
   close(): void;
 }
 
@@ -205,6 +208,13 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
       expr = trimNum(v);
       fresh = true;
       update(false);
+    },
+    setLabel(text, unit) {
+      root.querySelector(".kp-label")!.textContent = text;
+      if (unit !== undefined) root.querySelector(".kp-unit")!.textContent = unit;
+    },
+    setSubtitle(text) {
+      root.querySelector(".kp-sub")!.textContent = text;
     },
     close: () => finish(null),
   };
