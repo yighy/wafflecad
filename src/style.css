@@ -59,12 +59,15 @@ button.danger {
   color: var(--danger);
 }
 
-/* ---------- Layout ---------- */
+/* ---------- Layout ----------
+   Phone (narrow): top bar, view, action strip, tool bar.
+   Tablet (wide): top bar, then tool rail | view | action rail, within thumb reach. */
 
 body {
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  grid-template-areas: "top" "view" "bottom";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "top" "view" "actions" "tools";
 }
 
 #topbar {
@@ -93,14 +96,14 @@ body {
   background: transparent;
   border-color: transparent;
 }
-#topbar #done {
+#topbar .done-btn {
   display: none;
   font-size: 15px;
   background: var(--accent);
   border-color: var(--accent);
   padding: 0 14px;
 }
-body[data-mode="sketch"] #topbar #done {
+body[data-mode="sketch"] #topbar .done-btn {
   display: block;
 }
 
@@ -116,31 +119,40 @@ body[data-mode="sketch"] #topbar #done {
   display: block;
 }
 
-#bottom {
-  grid-area: bottom;
+.rail {
   background: var(--panel);
+  z-index: 5;
+  display: flex;
+  min-width: 0;
+}
+#rail-tools {
+  grid-area: tools;
   border-top: 1px solid var(--line);
   padding-bottom: var(--safe-b);
-  z-index: 5;
 }
-
-#toolbar,
-#context {
+#rail-actions {
+  grid-area: actions;
+  background: var(--panel2);
+  border-top: 1px solid var(--line);
+}
+#rail-actions:has(#context:empty) {
+  display: none;
+}
+.rail-body {
   display: flex;
   gap: 6px;
   padding: 6px 8px;
-  overflow-x: auto;
+  overflow: auto;
   scrollbar-width: none;
+  flex: 1;
+  min-width: 0;
 }
-#context:empty {
+/* Phone: undo/redo/done live in the top bar. */
+.rail-foot {
   display: none;
 }
-#context {
-  border-bottom: 1px solid var(--line);
-  background: var(--panel2);
-}
-#toolbar button,
-#context button {
+
+.rail button {
   flex: 0 0 auto;
   min-width: var(--btn);
   height: var(--btn);
@@ -151,34 +163,113 @@ body[data-mode="sketch"] #topbar #done {
   gap: 1px;
   padding: 2px 8px;
 }
-#toolbar .glyph,
-#context .glyph {
+.rail .glyph {
   font-size: 20px;
   line-height: 1;
 }
-#toolbar .cap,
-#context .cap {
+.rail .cap {
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
 }
-#toolbar button.active {
+.rail button.active {
   background: var(--select);
   border-color: var(--select);
   color: #0d1a22;
 }
-#toolbar button.active .cap {
-  color: #0d1a22;
-}
-#toolbar button.primary .cap {
+.rail button.active .cap,
+.rail button.primary .cap {
   color: #1b1b1b;
 }
-/* Tools share the width so they all stay reachable on a phone. */
+/* Phone: tools share the width so they all stay reachable. */
 #toolbar button {
   flex: 1 1 0;
   min-width: 44px;
   max-width: 96px;
   padding: 2px;
+}
+
+@media (min-width: 700px) {
+  :root {
+    --rail: 76px;
+  }
+  body {
+    grid-template-columns: var(--rail) minmax(0, 1fr) var(--rail);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "top top top" "tools view actions";
+  }
+  /* Left-handed: actions under the left thumb, tools under the right one. */
+  body.swapped {
+    grid-template-areas: "top top top" "actions view tools";
+  }
+  .top-only,
+  body[data-mode="sketch"] #topbar .done-btn {
+    display: none;
+  }
+  .rail,
+  #rail-actions:has(#context:empty) {
+    display: flex;
+    flex-direction: column;
+    border-top: none;
+    padding-bottom: var(--safe-b);
+  }
+  #rail-tools {
+    border-right: 1px solid var(--line);
+  }
+  #rail-actions {
+    border-left: 1px solid var(--line);
+  }
+  body.swapped #rail-tools {
+    border-right: none;
+    border-left: 1px solid var(--line);
+  }
+  body.swapped #rail-actions {
+    border-left: none;
+    border-right: 1px solid var(--line);
+  }
+  /* Buttons gather around the vertical middle and lower half, where thumbs rest. */
+  .rail-body {
+    flex-direction: column;
+    justify-content: center;
+    padding: 8px;
+  }
+  .rail-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border-top: 1px solid var(--line);
+  }
+  .rail button,
+  #toolbar button {
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: none;
+    height: 58px;
+    padding: 2px;
+  }
+  .rail .cap {
+    white-space: normal;
+    text-align: center;
+    line-height: 1.1;
+  }
+  .rail-foot .done-btn {
+    visibility: hidden;
+  }
+  body[data-mode="sketch"] .rail-foot .done-btn {
+    visibility: visible;
+  }
+  /* The keypad sits next to the action rail, under the thumb. */
+  .keypad {
+    left: auto;
+    right: calc(var(--rail) + 8px);
+    transform: none;
+    width: min(380px, calc(100vw - 2 * var(--rail) - 16px));
+  }
+  body.swapped .keypad {
+    right: auto;
+    left: calc(var(--rail) + 8px);
+  }
 }
 
 /* ---------- Overlay labels on the 3D view ---------- */
@@ -321,24 +412,6 @@ body.drawer-open #drawer {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
-}
-
-@media (min-width: 900px) {
-  /* Wide screens: the tree stays open on the left. */
-  body {
-    grid-template-columns: 300px 1fr;
-    grid-template-areas: "top top" "drawer view" "drawer bottom";
-  }
-  #drawer {
-    position: static;
-    grid-area: drawer;
-    transform: none;
-    width: auto;
-    padding-top: 0;
-  }
-  #drawer-close {
-    display: none;
-  }
 }
 
 /* ---------- Menu ---------- */

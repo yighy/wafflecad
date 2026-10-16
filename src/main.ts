@@ -17,6 +17,18 @@ const STD_PLANES: PlaneDef[] = [
 const PLANE_COLORS: Record<string, string> = { XY: "#5588ee", XZ: "#55c46a", YZ: "#e05555" };
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
+const buttons = (sel: string) => [...document.querySelectorAll<HTMLButtonElement>(sel)];
+
+const SWAP_KEY = "touch-cad.swapped";
+/** Tablet layout: tools under the left thumb and actions under the right one, or the reverse. */
+function setSwapped(on: boolean) {
+  document.body.classList.toggle("swapped", on);
+  try {
+    localStorage.setItem(SWAP_KEY, on ? "1" : "0");
+  } catch {
+    // Not remembered: fine.
+  }
+}
 
 // ---------- State ----------
 
@@ -148,8 +160,8 @@ function redo() {
 }
 
 function updateHistoryButtons() {
-  $<HTMLButtonElement>("#undo").disabled = undoPos === 0;
-  $<HTMLButtonElement>("#redo").disabled = undoPos >= undoStack.length - 1;
+  for (const b of buttons(".undo-btn")) b.disabled = undoPos === 0;
+  for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
 }
 
 function nextName(prefix: string) {
@@ -635,6 +647,7 @@ function setupMenu() {
     ["Save (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), "model.tcad.json")],
     ["Export STEP", () => exportFile("step")],
     ["Export STL", () => exportFile("stl")],
+    ["Swap rails (left-handed)", () => setSwapped(!document.body.classList.contains("swapped"))],
     ["Help", showHelp],
   ];
   for (const [label, run] of items) {
@@ -744,9 +757,10 @@ window.addEventListener("popstate", () => {
 
 async function boot() {
   setupMenu();
-  $("#undo").onclick = undo;
-  $("#done").onclick = exitSketch;
-  $("#redo").onclick = redo;
+  for (const b of buttons(".undo-btn")) b.onclick = undo;
+  for (const b of buttons(".redo-btn")) b.onclick = redo;
+  for (const b of buttons(".done-btn")) b.onclick = exitSketch;
+  setSwapped(localStorage.getItem(SWAP_KEY) === "1");
   $("#drawer-close").onclick = closeDrawer;
   $("#help-close").onclick = () => $("#help").classList.remove("open");
   setStatus("Loading geometry kernel…");

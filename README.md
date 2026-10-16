@@ -33,6 +33,15 @@ npm run dev
 
 While a stylus touches the screen, finger contacts are ignored (palm rejection).
 
+## Layout
+
+On tablets (width ≥ 700 px) the controls sit in two vertical rails, within reach of the thumbs
+while holding the device with both hands: tools on the left, the actions for the current selection
+(constraints, dimensions, delete) on the right, with Undo/Redo and Done at the bottom of the rails.
+The keypad opens next to the action rail. **Menu → Swap rails** mirrors everything for left-handed use.
+
+On phones the same controls become two bars at the bottom of the screen.
+
 ## Sketching
 
 1. **Sketch**, then tap a reference plane (XY, XZ, YZ) or a flat face of the model.

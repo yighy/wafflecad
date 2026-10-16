@@ -14,12 +14,28 @@
       <button id="menu" aria-label="Menu">⋮</button>
       <div id="menu-panel" class="menu"></div>
       <span id="status"></span>
-      <button id="done" class="primary" title="Finish sketch (Enter)">✓ Done</button>
-      <button id="undo" aria-label="Undo" title="Undo (Ctrl+Z, two-finger tap)">↶</button>
-      <button id="redo" aria-label="Redo" title="Redo (Ctrl+Y, three-finger tap)">↷</button>
+      <button class="done-btn primary top-only" title="Finish sketch (Enter)">✓ Done</button>
+      <button class="undo-btn top-only" aria-label="Undo" title="Undo (Ctrl+Z, two-finger tap)">↶</button>
+      <button class="redo-btn top-only" aria-label="Redo" title="Redo (Ctrl+Y, three-finger tap)">↷</button>
     </header>
 
+    <!-- Tablet: two thumb rails (tools left, selection actions right). Phone: bars at the bottom. -->
+    <nav id="rail-tools" class="rail">
+      <div id="toolbar" class="rail-body"></div>
+      <div class="rail-foot">
+        <button class="undo-btn" aria-label="Undo" title="Undo (Ctrl+Z, two-finger tap)"><span class="glyph">↶</span><span class="cap">Undo</span></button>
+        <button class="redo-btn" aria-label="Redo" title="Redo (Ctrl+Y, three-finger tap)"><span class="glyph">↷</span><span class="cap">Redo</span></button>
+      </div>
+    </nav>
+
     <main id="view"></main>
+
+    <nav id="rail-actions" class="rail">
+      <div id="context" class="rail-body"></div>
+      <div class="rail-foot">
+        <button class="done-btn primary" title="Finish sketch (Enter)"><span class="glyph">✓</span><span class="cap">Done</span></button>
+      </div>
+    </nav>
 
     <aside id="drawer">
       <div class="drawer-head">
@@ -28,11 +44,6 @@
       </div>
       <div id="tree-list"></div>
     </aside>
-
-    <div id="bottom">
-      <div id="context"></div>
-      <nav id="toolbar"></nav>
-    </div>
 
     <div id="toast" role="status"></div>
 
