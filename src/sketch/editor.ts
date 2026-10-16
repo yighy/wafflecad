@@ -216,9 +216,12 @@ export class SketchEditor implements PointerTool {
       const proj = this.project(c, s, v);
       if (!proj) continue;
       const [sx, sy] = this.toScreen(proj);
-      const d = Math.hypot(sx - p.x, sy - p.y);
+      const raw = Math.hypot(sx - p.x, sy - p.y);
       // Curves are a bit easier to miss than points: favour points by a margin.
-      if (d < R * 0.8 && (!best || d < best.d)) best = { id: c.id, kind: "curve", at: proj, d };
+      if (raw >= R * 0.8) continue;
+      // Drawn geometry wins over a reference axis it lies on (the axis is still picked away from it).
+      const d = c.type === "line" && c.axis ? raw + R : raw;
+      if (!best || d < best.d) best = { id: c.id, kind: "curve", at: proj, d };
     }
     return best;
   }
