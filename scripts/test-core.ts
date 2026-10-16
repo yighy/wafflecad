@@ -1,6 +1,6 @@
 // Core tests under Node: solver, profile detection, solid build. Run: npm test
 import opencascade from "replicad-opencascadejs";
-import { setOC } from "replicad";
+import { measureVolume, setOC } from "replicad";
 import { Solver } from "../src/sketch/solver";
 import { newSketch, uid } from "../src/sketch/model";
 import { findRegions } from "../src/sketch/profiles";
@@ -148,6 +148,30 @@ const stepText = step ? await step.text() : "";
 check("STEP export", stepText.startsWith("ISO-10303-21") && stepText.includes("MANIFOLD_SOLID_BREP"), String(stepText.length));
 const stl = exportFile(doc, "stl");
 check("STL export", !!stl && stl.size > 84, String(stl?.size));
+
+// --- Press Pull and Shell on a plain 20 × 10 × 5 block.
+const blockSk = newSketch("B", XY);
+rect(blockSk, 0, 0, 20, 10);
+const block = (...more: CadDocument["features"]): CadDocument => ({
+  format: "touch-cad",
+  version: 1,
+  features: [blockSk, { id: "eb", kind: "extrude", name: "EB", sketchId: blockSk.id, distance: 5, symmetric: false, op: "add" }, ...more],
+});
+const topRef = { center: [10, 5, 5] as [number, number, number], normal: [0, 0, 1] as [number, number, number] };
+let pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: topRef, distance: 3 }));
+check("pull top face +3", !pp.errors.pp && near(pp.shape!.boundingBox.bounds[1][2], 8), JSON.stringify(pp.errors));
+pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: topRef, distance: -2 }));
+check("push top face −2", !pp.errors.pp && near(pp.shape!.boundingBox.bounds[1][2], 3), JSON.stringify(pp.errors));
+pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: [10, 5, 9], normal: [0, 0, 1] }, distance: 1 }));
+check("missing face reported", !!pp.errors.pp, JSON.stringify(pp.errors));
+const sh = buildShape(block({ id: "sh", kind: "shell", name: "SH", faces: [topRef], thickness: 1 }));
+check("shell open top, 1 mm walls", !sh.errors.sh && near(measureVolume(sh.shape!), 1000 - 18 * 8 * 4, 1e-3), `${JSON.stringify(sh.errors)} vol=${sh.shape && measureVolume(sh.shape)}`);
+check("shell keeps outer size", near(sh.shape!.boundingBox.bounds[1][0], 20) && near(sh.shape!.boundingBox.bounds[1][2], 5));
+// Faces reported by the build can be used as references.
+const pfs = buildResult(block()).planarFaces;
+const topFace = pfs.find((f) => near(f.plane.normal[2], 1));
+const pp2 = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: topFace!.center, normal: topFace!.plane.normal }, distance: 2 }));
+check("planarFaces centre works as reference", !pp2.errors.pp && near(pp2.shape!.boundingBox.bounds[1][2], 7), JSON.stringify(pp2.errors));
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

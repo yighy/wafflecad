@@ -5,7 +5,8 @@ A parametric 3D CAD that runs in the browser and is designed first for **fingers
 
 - Constrained 2D sketches, solved by FreeCAD's solver ([planegcs](https://github.com/Salusoft89/planegcs), WebAssembly)
 - Exact B-rep solids with OpenCascade ([replicad](https://replicad.xyz), WebAssembly, in a worker)
-- Feature history in the style of Onshape/FreeCAD: Sketch → Extrude (add / cut / intersect), every feature editable
+- Feature history in the style of Onshape/FreeCAD: Sketch → Extrude (join / cut / intersect), Press Pull, Shell,
+  every feature editable
 - **STEP** export for other CAD software, **STL** for slicers
 - Installable PWA, works offline once loaded
 
@@ -59,7 +60,20 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
 4. Dimensions open an on-screen keypad that accepts expressions (`20*2+3`). Tap a dimension to edit it.
 5. The status bar shows the remaining degrees of freedom; geometry turns green when fully constrained.
    Closed regions are shaded: that is what an extrusion uses (nested loops become holes).
-6. **Done**, then **Extrude**.
+6. **Finish sketch**, then **Extrude**.
+
+## Working on faces
+
+Tap a flat face of the solid: the right panel offers **Sketch on this face**, **Press Pull** and **Shell**.
+(The Press Pull and Shell tools on the left also work the other way round: choose the tool, then tap a face.)
+
+- **Press Pull**: pull the handle or type a distance. Positive pulls the face out and adds material,
+  negative pushes it in and removes material.
+- **Shell**: hollows the solid with walls of the given thickness, leaving the chosen faces open.
+  While the keypad is open, tap more faces to open or close them.
+
+Faces are found again by a point on them and their normal. If an earlier change moves the face,
+the feature turns red in the timeline instead of applying somewhere else.
 
 Optional keyboard shortcuts: `L` line, `R` rectangle, `C` circle, `A` arc, `P` point, `G` construction,
 `Esc` cancel, `Enter` end a line / finish, `Del` delete, `Ctrl+Z` / `Ctrl+Y`;
@@ -90,4 +104,5 @@ It is saved automatically in the browser; **Save** / **Open** use `.json` files.
 
 - A sketch on a face stores a copy of the face's plane: it does not follow the face if earlier features change.
 - No fillets, chamfers, revolve or patterns yet.
+- Shell faces are chosen on the solid as it is before the shell, so the preview shows the shell only after Confirm.
 - One body: every extrusion adds to, cuts or intersects the same solid.

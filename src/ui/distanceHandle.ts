@@ -1,4 +1,5 @@
-// Draggable arrow tip for an extrusion: pull it along the sketch normal to set the distance.
+// Draggable tip on an arrow: pull it along a direction to set a distance
+// (extrusions from a sketch, Press Pull from a face).
 import * as THREE from "three";
 import type { SketchFeature } from "../types";
 import { findRegions, sampleSegments, signedArea } from "../sketch/profiles";
@@ -7,27 +8,31 @@ import { V, gridStep, type Viewport } from "../view/viewport";
 
 type P2 = [number, number];
 
-export class ExtrudeHandle {
+/** Arrow base and direction for an extrusion of this sketch. */
+export function sketchArrow(sk: SketchFeature): { base: THREE.Vector3; normal: THREE.Vector3 } {
+  const [cx, cy] = profileCentroid(sk);
+  const xd = V(sk.plane.xDir);
+  const yd = V(sk.plane.normal).cross(xd);
+  return {
+    base: V(sk.plane.origin).addScaledVector(xd, cx).addScaledVector(yd, cy),
+    normal: V(sk.plane.normal).normalize(),
+  };
+}
+
+export class DistanceHandle {
   private svg: SVGSVGElement;
   private line: SVGLineElement;
   private dot: SVGCircleElement;
   private knob: HTMLDivElement;
-  private base: THREE.Vector3;
-  private normal: THREE.Vector3;
   private off: () => void;
 
   constructor(
     private vp: Viewport,
-    sk: SketchFeature,
+    private base: THREE.Vector3,
+    private normal: THREE.Vector3,
     private getDistance: () => number,
     onDrag: (d: number) => void,
   ) {
-    const [cx, cy] = profileCentroid(sk);
-    const xd = V(sk.plane.xDir);
-    const yd = V(sk.plane.normal).cross(xd);
-    this.normal = V(sk.plane.normal).normalize();
-    this.base = V(sk.plane.origin).addScaledVector(xd, cx).addScaledVector(yd, cy);
-
     const ns = "http://www.w3.org/2000/svg";
     this.svg = document.createElementNS(ns, "svg");
     this.svg.classList.add("handle-layer");

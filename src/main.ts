@@ -1,7 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, Feature, PlaneDef, SketchFeature, WorkerRequest, WorkerResponse } from "./types";
+import type { BuildResult, CadDocument, ExtrudeFeature, ExtrudeOp, FaceRef, Feature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
@@ -10,7 +10,7 @@ import { SketchView, newSketch, uid } from "./sketch/model";
 import { openKeypad, setKeypadHost, type KeypadHandle } from "./ui/keypad";
 import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
-import { ExtrudeHandle } from "./ui/extrudeHandle";
+import { DistanceHandle, sketchArrow } from "./ui/distanceHandle";
 import { findRegions } from "./sketch/profiles";
 
 const STORAGE_KEY = "touch-cad.document";
@@ -60,12 +60,21 @@ type Mode =
   | { kind: "part" }
   | { kind: "pickPlane" }
   | { kind: "sketch"; editor: SketchEditor }
-  | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle };
+  | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle }
+  | { kind: "pushpull"; feat: PushPullFeature; keypad: KeypadHandle }
+  | { kind: "shell"; feat: ShellFeature; keypad: KeypadHandle };
+
+/** Modes where a feature is being edited with the keypad open. */
+const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
 
 let doc: CadDocument = loadDoc();
 let mode: Mode = { kind: "part" };
 let selectedFeature: string | null = null;
-let selectedFace: { faceId: number; plane: PlaneDef | null } | null = null;
+let selectedFace: { faceId: number; plane: PlaneDef | null; center: Vec3 | null } | null = null;
+/** A face tool chosen before any face was selected: it starts on the next face tapped. */
+let pendingFaceTool: "pushpull" | "shell" | null = null;
+/** A feature left out of the preview build (the shell, while its faces are being chosen). */
+let previewExclude: string | null = null;
 let lastBuild: BuildResult | null = null;
 let kernelMessage = "Loading geometry kernel…";
 const undoStack: string[] = [JSON.stringify(doc)];
@@ -100,6 +109,7 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     vp.setModel(m);
     if (first && m.mesh) vp.fit();
     if (mode.kind === "sketch") vp.setModelOpacity(0.45);
+    if (mode.kind === "shell") highlightShellFaces(mode.feat);
     renderTimeline();
     renderPanel();
     renderPartOverlays();
@@ -114,7 +124,8 @@ function rebuild(now = false) {
   const go = () => {
     if (!kernelReady) return;
     latestBuild = ++reqCounter;
-    worker.postMessage({ type: "build", reqId: latestBuild, doc } satisfies WorkerRequest);
+    const built = previewExclude ? { ...doc, features: doc.features.filter((f) => f.id !== previewExclude) } : doc;
+    worker.postMessage({ type: "build", reqId: latestBuild, doc: built } satisfies WorkerRequest);
   };
   if (now) go();
   else buildTimer = window.setTimeout(go, 120);
@@ -166,7 +177,7 @@ function commit() {
 }
 
 function restore(pos: number) {
-  if (mode.kind === "extrude") mode.keypad.close();
+  if (isOperation(mode)) mode.keypad.close();
   undoPos = pos;
   doc = JSON.parse(undoStack[pos]);
   save();
@@ -265,8 +276,13 @@ function exitSketch() {
 }
 
 function escape(): boolean {
-  if (mode.kind === "extrude") {
+  if (isOperation(mode)) {
     mode.keypad.close();
+    return true;
+  }
+  if (pendingFaceTool) {
+    pendingFaceTool = null;
+    renderAll();
     return true;
   }
   if (mode.kind === "sketch") {
@@ -298,7 +314,7 @@ function clearPartSelection() {
 // ---------- Extrude ----------
 
 async function extrude(existing?: ExtrudeFeature) {
-  if (mode.kind === "extrude") return;
+  if (isOperation(mode)) return;
   let f = existing;
   if (!f) {
     const sk = pickSketchForExtrude();
@@ -317,7 +333,7 @@ async function extrude(existing?: ExtrudeFeature) {
   selectedFace = null;
   vp.highlightFace(null);
 
-  let handle: ExtrudeHandle | null = null;
+  let handle: DistanceHandle | null = null;
   const setDistance = (d: number, fromKeypad = false) => {
     feat.distance = d;
     if (!fromKeypad) kp.set(Math.abs(d));
@@ -366,7 +382,8 @@ async function extrude(existing?: ExtrudeFeature) {
     },
   });
   mode = { kind: "extrude", feat, keypad: kp };
-  handle = new ExtrudeHandle(vp, sk, () => feat.distance, (d) => setDistance(d));
+  const arrow = sketchArrow(sk);
+  handle = new DistanceHandle(vp, arrow.base, arrow.normal, () => feat.distance, (d) => setDistance(d));
   renderAll();
   rebuild(true);
 
@@ -385,6 +402,157 @@ async function extrude(existing?: ExtrudeFeature) {
   }
   feat.distance = Math.sign(feat.distance || 1) * value;
   commit();
+}
+
+// ---------- Press Pull and Shell (on faces of the solid) ----------
+
+function faceRefOfSelection(): FaceRef | null {
+  if (!selectedFace?.plane || !selectedFace.center) return null;
+  return { center: selectedFace.center, normal: selectedFace.plane.normal };
+}
+
+/** Starts a face tool on the selected face, or waits for a face to be tapped. */
+function faceTool(tool: "pushpull" | "shell") {
+  if (mode.kind !== "part") return;
+  if (!doc.features.some((f) => f.kind === "extrude")) return toast("Make a solid first (Sketch, then Extrude)");
+  const ref = faceRefOfSelection();
+  if (!ref) {
+    pendingFaceTool = tool;
+    selectedFeature = null;
+    renderAll();
+    return;
+  }
+  pendingFaceTool = null;
+  if (tool === "pushpull") void pushPull(undefined, ref);
+  else void shell(undefined, ref);
+}
+
+async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
+  const feat: PushPullFeature = existing ?? { id: uid(), kind: "pushpull", name: nextName("Press Pull"), face: ref!, distance: 5 };
+  const before = feat.distance;
+  if (!existing) doc.features.push(feat);
+  selectedFeature = feat.id;
+  selectedFace = null;
+  vp.highlightFace(null);
+
+  let handle: DistanceHandle | null = null;
+  const setDistance = (d: number, fromKeypad = false) => {
+    feat.distance = d;
+    if (!fromKeypad) kp.set(d);
+    handle?.update();
+    renderTimeline();
+    rebuild();
+  };
+  const kp = openKeypad({
+    title: feat.name,
+    subtitle: "Positive pulls the face out, negative pushes it in",
+    label: "Distance",
+    value: feat.distance,
+    confirmLabel: "Confirm",
+    segments: [
+      {
+        options: [
+          { value: "pull", label: "Pull (add)" },
+          { value: "push", label: "Push (cut)" },
+        ],
+        get: () => (feat.distance >= 0 ? "pull" : "push"),
+        set: (v) => {
+          if ((v === "push") !== feat.distance < 0) setDistance(-feat.distance);
+        },
+      },
+    ],
+    onInput: (v) => {
+      if (v !== 0) setDistance(v, true);
+    },
+  });
+  mode = { kind: "pushpull", feat, keypad: kp };
+  // The arrow starts on the face as it was before this feature.
+  handle = new DistanceHandle(
+    vp,
+    new THREE.Vector3(...feat.face.center),
+    new THREE.Vector3(...feat.face.normal),
+    () => feat.distance,
+    (d) => setDistance(d),
+  );
+  renderAll();
+  rebuild(true);
+
+  const value = await kp.result;
+  handle.dispose();
+  mode = { kind: "part" };
+  if (value === null || value === 0) {
+    if (existing) feat.distance = before;
+    else {
+      doc.features = doc.features.filter((x) => x !== feat);
+      selectedFeature = null;
+    }
+    rebuild(true);
+    renderAll();
+    return;
+  }
+  feat.distance = value;
+  commit();
+}
+
+async function shell(existing?: ShellFeature, ref?: FaceRef) {
+  const feat: ShellFeature = existing ?? { id: uid(), kind: "shell", name: nextName("Shell"), faces: [ref!], thickness: 2 };
+  const before = { thickness: feat.thickness, faces: [...feat.faces] };
+  if (!existing) doc.features.push(feat);
+  selectedFeature = feat.id;
+  selectedFace = null;
+  // Faces are chosen on the solid as it is before the shell.
+  previewExclude = feat.id;
+  const kp = openKeypad({
+    title: feat.name,
+    subtitle: "Tap faces to open or close them",
+    label: "Wall thickness",
+    value: feat.thickness,
+    confirmLabel: "Confirm",
+    onInput: (v) => {
+      if (v > 0) feat.thickness = v;
+    },
+  });
+  mode = { kind: "shell", feat, keypad: kp };
+  renderAll();
+  rebuild(true);
+
+  const value = await kp.result;
+  previewExclude = null;
+  mode = { kind: "part" };
+  vp.highlightFace(null);
+  if (value === null || value <= 0 || !feat.faces.length) {
+    if (value !== null && !feat.faces.length) toast("A shell needs at least one open face");
+    if (existing) Object.assign(feat, before);
+    else {
+      doc.features = doc.features.filter((x) => x !== feat);
+      selectedFeature = null;
+    }
+    rebuild(true);
+    renderAll();
+    return;
+  }
+  feat.thickness = value;
+  commit();
+}
+
+const sameFace = (a: FaceRef, center: Vec3, normal: Vec3) =>
+  Math.hypot(a.center[0] - center[0], a.center[1] - center[1], a.center[2] - center[2]) < 1e-3 &&
+  a.normal[0] * normal[0] + a.normal[1] * normal[1] + a.normal[2] * normal[2] > 0.999;
+
+function highlightShellFaces(feat: ShellFeature) {
+  const ids = (lastBuild?.planarFaces ?? [])
+    .filter((pf) => feat.faces.some((r) => sameFace(r, pf.center, pf.plane.normal)))
+    .map((pf) => pf.faceId);
+  vp.highlightFaces(ids);
+}
+
+function toggleShellFace(feat: ShellFeature, faceId: number) {
+  const pf = lastBuild?.planarFaces.find((f) => f.faceId === faceId);
+  if (!pf) return toast("Only flat faces can be opened");
+  const i = feat.faces.findIndex((r) => sameFace(r, pf.center, pf.plane.normal));
+  if (i >= 0) feat.faces.splice(i, 1);
+  else feat.faces.push({ center: pf.center, normal: pf.plane.normal });
+  highlightShellFaces(feat);
 }
 
 /** The selected sketch, or the last sketch not yet used by a feature. */
@@ -497,6 +665,10 @@ function renderTools() {
     el.appendChild(toolRow("sketch", "New sketch", startNewSketch, { key: "S" }));
     el.appendChild(section("Features"));
     el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { active: mode.kind === "extrude", key: "E" }));
+    el.appendChild(
+      toolRow("pushpull", "Press Pull", () => faceTool("pushpull"), { active: mode.kind === "pushpull" || pendingFaceTool === "pushpull", key: "Q" }),
+    );
+    el.appendChild(toolRow("shell", "Shell", () => faceTool("shell"), { active: mode.kind === "shell" || pendingFaceTool === "shell", key: "K" }));
   }
 }
 
@@ -565,8 +737,12 @@ function renderPanel() {
     const plane = selectedFace.plane;
     head("Face", plane ? "Flat face" : "Curved face", false, true);
     const items: [string, string, () => void, string?][] = [];
-    if (plane) items.push(["sketch", "Sketch on this face", () => createSketchOn(plane)]);
-    if (plane) items.push(["lookAt", "Look at", () => vp.viewNormalTo(plane)]);
+    if (plane) {
+      items.push(["sketch", "Sketch on this face", () => createSketchOn(plane)]);
+      items.push(["pushpull", "Press Pull", () => faceTool("pushpull")]);
+      items.push(["shell", "Shell (open this face)", () => faceTool("shell")]);
+      items.push(["lookAt", "Look at", () => vp.viewNormalTo(plane)]);
+    }
     actions(items);
     return;
   }
@@ -578,7 +754,9 @@ function renderPanel() {
     if (f.kind === "sketch") {
       items.push(["edit", "Edit sketch", () => enterSketch(f)]);
       items.push(["extrude", "Extrude", () => void extrude()]);
-    } else items.push(["edit", "Edit", () => void extrude(f)]);
+    } else if (f.kind === "extrude") items.push(["edit", "Edit", () => void extrude(f)]);
+    else if (f.kind === "pushpull") items.push(["edit", "Edit", () => void pushPull(f)]);
+    else items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
     items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
     actions(items);
@@ -606,12 +784,16 @@ function dofText(dof: number) {
 
 function featureDetail(f: Feature) {
   if (f.kind === "sketch") return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}`;
+  if (f.kind === "pushpull") return `${f.distance >= 0 ? "Pull" : "Push"} · ${fmtNum(Math.abs(f.distance))} mm`;
+  if (f.kind === "shell") return `${fmtNum(f.thickness)} mm walls · ${f.faces.length} open face${f.faces.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
   return `${op} · ${fmtNum(Math.abs(f.distance))} mm${f.symmetric ? " · symmetric" : ""}`;
 }
 
 function featureIcon(f: Feature) {
   if (f.kind === "sketch") return "rect";
+  if (f.kind === "pushpull") return "pushpull";
+  if (f.kind === "shell") return "shell";
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
 }
 
@@ -624,7 +806,7 @@ function renderTimeline() {
     e.textContent = "Your feature history appears here. Start with New sketch.";
     el.appendChild(e);
   }
-  const current = mode.kind === "sketch" ? mode.editor.sk.id : mode.kind === "extrude" ? mode.feat.id : selectedFeature;
+  const current = mode.kind === "sketch" ? mode.editor.sk.id : isOperation(mode) ? mode.feat.id : selectedFeature;
   doc.features.forEach((f, i) => {
     if (i > 0) {
       const sep = document.createElement("span");
@@ -660,6 +842,9 @@ function renderStatus() {
     const tool = SKETCH_TOOLS.find((t) => t.tool === ed.tool)!.label;
     s = `${ed.sk.name} · ${tool} · ${dofText(ed.dof).toLowerCase()}`;
   } else if (mode.kind === "extrude") s = "Extrude · drag the handle or type a value";
+  else if (mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
+  else if (mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
+  else if (pendingFaceTool) s = `${pendingFaceTool === "shell" ? "Shell" : "Press Pull"} · tap a flat face`;
   $("#status").textContent = s;
 }
 
@@ -742,11 +927,20 @@ const partTool: PointerTool = {
   move() {},
   up(p) {
     if (mode.kind === "pickPlane") return pickPlaneAt(p);
-    if (mode.kind !== "part") return;
     const face = vp.pickFace(p.x, p.y);
+    if (mode.kind === "shell") {
+      if (face != null) toggleShellFace(mode.feat, face);
+      return;
+    }
+    if (mode.kind !== "part") return;
     vp.highlightFace(face);
     selectedFeature = null;
-    selectedFace = face == null ? null : { faceId: face, plane: lastBuild?.planarFaces.find((f) => f.faceId === face)?.plane ?? null };
+    const pf = face == null ? undefined : lastBuild?.planarFaces.find((f) => f.faceId === face);
+    selectedFace = face == null ? null : { faceId: face, plane: pf?.plane ?? null, center: pf?.center ?? null };
+    if (pendingFaceTool && face != null) {
+      if (!pf) return toast("Only flat faces work here");
+      return faceTool(pendingFaceTool);
+    }
     renderAll();
   },
   cancel() {},
@@ -947,6 +1141,8 @@ window.addEventListener("keydown", (e) => {
     const key = k.toLowerCase();
     if (key === "s") startNewSketch();
     else if (key === "e") void extrude();
+    else if (key === "q") faceTool("pushpull");
+    else if (key === "k") faceTool("shell");
     else if (key === "f") vp.fit();
     else if (key === "delete" && selectedFeature) {
       const f = doc.features.find((x) => x.id === selectedFeature);

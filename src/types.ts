@@ -105,7 +105,34 @@ export interface ExtrudeFeature {
   op: ExtrudeOp;
 }
 
-export type Feature = SketchFeature | ExtrudeFeature;
+/**
+ * A flat face of the solid, found again on rebuild by a point on it and its normal
+ * (a geometric reference: it fails, rather than guessing, if the face moved).
+ */
+export interface FaceRef {
+  center: Vec3;
+  normal: Vec3;
+}
+
+/** Pulls a face outwards (positive distance, adds material) or pushes it in (negative, removes). */
+export interface PushPullFeature {
+  id: string;
+  kind: "pushpull";
+  name: string;
+  face: FaceRef;
+  distance: number;
+}
+
+/** Hollows the solid, opening the given faces, with walls of `thickness`. */
+export interface ShellFeature {
+  id: string;
+  kind: "shell";
+  name: string;
+  faces: FaceRef[];
+  thickness: number;
+}
+
+export type Feature = SketchFeature | ExtrudeFeature | PushPullFeature | ShellFeature;
 
 export interface CadDocument {
   format: "touch-cad";
@@ -142,6 +169,8 @@ export interface MeshData {
 export interface PlanarFace {
   faceId: number;
   plane: PlaneDef;
+  /** A point inside the face (used to find it again). */
+  center: Vec3;
 }
 
 export interface BuildResult {

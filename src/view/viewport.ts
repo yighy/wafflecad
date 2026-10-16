@@ -405,15 +405,24 @@ export class Viewport {
   }
 
   highlightFace(faceId: number | null) {
+    this.highlightFaces(faceId == null ? [] : [faceId]);
+  }
+
+  /** Tints faces of the model (selection, faces to open…). */
+  highlightFaces(faceIds: number[]) {
     this.clearHighlight();
-    if (faceId == null || !this.mesh) return;
-    const g = this.faceGroups.find((f) => f.faceId === faceId);
-    if (!g) return;
+    if (!faceIds.length || !this.mesh) return;
     const src = this.mesh.geometry;
-    const idx = (src.index!.array as Uint32Array).slice(g.start, g.start + g.count);
+    const all = src.index!.array as Uint32Array;
+    const parts: number[] = [];
+    for (const id of faceIds) {
+      const g = this.faceGroups.find((f) => f.faceId === id);
+      if (g) parts.push(...all.slice(g.start, g.start + g.count));
+    }
+    if (!parts.length) return;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", src.getAttribute("position"));
-    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(parts), 1));
     this.highlight = new THREE.Mesh(
       geo,
       new THREE.MeshBasicMaterial({ color: cssVar("--accent", "#ffb648"), transparent: true, opacity: 0.55, depthTest: false }),
