@@ -1,0 +1,26 @@
+{
+  "name": "touch-cad",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Touch-first parametric 3D CAD for the browser (Android, stylus, finger)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "test": "tsx scripts/test-core.ts"
+  },
+  "dependencies": {
+    "@salusoft89/planegcs": "^1.3.0",
+    "replicad": "^1.1.0",
+    "replicad-opencascadejs": "^1.1.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/three": "^0.186.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

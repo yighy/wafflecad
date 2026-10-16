@@ -1,0 +1,12 @@
+{
+  "name": "Touch CAD",
+  "short_name": "Touch CAD",
+  "description": "Touch-first parametric 3D CAD",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#16181d",
+  "theme_color": "#16181d",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
