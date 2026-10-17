@@ -41,7 +41,9 @@ The 3D view fills the screen; the controls float above it.
 
 - **Left**: the tools of the current mode, grouped by section. The panel folds down to icons only.
   Tapping an active tool again puts it down.
-  A tool that needs something first (a sketch, a solid) stays in place, greyed; tapping it says what is missing.
+  Tools appear as the document grows: an empty document shows New sketch; a sketch brings Extrude and
+  Revolve; a solid brings the rest. From then on the layout stays put, and a tool unavailable for a moment
+  (no free sketch to extrude) is greyed in place; tapping it says what is missing.
   While an operation is open, the left panel hides: its options, Confirm and Cancel are all in the right panel.
 - **Right**: a panel for the current selection: constraints in a sketch, actions for a feature or a face,
   and the keypad when a value is being typed. Drag its top bar to move it anywhere (double tap the bar to put it back).

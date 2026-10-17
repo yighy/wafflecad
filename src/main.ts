@@ -1625,25 +1625,38 @@ function renderTools() {
   } else {
     el.appendChild(section("Sketch"));
     el.appendChild(toolRow("sketch", "New sketch", startNewSketch, { key: "S" }));
+    // Tools appear as the document grows: a sketch brings Extrude and Revolve, a solid brings
+    // the rest. From then on the layout stays put; a tool unavailable for a moment is greyed.
+    const anySketch = doc.features.some((f) => f.kind === "sketch");
+    const solid = hasSolid();
+    if (!anySketch) {
+      const hint = document.createElement("p");
+      hint.className = "tools-hint";
+      hint.textContent = "Start with a sketch: tap New sketch, then a plane.";
+      el.appendChild(hint);
+    }
     const needSketch = pickSketchForExtrude() ? undefined : "Draw a closed sketch first";
-    const needSolid = hasSolid() ? undefined : NEED_SOLID;
-    el.appendChild(section("Features"));
-    el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { key: "E", disabled: needSketch }));
-    el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { key: "V", disabled: needSketch }));
-    // A tool waiting for a face is put down by tapping it again.
-    const faceToggle = (tool: NonNullable<typeof pendingFaceTool>, start: () => void) => () => {
-      if (pendingFaceTool !== tool) return start();
-      pendingFaceTool = null;
-      renderAll();
-    };
-    el.appendChild(toolRow("pushpull", "Press Pull", faceToggle("pushpull", () => faceTool("pushpull")), { active: pendingFaceTool === "pushpull", key: "Q", disabled: needSolid }));
-    el.appendChild(toolRow("shell", "Shell", faceToggle("shell", () => faceTool("shell")), { active: pendingFaceTool === "shell", key: "K", disabled: needSolid }));
-    el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { key: "R", disabled: needSolid }));
-    el.appendChild(toolRow("hole", "Hole", faceToggle("hole", startHoles), { active: pendingFaceTool === "hole", key: "H", disabled: needSolid }));
-    el.appendChild(section("Repeat"));
-    el.appendChild(toolRow("mirror", "Mirror", () => void patternTool("mirror"), { key: "M", disabled: needSolid }));
-    el.appendChild(toolRow("linear", "Linear pattern", () => void patternTool("linear"), { key: "L", disabled: needSolid }));
-    el.appendChild(toolRow("circular", "Circular pattern", () => void patternTool("circular"), { key: "O", disabled: needSolid }));
+    if (anySketch) {
+      el.appendChild(section("Features"));
+      el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { key: "E", disabled: needSketch }));
+      el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { key: "V", disabled: needSketch }));
+    }
+    if (solid) {
+      // A tool waiting for a face is put down by tapping it again.
+      const faceToggle = (tool: NonNullable<typeof pendingFaceTool>, start: () => void) => () => {
+        if (pendingFaceTool !== tool) return start();
+        pendingFaceTool = null;
+        renderAll();
+      };
+      el.appendChild(toolRow("pushpull", "Press Pull", faceToggle("pushpull", () => faceTool("pushpull")), { active: pendingFaceTool === "pushpull", key: "Q" }));
+      el.appendChild(toolRow("shell", "Shell", faceToggle("shell", () => faceTool("shell")), { active: pendingFaceTool === "shell", key: "K" }));
+      el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { key: "R" }));
+      el.appendChild(toolRow("hole", "Hole", faceToggle("hole", startHoles), { active: pendingFaceTool === "hole", key: "H" }));
+      el.appendChild(section("Repeat"));
+      el.appendChild(toolRow("mirror", "Mirror", () => void patternTool("mirror"), { key: "M" }));
+      el.appendChild(toolRow("linear", "Linear pattern", () => void patternTool("linear"), { key: "L" }));
+      el.appendChild(toolRow("circular", "Circular pattern", () => void patternTool("circular"), { key: "O" }));
+    }
     el.appendChild(section("Design"));
     el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
   }
