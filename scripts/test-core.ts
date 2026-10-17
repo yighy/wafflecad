@@ -5,6 +5,8 @@ import { Solver } from "../src/sketch/solver";
 import { deleteEntities, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
 import { trimPlan } from "../src/sketch/trim";
+import { parseDxf } from "../src/sketch/dxf";
+import { insertShapes } from "../src/sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } from "../src/cad/holePlace";
 import { filletCorner, mirrorEntities, projectEdge } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
@@ -514,6 +516,47 @@ check(
   !Object.keys(warm.errors).length && near(measureVolume(warm.shape!), measureVolume(fresh.shape!), 1e-6) && warmTime < cold * 0.7,
   `cold ${cold.toFixed(0)} ms, warm ${warmTime.toFixed(0)} ms, ${JSON.stringify(warm.errors)}`,
 );
+
+// --- DXF import.
+const dxf = (units: number, blocks: string[][], entities: string[][]) =>
+  [
+    ["0", "SECTION", "2", "HEADER", "9", "$INSUNITS", "70", String(units), "0", "ENDSEC"],
+    ["0", "SECTION", "2", "BLOCKS", ...blocks.flat(), "0", "ENDSEC"],
+    ["0", "SECTION", "2", "ENTITIES", ...entities.flat(), "0", "ENDSEC"],
+    ["0", "EOF"],
+  ]
+    .flat()
+    .join("\n");
+// A stadium (two straight sides, two half-circle ends as polyline bulges) with a circle hole,
+// the hole coming from a block inserted at (10, 5).
+const stadium = dxf(
+  4,
+  [["0", "BLOCK", "2", "HOLE", "10", "0", "20", "0", "0", "CIRCLE", "8", "0", "10", "0", "20", "0", "40", "2", "0", "ENDBLK"]],
+  [
+    ["0", "LWPOLYLINE", "8", "0", "90", "4", "70", "1", "10", "0", "20", "0", "10", "20", "20", "0", "42", "1", "10", "20", "20", "10", "10", "0", "20", "10", "42", "1"],
+    ["0", "INSERT", "8", "0", "2", "HOLE", "10", "10", "20", "5"],
+    ["0", "TEXT", "8", "0", "1", "hello"],
+  ],
+);
+const dres = parseDxf(stadium);
+check("DXF: polyline with bulges, block insert, skipped text", dres.shapes.length === 5 && dres.skipped.TEXT === 1 && dres.unitScale === 1, JSON.stringify({ n: dres.shapes.length, skipped: dres.skipped }));
+const dsk = newSketch("DXF", XY);
+insertShapes(dsk, dres.shapes, { scale: 1, place: "file", fixed: true });
+const dsolve = solver.solve(dsk);
+const dRegions = findRegions(dsk);
+const dArea = dRegions.length === 1 && dRegions[0].outer.kind === "path" ? signedArea(sampleSegments(dRegions[0].outer.segments)) : 0;
+check("DXF: outline closes, hole found, fully fixed", dsolve.ok && dsolve.dof === 0 && dRegions.length === 1 && dRegions[0].holes.length === 1 && near(dArea, 200 + Math.PI * 25, 0.3), `dof=${dsolve.dof} regions=${dRegions.length} area=${dArea}`);
+const dDoc: CadDocument = { format: "touch-cad", version: 1, features: [dsk, { id: "de", kind: "extrude", name: "DE", sketchId: dsk.id, distance: 2, symmetric: false, op: "add" }] };
+const dBuilt = buildShape(dDoc);
+check("DXF: extrudes with exact arcs", !dBuilt.errors.de && near(measureVolume(dBuilt.shape!), 2 * (200 + Math.PI * 25 - Math.PI * 4), 1e-3), `vol=${dBuilt.shape && measureVolume(dBuilt.shape)}`);
+const inch = parseDxf(dxf(1, [], [["0", "LINE", "8", "0", "10", "0", "20", "0", "11", "1", "21", "0"]]));
+const isk = newSketch("I", XY);
+insertShapes(isk, inch.shapes, { scale: inch.unitScale, place: "centre", fixed: false });
+const ipts = isk.entities.filter((e): e is SkPoint => e.type === "point" && !e.fixed);
+check("DXF: inches to mm, centred", inch.unitName === "inches" && ipts.length === 2 && near(Math.abs(ipts[0].x), 12.7) && near(ipts[0].x + ipts[1].x, 0));
+const sp = parseDxf(dxf(4, [], [["0", "SPLINE", "8", "0", "70", "8", "71", "3", "72", "8", "73", "4", "40", "0", "40", "0", "40", "0", "40", "0", "40", "1", "40", "1", "40", "1", "40", "1", "10", "0", "20", "0", "10", "10", "20", "10", "10", "20", "20", "10", "10", "30", "20", "0"]]));
+const spl = sp.shapes[0];
+check("DXF: NURBS spline sampled through its ends", spl?.kind === "spline" && near(spl.pts[0][0], 0) && near(spl.pts[spl.pts.length - 1][0], 30) && near(spl.pts[Math.floor(spl.pts.length / 2)][1], 7.5, 0.05), JSON.stringify(spl && spl.kind === "spline" ? spl.pts[Math.floor(spl.pts.length / 2)] : spl));
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

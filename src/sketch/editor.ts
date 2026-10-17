@@ -1200,6 +1200,7 @@ export class SketchEditor implements PointerTool {
       const isDim = DIMENSION_TYPES.includes(c.type);
       // A fillet's virtual corner stays on both lines by itself: no glyphs unless it is selected.
       if (c.type === "pointOn" && isSharp(c.refs[0]) && !this.selection.has(c.refs[0]) && !this.selection.has(c.id)) continue;
+      if (c.quiet && !c.refs.some((r) => this.selection.has(r)) && !this.selection.has(c.id)) continue;
       /** Screen push for a radius label: outwards along the radius, off the curve. */
       let out: [number, number] | null = null;
       let at: P2 | null = null;

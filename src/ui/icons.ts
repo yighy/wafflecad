@@ -9,6 +9,7 @@ const P: Record<string, string> = {
   point: '<circle cx="12" cy="12" r="3.5" fill="currentColor" fill-opacity=".14"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/>',
   construction: '<path d="M6.6 17.4 17.4 6.6" stroke-dasharray="3 3"/><circle cx="5" cy="19" r="2.2" fill="currentColor" fill-opacity=".14"/><circle cx="19" cy="5" r="2.2" fill="currentColor" fill-opacity=".14"/>',
   trim: '<circle cx="6" cy="6" r="2.6" fill="currentColor" fill-opacity=".14"/><circle cx="6" cy="18" r="2.6" fill="currentColor" fill-opacity=".14"/><path d="M8.2 7.6 20 17M8.2 16.4 20 7"/>',
+  import: '<path d="M6 3h8l4 4v14H6z" fill="currentColor" fill-opacity=".14"/><path d="M14 3v4h4"/><path d="M12 10v7M9 14l3 3 3-3"/>',
   project: '<path d="M3 19.5l4-4.5h14l-4 4.5z" fill="currentColor" fill-opacity=".14"/><path d="M12 3v9.5M8.5 9 12 12.5 15.5 9"/>',
   sketch: '<path d="M3 20.5l3.5-5h14.5l-3.5 5z" fill="currentColor" fill-opacity=".14"/><path d="M15 3l3 3-6.5 6.5H8.5v-3z" fill="currentColor" fill-opacity=".14"/>',
   plane: '<path d="M3 16 9 8h12l-6 8z" fill="currentColor" fill-opacity=".14"/>',

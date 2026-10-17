@@ -97,6 +97,8 @@ export interface SkConstraint {
   at?: [number, number];
   /** Expression driving `value`, when it uses parameters (e.g. "width / 2"). */
   expr?: string;
+  /** Not labelled on the sketch unless what it holds is selected (imported drawings: many of them). */
+  quiet?: boolean;
 }
 
 export interface SketchFeature {

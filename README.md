@@ -70,6 +70,11 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
    **Use edges** adds edges of the model to the sketch: tap them in the 3D view; each becomes a line, circle,
    arc or spline flattened onto the sketch plane, with fixed points (shared where edges meet).
    It is a copy: it does not follow later changes of the model.
+   **Import DXF** (Insert section) brings a 2D drawing into the sketch: lines, arcs, circles, polylines
+   (with their arcs), splines and ellipses, blocks included; texts, hatches and dimensions are skipped.
+   The keypad sets the scale (millimetres per drawing unit, read from the file when it says), placed as
+   in the file or centred on the origin, fixed in place or free to constrain. Ends that meet are joined,
+   so outlines close and extrude straight away.
    Points snap to existing points and curves; nearly horizontal/vertical lines get the constraint automatically.
 3. Tap geometry to select it (tap empty space to clear, drag on empty space for a box selection).
    The bar above the tools offers the constraints that fit the selection:

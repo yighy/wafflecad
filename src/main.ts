@@ -14,6 +14,8 @@ import { createAxisGizmo } from "./ui/axisGizmo";
 import { DistanceHandle, sketchArrow } from "./ui/distanceHandle";
 import { findRegions } from "./sketch/profiles";
 import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
+import { parseDxf } from "./sketch/dxf";
+import { bounds, insertShapes, type ImportOptions } from "./sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D, type EdgeDim } from "./cad/holePlace";
 
 const STORAGE_KEY = "touch-cad.document";
@@ -1565,6 +1567,8 @@ function renderTools() {
         }, { active: ed.tool === t.tool, key: t.key }),
       );
     }
+    el.appendChild(section("Insert"));
+    el.appendChild(toolRow("import", "Import DXF", () => void importDxf()));
     el.appendChild(section("Options"));
     el.appendChild(
       toolRow("construction", "Construction", () => {
@@ -2064,6 +2068,112 @@ function download(blob: Blob, name: string) {
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/** Asks for one file; null when the picker is closed without a choice. */
+function pickFile(accept: string): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = accept;
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+}
+
+/**
+ * Brings a DXF drawing into the open sketch. The keypad sets the scale (millimetres per
+ * drawing unit, read from the file when it says), with placement and fixed/free as choices;
+ * the drawing is shown as it will land while these change.
+ */
+async function importDxf() {
+  if (mode.kind !== "sketch") return;
+  const ed = mode.editor;
+  const file = await pickFile(".dxf,image/vnd.dxf,application/dxf");
+  if (!file || mode.kind !== "sketch" || mode.editor !== ed) return;
+  let res: ReturnType<typeof parseDxf>;
+  try {
+    res = parseDxf(await file.text());
+  } catch (e) {
+    return toast("Cannot read this DXF: " + (e instanceof Error ? e.message : String(e)));
+  }
+  const skipped = Object.entries(res.skipped)
+    .map(([t, n]) => `${n} ${t}`)
+    .join(", ");
+  if (!res.shapes.length) return toast(skipped ? `Nothing to import (skipped: ${skipped})` : "Nothing to import in this file");
+
+  const before = { entities: structuredClone(ed.sk.entities), constraints: structuredClone(ed.sk.constraints) };
+  const opt: ImportOptions = { scale: res.unitScale, place: "file", fixed: true };
+  const show = (frame: boolean) => {
+    ed.sk.entities = structuredClone(before.entities);
+    ed.sk.constraints = structuredClone(before.constraints);
+    insertShapes(ed.sk, res.shapes, opt);
+    ed.solve();
+    ed.render();
+    if (!frame) return;
+    // Frame the drawing where it lands.
+    const b = bounds(res.shapes)!;
+    const k = opt.scale;
+    const c = opt.place === "centre" ? [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2] : [0, 0];
+    const { origin: o, xDir: xd, normal: n } = ed.sk.plane;
+    const yd = [n[1] * xd[2] - n[2] * xd[1], n[2] * xd[0] - n[0] * xd[2], n[0] * xd[1] - n[1] * xd[0]];
+    const w = (x: number, y: number) => new THREE.Vector3(...[0, 1, 2].map((i) => o[i] + xd[i] * (x - c[0]) * k + yd[i] * (y - c[1]) * k));
+    vp.fit(new THREE.Box3().setFromPoints([w(b.min[0], b.min[1]), w(b.max[0], b.max[1]), w(b.min[0], b.max[1]), w(b.max[0], b.min[1])]));
+  };
+  show(true);
+  const kp = openKeypad({
+    title: "Import DXF",
+    subtitle: `${file.name} · ${res.shapes.length} curves · ${res.unitName}${skipped ? ` · skipped: ${skipped}` : ""}`,
+    label: "Scale (mm per drawing unit)",
+    value: opt.scale,
+    unit: "×",
+    confirmLabel: "Import",
+    segments: [
+      {
+        options: [
+          { value: "file", label: "As in the file" },
+          { value: "centre", label: "Centred on origin" },
+        ],
+        get: () => opt.place,
+        set: (v) => {
+          opt.place = v as ImportOptions["place"];
+          show(true);
+        },
+      },
+      {
+        options: [
+          { value: "fixed", label: "Fixed in place" },
+          { value: "free", label: "Free to constrain" },
+        ],
+        get: () => (opt.fixed ? "fixed" : "free"),
+        set: (v) => {
+          opt.fixed = v === "fixed";
+          show(false);
+        },
+      },
+    ],
+    onInput: (v) => {
+      if (v > 0) {
+        opt.scale = v;
+        show(true);
+      }
+    },
+  });
+  const r = await kp.result;
+  if (r === null || !(r.value > 0)) {
+    ed.sk.entities = before.entities;
+    ed.sk.constraints = before.constraints;
+    ed.solve();
+    ed.render();
+    renderAll();
+    return;
+  }
+  opt.scale = r.value;
+  show(false);
+  commit();
+  toast(`${res.shapes.length} curves imported`);
+  renderAll();
 }
 
 function openFile() {
