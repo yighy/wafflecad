@@ -292,47 +292,11 @@ body.collapsed .section {
 
 /* ---------- Status pill ---------- */
 
-/* ---------- Mode switch (Sketch / Model), top centre ---------- */
-
-#mode-switch {
-  position: fixed;
-  top: var(--gap);
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  background: var(--card2);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
-  z-index: 10;
-}
-#mode-switch button {
-  min-height: 40px;
-  padding: 0 18px;
-  border: none;
-  border-radius: 10px;
-  background: transparent;
-  box-shadow: none;
-  font-weight: 600;
-  color: var(--muted);
-}
-#mode-switch button.on {
-  background: var(--card);
-  color: var(--text);
-  box-shadow: var(--shadow);
-}
-#mode-switch.locked button:not(.on) {
-  opacity: 0.45;
-}
-
-/* The status sits under the mode switch. */
 #status-pill {
   position: fixed;
-  top: calc(var(--gap) + 58px);
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: calc(100vw - 2 * (196px + 2 * var(--gap)));
+  top: var(--gap);
+  left: calc(196px + 2 * var(--gap));
+  max-width: calc(100vw - 196px - 140px);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -345,7 +309,8 @@ body.collapsed .section {
   white-space: nowrap;
 }
 body.collapsed #status-pill {
-  max-width: calc(100vw - 2 * (64px + 2 * var(--gap)));
+  left: calc(64px + 2 * var(--gap));
+  max-width: calc(100vw - 64px - 140px);
 }
 #status-pill:has(#status:empty) {
   display: none;
@@ -1085,7 +1050,8 @@ body.busy #status-pill .dot {
   }
   #status-pill,
   body.collapsed #status-pill {
-    max-width: calc(100vw - 2 * (56px + 2 * var(--gap)));
+    left: calc(56px + 2 * var(--gap));
+    max-width: calc(100vw - 56px - 90px);
     font-size: 13px;
     padding: 8px 12px;
   }
