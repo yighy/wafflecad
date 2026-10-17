@@ -1,6 +1,6 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
+import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
 import type { Axis, BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { sketchLineWorld } from "../sketch/model";
@@ -20,31 +20,39 @@ function loopDrawing(loop: ProfileLoop): Drawing {
   return pen.close();
 }
 
-export function sketchDrawing(sk: SketchFeature): Drawing | null {
-  let result: Drawing | null = null;
-  for (const region of findRegions(sk)) {
+/** One drawing per closed region (its holes cut out). Regions never overlap. */
+function regionDrawings(sk: SketchFeature): Drawing[] {
+  return findRegions(sk).map((region) => {
     let d = loopDrawing(region.outer);
     for (const h of region.holes) d = d.cut(loopDrawing(h));
-    result = result ? result.fuse(d) : d;
-  }
-  return result;
+    return d;
+  });
+}
+
+export function sketchDrawing(sk: SketchFeature): Drawing | null {
+  const parts = regionDrawings(sk);
+  return parts.length ? parts.slice(1).reduce((acc, d) => acc.fuse(d), parts[0]) : null;
 }
 
 const scale = (v: Vec3, k: number): Vec3 => [v[0] * k, v[1] * k, v[2] * k];
 const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
+/**
+ * Each region is extruded on its own and the solids are gathered without any boolean: they
+ * cannot overlap. (Fusing many regions in 2D first cost seconds on imported drawings.)
+ */
 function extrudeSolid(sk: SketchFeature, f: ExtrudeFeature): Shape3D {
-  const drawing = sketchDrawing(sk);
-  if (!drawing) throw new Error("The sketch has no closed region");
+  const parts = regionDrawings(sk);
+  if (!parts.length) throw new Error("The sketch has no closed region (an outline is open, or its ends do not meet)");
   const d = Math.abs(f.distance);
   if (d < 1e-6) throw new Error("Distance is zero");
   const n = sk.plane.normal;
   const dir = f.distance < 0 ? scale(n, -1) : n;
   const origin = f.symmetric ? add(sk.plane.origin, scale(dir, -d)) : sk.plane.origin;
   const plane = new Plane(origin, sk.plane.xDir, n);
-  const sketch = drawing.sketchOnPlane(plane);
-  return sketch.extrude(f.symmetric ? 2 * d : d, { extrusionDirection: dir }) as Shape3D;
+  const solids = parts.map((p) => p.sketchOnPlane(plane).extrude(f.symmetric ? 2 * d : d, { extrusionDirection: dir }) as Shape3D);
+  return solids.length === 1 ? solids[0] : (makeCompound(solids) as Shape3D);
 }
 
 function revolveSolid(sk: SketchFeature, f: RevolveFeature): Shape3D {
@@ -399,7 +407,12 @@ export function buildShape(doc: CadDocument) {
 export function buildResult(doc: CadDocument): BuildResult {
   const { shape, errors, warnings } = buildShape(doc);
   if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings };
-  const m = shape.mesh(MESH_OPTS);
+  // Faces are meshed for display with a deflection relative to the model's size: a fixed 0.01 mm
+  // took seconds on drawings with many curved walls. Edges keep the fine setting (they are cheap,
+  // and their midpoints are what fillets and chamfers refer to).
+  const [lo, hi] = shape.boundingBox.bounds;
+  const diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+  const m = shape.mesh({ tolerance: Math.max(MESH_OPTS.tolerance, diag * 4e-4), angularTolerance: 0.2 });
   const e = shape.meshEdges(MESH_OPTS);
   return {
     mesh: {

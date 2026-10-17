@@ -107,6 +107,8 @@ const pendingFiles = new Map<number, (b: Blob | null, err?: string) => void>();
 let buildTimer = 0;
 /** One build at a time: while one runs, later changes wait and go as a single build after it. */
 let buildRunning = false;
+let buildSlow = false;
+let buildSlowTimer = 0;
 let buildAgain = false;
 
 worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
@@ -121,6 +123,11 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     renderStatus();
   } else if (m.type === "built") {
     buildRunning = false;
+    clearTimeout(buildSlowTimer);
+    if (buildSlow) {
+      buildSlow = false;
+      renderStatus();
+    }
     if (buildAgain) {
       buildAgain = false;
       sendBuild();
@@ -150,6 +157,12 @@ function sendBuild() {
     return;
   }
   buildRunning = true;
+  // A build that takes a while says so in the status line.
+  clearTimeout(buildSlowTimer);
+  buildSlowTimer = window.setTimeout(() => {
+    buildSlow = true;
+    renderStatus();
+  }, 600);
   latestBuild = ++reqCounter;
   worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined } satisfies WorkerRequest);
 }
@@ -1893,6 +1906,7 @@ function renderStatus() {
     s = `${mode.feat.mode === "fillet" ? "Fillet" : "Chamfer"} · ${n ? `${n} edge${n > 1 ? "s" : ""} chosen` : "tap the edges"}, type the size`;
   }
   else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
+  if (buildSlow) s = s ? `${s} · building the model…` : "Building the model…";
   $("#status").textContent = s;
 }
 
