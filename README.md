@@ -3,6 +3,8 @@
 A parametric 3D CAD that runs in the browser and is designed first for **fingers and styluses**
 (Android phones and tablets). A keyboard and a mouse work too, but are never required.
 
+**Try it:** https://yighy.github.io/wafflecad/ (open it on a tablet, then "Add to home screen" to install it).
+
 - Constrained 2D sketches, solved by FreeCAD's solver ([planegcs](https://github.com/Salusoft89/planegcs), WebAssembly)
 - Exact B-rep solids with OpenCascade ([replicad](https://replicad.xyz), WebAssembly, in a worker)
 - Feature history in the style of Onshape/FreeCAD: Sketch → Extrude or Revolve (join / cut / intersect), Press Pull, Shell,
