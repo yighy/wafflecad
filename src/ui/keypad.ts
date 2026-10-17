@@ -55,10 +55,6 @@ export function setKeypadHost(el: HTMLElement) {
   host = el;
 }
 
-export function isKeypadOpen() {
-  return current !== null;
-}
-
 export function keypad(opt: KeypadOptions): Promise<KeypadResult | null> {
   return openKeypad(opt).result;
 }

@@ -72,14 +72,6 @@ export function filletCorner(sk: SketchFeature, pointId: string, r: number): str
   return null;
 }
 
-/** Line to mirror about: a selected reference axis, else a construction line, else the last line picked. */
-export function mirrorAxis(sk: SketchFeature, ids: string[]): string | null {
-  const v = new SketchView(sk);
-  const lines = ids.map((id) => v.get(id)).filter((e): e is SkLine => e?.type === "line");
-  if (!lines.length || ids.length < 2) return null;
-  return (lines.find((l) => l.axis) ?? lines.find((l) => l.construction) ?? lines[lines.length - 1]).id;
-}
-
 /**
  * Adds the mirror image of the chosen entities about a line. Each new point is tied to its
  * original by a symmetry constraint, so the copy follows later edits; points on the axis are shared.

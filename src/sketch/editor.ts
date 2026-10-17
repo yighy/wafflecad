@@ -5,7 +5,7 @@ import type { ConstraintType, SkArc, SkConstraint, SkCurve, SkEntity, SkLine, Sk
 import { DIMENSION_TYPES } from "../types";
 import type { PointerTool, Ptr } from "../view/input";
 import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
-import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleSpline, splineSpans, uid } from "./model";
+import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, splineSpans, uid } from "./model";
 import { arcMid, findRegions, sampleSegments } from "./profiles";
 import { trimPlan, type TrimPlan } from "./trim";
 import { cornerLines, filletCorner, groupCentre, groupPoints, mirrorEntities, projectEdge, transformGroup, type GroupTransform } from "./ops";
@@ -61,8 +61,6 @@ function palette() {
 }
 const TAP = 8;
 const AUTO_HV_DEG = 4;
-/** Magnifier under the finger while drawing. Off for now: the target is tablets, with room to see. */
-const LOUPE = false;
 
 const hitRadius = (k: Ptr["kind"]) => (k === "touch" ? 26 : k === "pen" ? 16 : 10);
 
@@ -119,7 +117,6 @@ export class SketchEditor implements PointerTool {
     this.vp.setSketchLayer([], []);
     this.vp.setFills(null, [], "");
     this.vp.setLabels([]);
-    this.vp.loupe = null;
   }
 
   /** Replaces the working sketch (after undo/redo). */
@@ -183,7 +180,6 @@ export class SketchEditor implements PointerTool {
     this.hvHint = null;
     this.box = null;
     this.boxEl.style.display = "none";
-    this.vp.loupe = null;
     this.trimPreview = null;
     this.vp.highlightEdges([]);
   }
@@ -353,7 +349,6 @@ export class SketchEditor implements PointerTool {
     this.press = { p, snap: this.snap(p), hit: hit?.id ?? null, moved: false };
     if (this.tool !== "select") {
       this.cursor = this.toolSnap(p);
-      if (LOUPE && p.kind === "touch") this.vp.loupe = { x: p.x, y: p.y };
       this.render();
     }
   }
@@ -377,7 +372,6 @@ export class SketchEditor implements PointerTool {
       pr.moved = true;
       if (this.tool === "select") this.beginDrag(pr);
     }
-    if (LOUPE && p.kind === "touch" && (this.tool !== "select" || this.dragState)) this.vp.loupe = { x: p.x, y: p.y };
 
     if (this.tool === "select") {
       if (this.dragState) this.dragTo(p);
@@ -402,7 +396,6 @@ export class SketchEditor implements PointerTool {
     }
     const pr = this.press;
     this.press = null;
-    this.vp.loupe = null;
     if (!pr) return;
     if (this.tool === "trim") return this.trim(p);
     if (this.tool === "project") return this.useEdge(p);
@@ -434,7 +427,6 @@ export class SketchEditor implements PointerTool {
     this.press = null;
     this.box = null;
     this.boxEl.style.display = "none";
-    this.vp.loupe = null;
     this.render();
   }
 
@@ -994,6 +986,7 @@ export class SketchEditor implements PointerTool {
   // ---------- Solving ----------
 
   solve(drag?: Drag): SolveResult {
+    this.geomVersion++;
     const r = this.solver.solve(this.sk, drag);
     if (!drag) this.dof = r.dof;
     return r;
@@ -1242,6 +1235,7 @@ export class SketchEditor implements PointerTool {
     const curves = [...this.selection].map((id) => v.get(id)).filter((e): e is SkCurve => !!e && e.type !== "point" && !isReference(e));
     const on = !curves.every((c) => c.construction);
     for (const c of curves) c.construction = on;
+    this.geomVersion++;
     this.hooks.commit("Construction");
     this.render();
     this.hooks.changed();
@@ -1276,8 +1270,14 @@ export class SketchEditor implements PointerTool {
   private geomCache: { sig: string; curves: Map<string, number[]> } = { sig: "", curves: new Map() };
   private fillSig = "";
 
+  /**
+   * Bumped whenever the geometry may have changed: every edit ends in a solve (or, for
+   * construction, a direct bump). Cheaper than fingerprinting the sketch on each render.
+   */
+  private geomVersion = 0;
+
   private geomSig() {
-    return JSON.stringify(this.sk.entities) + JSON.stringify(this.sk.plane);
+    return String(this.geomVersion);
   }
 
   render() {

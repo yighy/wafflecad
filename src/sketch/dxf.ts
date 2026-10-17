@@ -248,7 +248,7 @@ export function parseDxf(text: string): DxfResult {
           const c: P2 = [num(e, 10), num(e, 20)];
           const major: P2 = [num(e, 11), num(e, 21)];
           const ratio = num(e, 40, 1);
-          let u0 = num(e, 41, 0);
+          const u0 = num(e, 41, 0);
           let u1 = num(e, 42, TAU);
           const full = Math.abs(u1 - u0 - TAU) < 1e-6 || Math.abs(u1 - u0) < 1e-9;
           while (u1 <= u0) u1 += TAU;
@@ -260,7 +260,6 @@ export function parseDxf(text: string): DxfResult {
             const u = full ? (TAU * k) / n : u0 + ((u1 - u0) * k) / n;
             pts.push(P(c[0] + major[0] * Math.cos(u) + minor[0] * Math.sin(u), c[1] + major[1] * Math.cos(u) + minor[1] * Math.sin(u)));
           }
-          if (full) u0 = 0;
           shapes.push({ kind: "spline", pts, closed: full, layer });
           break;
         }

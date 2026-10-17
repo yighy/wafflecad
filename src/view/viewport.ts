@@ -1,4 +1,4 @@
-// three.js scene: orthographic or perspective CAD camera (Z up), model, sketch layer, loupe.
+// three.js scene: orthographic or perspective CAD camera (Z up), model, sketch layer, labels.
 import * as THREE from "three";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
@@ -58,9 +58,6 @@ export class Viewport {
   private gridPlane: PlaneDef | null = null;
   private dotTexture = makeDotTexture();
 
-  /** Loupe: magnified inset above the finger, in CSS px. Null = hidden. */
-  loupe: { x: number; y: number } | null = null;
-  readonly loupeEl: HTMLDivElement;
   private cameraListeners: (() => void)[] = [];
   private gridVisible = true;
   private modelColor = "#8fa8c8";
@@ -81,9 +78,6 @@ export class Viewport {
     this.overlay = document.createElement("div");
     this.overlay.className = "overlay";
     container.appendChild(this.overlay);
-    this.loupeEl = document.createElement("div");
-    this.loupeEl.className = "loupe";
-    container.appendChild(this.loupeEl);
 
     this.scene.background = new THREE.Color();
     this.applyThemeColors();
@@ -323,42 +317,8 @@ export class Viewport {
     r.clear();
     r.render(this.scene, this.camera);
     this.placeLabels();
-    this.renderLoupe();
   }
 
-  private renderLoupe() {
-    const l = this.camera === this.ortho ? this.loupe : null;
-    this.loupeEl.style.display = l ? "block" : "none";
-    if (!l) return;
-    const size = Math.min(150, this.width * 0.4);
-    const zoom = 3;
-    // Above the finger; flipped below near the top edge.
-    let cy = l.y - size * 0.95;
-    if (cy - size / 2 < 4) cy = l.y + size * 0.95;
-    const cx = THREE.MathUtils.clamp(l.x, size / 2 + 4, this.width - size / 2 - 4);
-    Object.assign(this.loupeEl.style, {
-      left: `${cx - size / 2}px`,
-      top: `${cy - size / 2}px`,
-      width: `${size}px`,
-      height: `${size}px`,
-    });
-    const cam = this.ortho.clone();
-    const c = this.screenToView(l.x, l.y);
-    const half = (size / 2) * this.wpp / zoom;
-    cam.position.copy(c).addScaledVector(V([0, 0, 1]).applyQuaternion(this.quat), 5000);
-    Object.assign(cam, { left: -half, right: half, top: half, bottom: -half });
-    cam.updateProjectionMatrix();
-    cam.updateMatrixWorld();
-    const r = this.renderer;
-    const vy = this.height - (cy + size / 2);
-    r.setScissorTest(true);
-    r.setScissor(cx - size / 2, vy, size, size);
-    r.setViewport(cx - size / 2, vy, size, size);
-    r.clear();
-    r.render(this.scene, cam);
-    r.setScissorTest(false);
-    r.setViewport(0, 0, this.width, this.height);
-  }
 
   // ---------- Projection helpers ----------
 

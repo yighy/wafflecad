@@ -138,6 +138,7 @@ button.danger {
   gap: 6px;
   z-index: 10;
   pointer-events: none;
+  transition: width 0.28s ease;
 }
 #tools > * {
   pointer-events: auto;
@@ -152,6 +153,12 @@ button.danger {
   text-transform: uppercase;
   color: var(--muted);
   margin: 10px 4px 2px;
+  max-height: 30px;
+  overflow: hidden;
+  transition:
+    max-height 0.28s ease,
+    margin 0.28s ease,
+    opacity 0.2s ease;
 }
 /* A tool looks like two separate cards (icon, label) but is a single button:
    tapping either card works. */
@@ -166,6 +173,7 @@ button.danger {
   background: transparent;
   font-weight: 600;
   gap: 6px;
+  transition: gap 0.28s ease;
 }
 .tool .tile,
 .tool .label {
@@ -181,7 +189,7 @@ button.danger {
   justify-content: center;
   flex: none;
 }
-/* The label card is as wide as its text, not the whole panel. */
+/* The label card is as wide as its text, not the whole panel. Folding slides it into its icon. */
 .tool .label {
   flex: 0 1 auto;
   min-width: 0;
@@ -191,6 +199,13 @@ button.danger {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition:
+    max-width 0.28s ease,
+    padding 0.28s ease,
+    opacity 0.2s ease,
+    transform 0.28s ease,
+    background-color 0.18s,
+    color 0.18s;
 }
 .tool.active .tile {
   background: var(--accent);
@@ -323,6 +338,7 @@ body.collapsed .section {
   font-size: 14px;
   z-index: 10;
   white-space: nowrap;
+  transition: left 0.28s ease;
 }
 body.collapsed #status-pill {
   left: calc(64px + 2 * var(--gap));
@@ -852,9 +868,6 @@ body.busy #status-pill .dot {
 #chips .chip {
   touch-action: pan-x;
 }
-.menu-wrap {
-  margin-left: auto;
-}
 #chips .empty {
   color: var(--muted);
   font-size: 13px;
@@ -895,6 +908,7 @@ body.busy #status-pill .dot {
 }
 .menu-wrap {
   position: relative;
+  margin-left: auto;
 }
 .menu {
   position: absolute;
@@ -911,6 +925,7 @@ body.busy #status-pill .dot {
 }
 .menu.open {
   display: flex;
+  animation: rise 0.16s ease-out;
 }
 .menu button {
   justify-content: flex-start;
@@ -1003,14 +1018,6 @@ body.busy #status-pill .dot {
   background: var(--accent);
 }
 
-.loupe {
-  position: absolute;
-  display: none;
-  pointer-events: none;
-  border: 2px solid var(--accent);
-  border-radius: 6px;
-}
-
 .selbox {
   position: absolute;
   display: none;
@@ -1032,7 +1039,9 @@ body.busy #status-pill .dot {
   border-radius: 12px;
   opacity: 0;
   pointer-events: none;
-  transition: 0.2s;
+  transition:
+    opacity 0.2s,
+    transform 0.25s cubic-bezier(0.3, 1.4, 0.6, 1);
   z-index: 50;
   max-width: calc(100vw - 32px);
   text-align: center;
@@ -1178,11 +1187,6 @@ body.building #status-pill .dot {
     opacity: 0.25;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  body.building #build-bar::before {
-    width: 100%;
-  }
-}
 
 /* ---------- Motion ---------- */
 
@@ -1207,34 +1211,6 @@ body.building #status-pill .dot {
 #menu:active,
 #panel button:active {
   transform: scale(0.95);
-}
-
-/* Fold / unfold of the tool panel. */
-#tools {
-  transition: width 0.28s ease;
-}
-.tool {
-  transition: gap 0.28s ease;
-}
-.tool .label {
-  transition:
-    max-width 0.28s ease,
-    padding 0.28s ease,
-    opacity 0.2s ease,
-    transform 0.28s ease,
-    background-color 0.18s,
-    color 0.18s;
-}
-.section {
-  max-height: 30px;
-  overflow: hidden;
-  transition:
-    max-height 0.28s ease,
-    margin 0.28s ease,
-    opacity 0.2s ease;
-}
-#status-pill {
-  transition: left 0.28s ease;
 }
 .tool:active .label {
   transform: scale(0.95);
@@ -1270,14 +1246,6 @@ body.building #status-pill .dot {
 .chip.pop {
   animation: pop 0.26s cubic-bezier(0.3, 1.5, 0.6, 1);
 }
-.menu.open {
-  animation: rise 0.16s ease-out;
-}
-#toast {
-  transition:
-    opacity 0.2s,
-    transform 0.25s cubic-bezier(0.3, 1.4, 0.6, 1);
-}
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -1285,5 +1253,9 @@ body.building #status-pill .dot {
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+  /* Still there, just not running. */
+  body.building #build-bar::before {
+    width: 100%;
   }
 }

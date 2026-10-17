@@ -27,7 +27,6 @@ const P: Record<string, string> = {
   revolve: '<path d="M12 2.5v19" stroke-dasharray="2 2"/><path d="M12 5h5v3h-2v8h3v3h-6z" fill="currentColor" fill-opacity=".14"/><path d="M12 5H7v3h2v8H6v3h6" opacity=".45"/>',
   intersect: '<path d="M12 6.8a6 6 0 0 1 0 10.4a6 6 0 0 1 0-10.4z" fill="currentColor" fill-opacity=".14"/><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/>',
   fit: '<path d="M4 8.5V5a1 1 0 0 1 1-1h3.5M15.5 4H19a1 1 0 0 1 1 1v3.5M20 15.5V19a1 1 0 0 1-1 1h-3.5M8.5 20H5a1 1 0 0 1-1-1v-3.5"/><rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" fill-opacity=".14"/>',
-  iso: '<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z" fill="currentColor" fill-opacity=".14"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>',
   perspective: '<path d="M12 5.5 20 8.5v6.5l-8 6-8-6V8.5z" fill="currentColor" fill-opacity=".14"/><path d="M4 8.5l8 3.5 8-3.5M12 12v9"/>',
   grid: '<rect x="4" y="4" width="16" height="16" rx="1.5" fill="currentColor" fill-opacity=".14"/><path d="M4 9.3h16M4 14.7h16M9.3 4v16M14.7 4v16"/>',
   lookAt: '<path d="M6.5 5h11A1.5 1.5 0 0 1 19 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 17.5v-11A1.5 1.5 0 0 1 6.5 5zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5z" fill-rule="evenodd" fill="currentColor" fill-opacity=".14"/>',
