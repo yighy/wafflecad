@@ -447,9 +447,14 @@ export class Viewport {
     if (!mesh) return this.requestRender();
     const mat = mesh.material as THREE.MeshStandardMaterial;
     const m = this.display;
-    mat.color.set(m === "technical" ? cssVar("--card", "#ffffff") : this.modelColor);
-    mat.emissive.set(m === "technical" ? cssVar("--card", "#ffffff") : "#000000");
-    mat.emissiveIntensity = m === "technical" ? 0.85 : 1;
+    // Technical lines: flat faces in the card colour, untouched by the lights (no shading, no
+    // highlight): all of the colour is emitted, none reflected.
+    const flat = m === "technical";
+    mat.color.set(flat ? "#000000" : this.modelColor);
+    mat.emissive.set(flat ? cssVar("--card", "#ffffff") : "#000000");
+    mat.emissiveIntensity = 1;
+    mat.roughness = flat ? 1 : 0.6;
+    mat.metalness = flat ? 0 : 0.05;
     mat.transparent = m === "xray";
     mat.opacity = m === "xray" ? 0.22 : 1;
     mat.depthWrite = m !== "xray";
