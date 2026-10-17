@@ -1,7 +1,7 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
-import type { Axis, BuildResult, CadDocument, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import { measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
+import type { Axis, BuildResult, CadDocument, Clash, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
 import { hasRef } from "./measure";
@@ -574,6 +574,33 @@ function assemblyShape(doc: CadDocument) {
   if (parts.length !== lastAssembly.parts.length || parts.some((s, i) => s !== lastAssembly.parts[i]))
     lastAssembly = { parts, shape: combined(new Map(bodies.map((b) => [b.id, b.shape]))) };
   return { shape: lastAssembly.shape, bodies, errors, warnings };
+}
+
+/**
+ * Pairs of parts (or bodies) that overlap, with the overlap's volume and mesh. Only pairs whose
+ * boxes meet are intersected; parts that only touch (flush faces) have no volume and are left out.
+ */
+export function interferences(doc: CadDocument, skip: string[] = []): Clash[] {
+  const list = buildShape(doc).bodies.filter((b) => !skip.includes(b.id));
+  const boxes = list.map((b) => b.shape.boundingBox.bounds);
+  const out: Clash[] = [];
+  for (let i = 0; i < list.length; i++)
+    for (let j = i + 1; j < list.length; j++) {
+      const [la, ha] = boxes[i];
+      const [lb, hb] = boxes[j];
+      if ([0, 1, 2].some((k) => ha[k] <= lb[k] + 1e-6 || hb[k] <= la[k] + 1e-6)) continue;
+      let x: Shape3D;
+      try {
+        x = list[i].shape.intersect(list[j].shape);
+      } catch {
+        continue;
+      }
+      const volume = x.faces.length ? measureVolume(x) : 0;
+      if (volume < 1e-3) continue;
+      const m = x.mesh({ tolerance: 0.05, angularTolerance: 0.3 });
+      out.push({ a: list[i].id, b: list[j].id, volume, vertices: new Float32Array(m.vertices), triangles: new Uint32Array(m.triangles) });
+    }
+  return out;
 }
 
 /** Display data of a shape: meshes at each quality, and its flat faces once asked for. */

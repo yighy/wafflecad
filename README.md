@@ -23,8 +23,10 @@
 - **Bodies**: several solids in one part (a box and its lid), each joined, cut, renamed, hidden or shown
   alone.
 - **Assemblies**: parts from your other projects, placed with arrows and rings or typed values, and tied
-  by mates: faces facing, flush or at an angle, holes and pins on one axis. A part changed in its own
-  project is updated in every assembly that uses it.
+  by mates: faces facing, flush or at an angle, holes and pins on one axis, exact or between limits.
+  Drag a part with a finger and its mates follow (a lid swings, a drawer slides); check for overlaps
+  between parts, or spread them in an exploded view. A part changed in its own project is updated in
+  every assembly that uses it.
 - **Measure** faces, edges and corners: lengths, radii, distances, angles.
 - **Display**: shaded, wireframe, X-ray, technical lines, and a section view sliding through the part.
 - **Parameters**: name a value (`wall = 2`) and use it in any dimension (`width - 2*wall`).

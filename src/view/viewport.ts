@@ -69,7 +69,9 @@ export class Viewport {
   private hiddenEdges = new Set<number>();
   private shown: { r: BuildResult | null; preview?: PreviewResult } = { r: null };
   /** A body being dragged (an assembly's part): its vertices and edges as built, to move from. */
-  private moving: { id: string; verts: Uint32Array; pos: Float32Array; nrm: Float32Array; edges: Float32Array; edgeRanges: [number, number][] } | null = null;
+  private moving: { pos: Float32Array; nrm: Float32Array; edges: Float32Array; bodies: Map<string, { verts: Uint32Array; edgeRanges: [number, number][] }> } | null = null;
+  /** Overlaps found between parts, drawn in red through everything. */
+  private clashGroup = new THREE.Group();
   private edgeHighlight: THREE.Object3D | null = null;
   private highlight: THREE.Mesh | null = null;
   private lineMaterials: LineMaterial[] = [];
@@ -103,7 +105,7 @@ export class Viewport {
 
     this.scene.background = new THREE.Color();
     this.applyThemeColors();
-    this.scene.add(this.gridGroup, this.modelGroup, this.helperGroup, this.sketchGroup);
+    this.scene.add(this.gridGroup, this.modelGroup, this.helperGroup, this.sketchGroup, this.clashGroup);
     // Bright, flat-ish lighting: top faces lightest, sides in two distinct greys.
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a93a0, 2.0));
     const top = new THREE.DirectionalLight(0xffffff, 1.3);
@@ -502,48 +504,68 @@ export class Viewport {
   }
 
   /**
-   * Draws a body moved by `m` from where it was built, while it is being dragged (the build that
-   * follows puts it there for good). No rebuild: only its vertices and edges move.
+   * Draws bodies moved from where they were built (by a matrix each), while they are dragged or
+   * spread apart: no rebuild, only their vertices and edges move. Bodies not named stay as built.
    */
-  moveBody(id: string, m: THREE.Matrix4) {
+  moveBodies(moves: Map<string, THREE.Matrix4>) {
     const r = this.shown.r;
     if (!r?.mesh || !this.mesh) return;
-    if (this.moving?.id !== id) {
-      const body = r.bodies?.find((b) => b.id === id);
-      if (!body) return;
-      const faces = new Set(body.faceIds);
-      const verts = new Set<number>();
-      for (const fg of r.mesh.faceGroups) if (faces.has(fg.faceId)) for (let k = fg.start; k < fg.start + fg.count; k++) verts.add(r.mesh.triangles[k]);
-      const edgeIds = new Set(body.edgeIds);
-      const g = this.mesh.geometry;
-      this.moving = {
-        id,
-        verts: Uint32Array.from(verts),
-        pos: (g.getAttribute("position").array as Float32Array).slice(),
-        nrm: (g.getAttribute("normal").array as Float32Array).slice(),
-        edges: this.edgeLines.slice(),
-        edgeRanges: this.edgeGroups.filter((e) => edgeIds.has(e.id)).map((e) => [e.start, e.start + e.count]),
-      };
-    }
-    const mv = this.moving;
     const g = this.mesh.geometry;
+    this.moving ??= {
+      pos: (g.getAttribute("position").array as Float32Array).slice(),
+      nrm: (g.getAttribute("normal").array as Float32Array).slice(),
+      edges: this.edgeLines.slice(),
+      bodies: new Map(),
+    };
+    const mv = this.moving;
     const pos = g.getAttribute("position") as THREE.BufferAttribute;
     const nrm = g.getAttribute("normal") as THREE.BufferAttribute;
-    const nm = new THREE.Matrix3().getNormalMatrix(m);
+    const edges = mv.edges.slice();
     const v = new THREE.Vector3();
-    for (const i of mv.verts) {
-      v.fromArray(mv.pos, i * 3).applyMatrix4(m).toArray(pos.array, i * 3);
-      v.fromArray(mv.nrm, i * 3).applyMatrix3(nm).normalize().toArray(nrm.array, i * 3);
+    for (const body of r.bodies ?? []) {
+      let part = mv.bodies.get(body.id);
+      if (!part) {
+        const faces = new Set(body.faceIds);
+        const verts = new Set<number>();
+        for (const fg of r.mesh.faceGroups) if (faces.has(fg.faceId)) for (let k = fg.start; k < fg.start + fg.count; k++) verts.add(r.mesh.triangles[k]);
+        const edgeIds = new Set(body.edgeIds);
+        part = { verts: Uint32Array.from(verts), edgeRanges: this.edgeGroups.filter((e) => edgeIds.has(e.id)).map((e) => [e.start, e.start + e.count]) };
+        mv.bodies.set(body.id, part);
+      }
+      const m = moves.get(body.id) ?? new THREE.Matrix4();
+      const nm = new THREE.Matrix3().getNormalMatrix(m);
+      for (const i of part.verts) {
+        v.fromArray(mv.pos, i * 3).applyMatrix4(m).toArray(pos.array, i * 3);
+        v.fromArray(mv.nrm, i * 3).applyMatrix3(nm).normalize().toArray(nrm.array, i * 3);
+      }
+      for (const [a, b] of part.edgeRanges) for (let k = a; k < b; k++) v.fromArray(mv.edges, k * 3).applyMatrix4(m).toArray(edges, k * 3);
     }
     pos.needsUpdate = true;
     nrm.needsUpdate = true;
     g.computeBoundingSphere();
     g.computeBoundingBox();
-    const edges = mv.edges.slice();
-    for (const [a, b] of mv.edgeRanges) for (let k = a; k < b; k++) v.fromArray(mv.edges, k * 3).applyMatrix4(m).toArray(edges, k * 3);
     this.edgeLines = edges;
     this.drawEdges(visibleEdges(edges, this.edgeGroups, this.hiddenEdges));
     this.applyDisplay();
+  }
+
+  moveBody(id: string, m: THREE.Matrix4) {
+    this.moveBodies(new Map([[id, m]]));
+  }
+
+  /** Overlaps between parts, in red and seen through the parts (null clears them). */
+  setClashes(meshes: { vertices: Float32Array; triangles: Uint32Array }[] | null) {
+    disposeChildren(this.clashGroup);
+    for (const c of meshes ?? []) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(c.vertices, 3));
+      g.setIndex(new THREE.BufferAttribute(c.triangles, 1));
+      g.computeVertexNormals();
+      const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xe03131, transparent: true, opacity: 0.75, depthTest: false }));
+      mesh.renderOrder = 20;
+      this.clashGroup.add(mesh);
+    }
+    this.requestRender();
   }
 
   /** The geometry of a mesh, its bodies tinted apart and the hidden ones left out. */

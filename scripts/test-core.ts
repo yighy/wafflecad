@@ -11,7 +11,7 @@ import { insertShapes } from "../src/sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } from "../src/cad/holePlace";
 import { filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
-import { buildResult, buildShape, exportFile, setPartDocs } from "../src/cad/build";
+import { buildResult, buildShape, exportFile, interferences, setPartDocs } from "../src/cad/build";
 import * as THREE from "three";
 import { hasRef, measure, refGeometry } from "../src/cad/measure";
 import { instanceMatrix, solveMates, worldRef } from "../src/cad/mates";
@@ -916,6 +916,13 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   sol = solveMates([A, { ...B, at: [40, 0, 10], rot: [180, 0, 0] }], [mate("f", "align", top, topB)]);
   const fb = worldRef(topB, instanceMatrix({ ...B, ...sol.placed.get("B")! }));
   check("mates: flush from upside down turns it over", !sol.failing.length && near(fb.dir.z, 1, 1e-6) && near(fb.origin.z, 5, 1e-5), JSON.stringify([sol, fb]));
+  // A drawer: flush with travel limits keeps a slide free inside them, and brings it back inside.
+  const travel = { ...mate("f", "align", top, topB), min: 0, max: 10 };
+  sol = solveMates([A, { ...B, at: [40, 0, 20], rot: [0, 0, 0] }], [travel]);
+  const fz = worldRef(topB, instanceMatrix({ ...B, ...sol.placed.get("B")! })).origin.z;
+  check("mates: limits bring a part back to the nearest one", !sol.failing.length && near(fz, 15, 1e-5) && sol.dof === 3, JSON.stringify([sol, fz]));
+  sol = solveMates([A, { ...B, at: [40, 0, 4], rot: [0, 0, 0] }], [travel]);
+  check("mates: inside its limits a part stays where it is", !sol.failing.length && JSON.stringify(sol.placed.get("B")) === JSON.stringify({ at: [40, 0, 4], rot: [0, 0, 0] }) && sol.dof === 4, JSON.stringify(sol));
   sol = solveMates([A, B], [mate("t", "touch", top, bottom), mate("g", "touch", top, bottom, 3)]);
   check("mates: contradicting mates are reported, nothing moves", sol.failing.length > 0 && sol.placed.size === 0, JSON.stringify(sol.failing));
   sol = solveMates([A, B], [mate("x", "axis", axisA1, axisB1), mate("a", "angle", ref("A", "plane", [20, 5, 2.5], [1, 0, 0]), ref("B", "plane", [20, 5, 2.5], [1, 0, 0]), 90)]);
@@ -932,6 +939,19 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   const asmDoc: CadDocument = { format: "waffle", version: 1, features: [], kind: "assembly", instances: [{ id: "a", project: "p1", name: "A", at: [0, 0, 0], rot: [0, 0, 0] }], mates: [{ id: "m", name: "M", kind: "touch", a: { part: "a", kind: "plane", origin: [10, 5, 7], dir: [0, 0, 1] }, b: { part: "a", kind: "plane", origin: [10, 5, 5], dir: [0, 0, 1] }, value: 0 }] };
   setPartDocs({ p1: block() });
   check("mates: a face gone from its part is reported", !!buildShape(asmDoc).warnings.m, JSON.stringify(buildShape(asmDoc).warnings));
+}
+
+// --- Interference: two boxes 10 mm into each other, and two only touching.
+{
+  setPartDocs({ p1: block() });
+  const two = (x: number): CadDocument => ({ format: "waffle", version: 1, features: [], kind: "assembly", instances: [
+    { id: "a", project: "p1", name: "A", at: [0, 0, 0], rot: [0, 0, 0] },
+    { id: "b", project: "p1", name: "B", at: [x, 0, 0], rot: [0, 0, 0] },
+  ] });
+  const over = interferences(two(10));
+  check("interference: overlapping parts, with the volume", over.length === 1 && near(over[0].volume, 500, 1e-3) && over[0].triangles.length > 0, JSON.stringify(over.map((c) => c.volume)));
+  check("interference: parts that only touch do not count", interferences(two(20)).length === 0);
+  check("interference: hidden parts are left out", interferences(two(10), ["b"]).length === 0);
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

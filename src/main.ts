@@ -1,7 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, CadDocument, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, CadDocument, Clash, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
@@ -155,6 +155,7 @@ let reqCounter = 0;
 let latestBuild = 0;
 const pendingFiles = new Map<number, (b: Blob | null, err?: string) => void>();
 const pendingRefs = new Map<number, (ref: Omit<MateRef, "part"> | null) => void>();
+const pendingClashes = new Map<number, (c: Clash[], err?: string) => void>();
 let buildTimer = 0;
 /** One build at a time: while one runs, later changes wait and go as a single build after it. */
 let buildRunning = false;
@@ -206,6 +207,7 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     renderTimeline();
     renderPanel();
     renderPartOverlays();
+    if (explode > 0) spreadParts(explode);
     syncGizmo();
     if (thumbStale) scheduleThumb();
     if (measuring) showMeasurePicks();
@@ -214,6 +216,9 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     measuring.result = m.result;
     renderPanel();
     renderPartOverlays();
+  } else if (m.type === "clash") {
+    pendingClashes.get(m.reqId)?.(m.clashes, m.error);
+    pendingClashes.delete(m.reqId);
   } else if (m.type === "ref") {
     pendingRefs.get(m.reqId)?.(m.ref);
     pendingRefs.delete(m.reqId);
@@ -365,6 +370,9 @@ async function openProject(id: string, from: { id: string; name: string } | null
     if (doc.instances?.length && !doc.instances.some((i) => i.fixed)) doc.instances[0].fixed = true;
     solveState = null;
   }
+  explode = explodeTarget = 0;
+  clashes = null;
+  vp.setClashes(null);
   prefs.project = id;
   savePrefs();
   selectedFeature = null;
@@ -433,6 +441,7 @@ async function openInitialProject() {
 }
 
 function commit() {
+  if (clashes) clearClashes();
   const snap = snapshot();
   if (snap === undoStack[undoPos]) return;
   undoStack.splice(undoPos + 1);
@@ -564,6 +573,14 @@ function escape(): boolean {
   }
   if (mode.kind === "mate") {
     startMate();
+    return true;
+  }
+  if (clashes) {
+    clearClashes();
+    return true;
+  }
+  if (explodeTarget) {
+    toggleExplode();
     return true;
   }
   if (showParams) {
@@ -955,43 +972,88 @@ async function mateTool(mate: Mate, isNew = false) {
   const before = JSON.stringify(mate);
   const places = JSON.stringify(doc.instances);
   const unit = () => (mate.kind === "angle" ? "°" : "mm");
-  const label = () => ({ touch: "Gap", align: "Offset", angle: "Angle", axis: "" })[mate.kind];
+  /** What the keypad types: the exact value, or one of the limits. */
+  let field: "value" | "min" | "max" = mate.min !== undefined ? "min" : "value";
+  const label = () =>
+    field === "min" ? "From" : field === "max" ? "To" : ({ touch: "Gap", align: "Offset", angle: "Angle", axis: "" })[mate.kind];
+  const read = () => (field === "value" ? mate.value : mate[field]!);
+  const choose = (f: typeof field) => {
+    field = f;
+    kp.setLabel(label(), unit());
+    kp.set(read());
+  };
+  const limitRow: Segmented = {
+    options: [
+      { value: "min", label: "From" },
+      { value: "max", label: "To" },
+    ],
+    get: () => field,
+    set: (v) => choose(v as typeof field),
+  };
+  const segments: Segmented[] = [];
   const update = () => {
     applyMates();
     kp.setNote(mateState().failing.has(mate.id) ? "Cannot hold with the other mates" : null);
     renderTimeline();
     rebuild();
   };
+  // (The keypad draws these rows as it opens.)
+  segments.push(
+    {
+      options: [
+        { value: "touch", label: "Facing" },
+        { value: "align", label: "Flush" },
+        { value: "angle", label: "Angle" },
+      ],
+      get: () => mate.kind,
+      set: (v) => {
+        const kind = v as Mate["kind"];
+        if (kind === mate.kind) return;
+        // Turning to an angle starts at a right angle; back to faces, at contact.
+        mate.value = kind === "angle" ? 90 : 0;
+        if (mate.min !== undefined) [mate.min, mate.max] = kind === "angle" ? [0, 90] : [0, 10];
+        if (isNew) mate.name = freeName(MATE_KINDS[kind], (doc.mates ?? []).filter((x) => x !== mate).map((x) => x.name));
+        mate.kind = kind;
+        choose(field);
+        update();
+      },
+    },
+    {
+      // Exact, or free between two limits (a drawer's travel, a lid's opening).
+      options: [
+        { value: "exact", label: "Exact" },
+        { value: "range", label: "Limits" },
+      ],
+      get: () => (mate.min !== undefined ? "range" : "exact"),
+      set: (v) => {
+        if ((v === "range") === (mate.min !== undefined)) return;
+        if (v === "range") {
+          mate.min = Math.min(mate.value, mate.kind === "angle" ? 0 : mate.value);
+          mate.max = mate.value + (mate.kind === "angle" ? 90 : 10);
+          segments.push(limitRow);
+          choose("min");
+        } else {
+          delete mate.min;
+          delete mate.max;
+          segments.splice(segments.indexOf(limitRow), 1);
+          choose("value");
+        }
+        update();
+      },
+    },
+  );
+  if (mate.min !== undefined) segments.push(limitRow);
   const kp = openKeypad({
     title: mate.name,
     subtitle: `${partLabel(mate.a.part)} and ${partLabel(mate.b.part)}`,
     label: label(),
-    value: mate.value,
+    value: read(),
     unit: unit(),
     confirmLabel: "Confirm",
-    segments: [
-      {
-        options: [
-          { value: "touch", label: "Facing" },
-          { value: "align", label: "Flush" },
-          { value: "angle", label: "Angle" },
-        ],
-        get: () => mate.kind,
-        set: (v) => {
-          const kind = v as Mate["kind"];
-          if (kind === mate.kind) return;
-          // Turning to an angle starts at a right angle; back to faces, at contact.
-          mate.value = kind === "angle" ? 90 : 0;
-          if (isNew) mate.name = freeName(MATE_KINDS[kind], (doc.mates ?? []).filter((x) => x !== mate).map((x) => x.name));
-          mate.kind = kind;
-          kp.setLabel(label(), unit());
-          kp.set(mate.value);
-          update();
-        },
-      },
-    ],
+    segments,
     onInput: (v) => {
-      mate.value = v;
+      if (field === "value") mate.value = v;
+      else mate[field] = v;
       update();
     },
   });
@@ -1006,13 +1068,20 @@ async function mateTool(mate: Mate, isNew = false) {
     if (isNew) {
       doc.mates = doc.mates?.filter((x) => x !== mate);
       selectedFeature = null;
-    } else Object.assign(mate, JSON.parse(before));
+    } else {
+      // Limits added meanwhile go too.
+      delete mate.min;
+      delete mate.max;
+      Object.assign(mate, JSON.parse(before));
+    }
     solveState = null;
     rebuild(true);
     renderAll();
     return;
   }
-  mate.value = res.value;
+  if (field === "value") mate.value = res.value;
+  else mate[field] = res.value;
+  if (mate.min !== undefined && mate.max !== undefined && mate.min > mate.max) [mate.min, mate.max] = [mate.max, mate.min];
   applyMates();
   if (mateState().failing.has(mate.id)) toast("This mate cannot hold with the others");
   commit();
@@ -1073,7 +1142,7 @@ function mateMarks(batch: LineBatch) {
 
 /** The handles on the selected part, while nothing else is going on. */
 function syncGizmo() {
-  const inst = isAssembly() && mode.kind === "part" && !measuring ? instanceOf(selectedFeature) : null;
+  const inst = isAssembly() && mode.kind === "part" && !measuring && !explodeTarget && !clashes && !dragging ? instanceOf(selectedFeature) : null;
   if (inst?.fixed) {
     gizmo?.dispose();
     gizmo = null;
@@ -1087,17 +1156,172 @@ function syncGizmo() {
   gizmo?.dispose();
   gizmo = null;
   if (!inst || !box) return;
+  // The handles give the whole move since the drag began; the mates follow it step by step.
+  let last = new THREE.Matrix4();
   gizmo = new PlaceGizmo(
     vp,
     box.getCenter(new THREE.Vector3()),
-    (m) => vp.moveBody(inst.id, m),
     (m) => {
-      applyMove(inst, m);
-      // Mated, it only keeps the part of the move its mates leave free.
-      applyMates();
-      commit();
+      if (!dragging) {
+        beginDrag(inst.id);
+        last = new THREE.Matrix4();
+      }
+      dragBy(m.clone().multiply(last.clone().invert()));
+      last = m;
     },
+    () => endDrag(true),
   );
+}
+
+// ---------- Moving parts live (dragged with a finger or the handles) ----------
+
+/** Placements while a part is dragged, kept out of the document until it is let go. */
+let dragging: { insts: PartInstance[]; built: Map<string, THREE.Matrix4>; centers: Record<string, Vec3>; lead: string } | null = null;
+
+function beginDrag(id: string) {
+  const insts = structuredClone(doc.instances ?? []);
+  dragging = { insts, built: new Map(insts.map((i) => [i.id, instanceMatrix(i)])), centers: partCenters(), lead: id };
+}
+
+/**
+ * Moves the dragged part by `step` from where it is now, then lets the mates have their way: a
+ * hinged lid swings, a drawer slides, a mated part only takes what its mates leave free (and parts
+ * mated to it follow). Drawn at once, without rebuilding.
+ */
+function dragBy(step: THREE.Matrix4) {
+  const d = dragging;
+  if (!d) return;
+  const trial = d.insts.map((i) => ({ ...i }));
+  const lead = trial.find((i) => i.id === d.lead)!;
+  Object.assign(lead, placementOf(step.clone().multiply(instanceMatrix(lead))));
+  // Each part turns about its middle where it is now.
+  const centers: Record<string, Vec3> = {};
+  for (const i of trial) {
+    const c = d.centers[i.id];
+    if (c) centers[i.id] = new THREE.Vector3(...c).applyMatrix4(instanceMatrix(i).multiply(d.built.get(i.id)!.clone().invert())).toArray() as Vec3;
+  }
+  const sol = solveMates(trial, doc.mates ?? [], centers);
+  if (sol.failing.length) return; // no way there: it stays where it was
+  for (const [id, p] of sol.placed) Object.assign(trial.find((i) => i.id === id)!, p);
+  d.insts = trial;
+  vp.moveBodies(new Map(trial.map((i) => [i.id, instanceMatrix(i).multiply(d.built.get(i.id)!.clone().invert())])));
+}
+
+/** Lets go: the parts stay where the drag left them (or go back, on a cancelled gesture). */
+function endDrag(keep: boolean) {
+  const d = dragging;
+  dragging = null;
+  if (!d) return;
+  if (!keep) {
+    vp.moveBodies(new Map());
+    return;
+  }
+  doc.instances = d.insts;
+  applyMates();
+  commit();
+}
+
+/** A finger on a part (not a fixed one) drags it across the view. */
+let fingerDrag: { id: string; plane: THREE.Plane; last: THREE.Vector3; x0: number; y0: number; moved: boolean } | null = null;
+
+function fingerDown(p: Ptr) {
+  fingerDrag = null;
+  if (!isAssembly() || mode.kind !== "part" || measuring || explode > 0 || clashes) return;
+  const hit = vp.pickPoint(p.x, p.y);
+  const body = hit?.faceId == null ? null : lastBuild?.bodies?.find((b) => b.faceIds.includes(hit.faceId!));
+  const inst = instanceOf(body?.id ?? null);
+  if (!hit || !inst || inst.fixed) return;
+  const at = new THREE.Vector3(...hit.point);
+  const toEye = vp.camera.getWorldDirection(new THREE.Vector3()).negate();
+  fingerDrag = { id: inst.id, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(toEye, at), last: at, x0: p.x, y0: p.y, moved: false };
+}
+
+function fingerMove(p: Ptr) {
+  const f = fingerDrag;
+  if (!f) return;
+  if (!f.moved) {
+    if (Math.hypot(p.x - f.x0, p.y - f.y0) < 8) return;
+    f.moved = true;
+    selectedFeature = f.id;
+    gizmo?.dispose();
+    gizmo = null;
+    gizmoFor = "";
+    beginDrag(f.id);
+  }
+  const to = vp.ray(p.x, p.y).ray.intersectPlane(f.plane, new THREE.Vector3());
+  if (!to) return;
+  dragBy(new THREE.Matrix4().makeTranslation(to.clone().sub(f.last)));
+  f.last = to;
+}
+
+// ---------- Exploded view ----------
+
+/** How far the parts are spread (0: assembled, 1: exploded), and where it is heading. */
+let explode = 0;
+let explodeTarget = 0;
+
+/** Spreads the parts away from the middle of the assembly, each by its own distance from it. */
+function spreadParts(t: number) {
+  const bodies = lastBuild?.bodies ?? [];
+  const all = vp.modelBox();
+  if (!all || bodies.length < 2) return;
+  const mid = all.getCenter(new THREE.Vector3());
+  const moves = new Map<string, THREE.Matrix4>();
+  for (const b of bodies) {
+    const box = vp.bodyBox(b.id);
+    if (box) moves.set(b.id, new THREE.Matrix4().makeTranslation(box.getCenter(new THREE.Vector3()).sub(mid).multiplyScalar(t)));
+  }
+  vp.moveBodies(moves);
+}
+
+function toggleExplode() {
+  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  explodeTarget = explodeTarget ? 0 : 1;
+  const from = explode;
+  const to = explodeTarget;
+  const t0 = performance.now();
+  const frame = () => {
+    if (explodeTarget !== to) return; // turned round meanwhile
+    const k = Math.min(1, (performance.now() - t0) / 450);
+    explode = from + (to - from) * (1 - (1 - k) ** 3);
+    // The spread is measured from the parts as built, so it always starts from there.
+    vp.moveBodies(new Map());
+    spreadParts(explode);
+    if (k < 1) requestAnimationFrame(frame);
+    else renderAll();
+  };
+  requestAnimationFrame(frame);
+  renderAll();
+}
+
+// ---------- Interference ----------
+
+/** Overlapping parts found by the last check (null: no check shown). */
+let clashes: { list: Clash[]; running: boolean; error?: string } | null = null;
+
+function checkInterference() {
+  if (!kernelReady) return toast("The geometry kernel is still loading");
+  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if (measuring) endMeasure();
+  selectedFeature = null;
+  const reqId = ++reqCounter;
+  const state: NonNullable<typeof clashes> = { list: [], running: true };
+  clashes = state;
+  vp.setClashes(null);
+  pendingClashes.set(reqId, (list, error) => {
+    if (clashes !== state) return; // closed meanwhile
+    clashes = { list, running: false, error };
+    vp.setClashes(list);
+    renderAll();
+  });
+  worker.postMessage({ type: "clash", reqId, doc, skip: [...hiddenBodies] } satisfies WorkerRequest);
+  renderAll();
+}
+
+function clearClashes() {
+  clashes = null;
+  vp.setClashes(null);
+  renderAll();
 }
 
 /** Position and turns of a part, typed on the keypad (one value at a time). */
@@ -2453,8 +2677,12 @@ function renderTools() {
       el.appendChild(toolRow("mate", "Mate", startMate, { active: mode.kind === "mate", key: "M" }));
     }
     if (doc.instances?.length) {
-      el.appendChild(section("Design"));
+      el.appendChild(section("Check"));
       el.appendChild(toolRow("measure", "Measure", toggleMeasure, { active: !!measuring, key: "D" }));
+      if (doc.instances.length > 1) {
+        el.appendChild(toolRow("clash", "Interference", () => (clashes ? clearClashes() : checkInterference()), { active: !!clashes, key: "C" }));
+        el.appendChild(toolRow("explode", "Exploded view", toggleExplode, { active: explodeTarget > 0, key: "X" }));
+      }
     }
   } else {
     if (cameFrom) {
@@ -2671,12 +2899,49 @@ function renderPanel() {
   }
   if (showParams) return renderParamsPanel(el);
 
+  if (isAssembly() && clashes) {
+    const c = clashes;
+    const n = c.list.length;
+    head("Interference", c.running ? "Checking every pair of parts…" : c.error ? "The check failed" : n ? `${n} overlap${n > 1 ? "s" : ""}, in red` : "No parts overlap", !!c.error || n > 0);
+    if (c.list.length) {
+      const box = document.createElement("div");
+      box.className = "p-measure";
+      for (const x of c.list) {
+        const row = document.createElement("div");
+        row.innerHTML = "<span></span><b></b>";
+        row.querySelector("span")!.textContent = `${partLabel(x.a)} and ${partLabel(x.b)}`;
+        row.querySelector("b")!.textContent = `${fmtNum(x.volume)} mm³`;
+        box.appendChild(row);
+      }
+      el.appendChild(box);
+    }
+    if (!c.running && hiddenBodies.size) {
+      const hint = document.createElement("p");
+      hint.className = "p-hint";
+      hint.textContent = "Hidden parts were left out.";
+      el.appendChild(hint);
+    }
+    actions([["check", "Done", clearClashes, "primary"]]);
+    return;
+  }
   if (isAssembly()) {
     const mate = mateOf(selectedFeature);
     if (mate) {
       const failing = mateState().failing.has(mate.id);
       const err = failing ? "Cannot hold with the other mates" : lastBuild?.warnings?.[mate.id];
-      const how = mate.kind === "axis" ? "same axis" : mate.kind === "angle" ? `${fmtNum(mate.value)}°` : mate.value ? `${fmtNum(mate.value)} mm apart` : mate.kind === "touch" ? "in contact" : "flush";
+      const unitOf = mate.kind === "angle" ? "°" : " mm";
+      const how =
+        mate.kind === "axis"
+          ? "same axis"
+          : mate.min !== undefined && mate.max !== undefined
+            ? `between ${fmtNum(mate.min)} and ${fmtNum(mate.max)}${unitOf}`
+            : mate.kind === "angle"
+              ? `${fmtNum(mate.value)}°`
+              : mate.value
+                ? `${fmtNum(mate.value)} mm apart`
+                : mate.kind === "touch"
+                  ? "in contact"
+                  : "flush";
       head(mate.name, err ?? `${partLabel(mate.a.part)} and ${partLabel(mate.b.part)} · ${how}`, !!err, true);
       const items: [string, string, () => void, string?][] = [];
       if (mate.kind !== "axis") items.push(["edit", "Edit", () => void mateTool(mate)]);
@@ -2967,7 +3232,9 @@ function renderStatus() {
   else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
   else if (mode.kind === "place") s = `${mode.feat.name} · choose a value and type it`;
   else if (mode.kind === "mate") s = mode.picks.length ? "Mate · now the face or hole on the other part" : "Mate · tap a flat face, a hole or a round edge of a part";
-  else if (mode.kind === "mateEdit") s = `${mode.feat.name} · facing, flush or at an angle; type the gap`;
+  else if (mode.kind === "mateEdit") s = `${mode.feat.name} · facing, flush or at an angle; type the gap, or limits`;
+  else if (isAssembly() && clashes) s = clashes.running ? "Checking for overlaps…" : "Interference · overlaps in red";
+  else if (isAssembly() && explodeTarget) s = "Exploded view · tap it again to put the parts back";
   else if (isAssembly() && !s && !measuring && doc.instances?.length)
     s = instanceOf(selectedFeature) ? "Drag an arrow to slide the part, a ring to turn it" : "Tap a part to place it";
   if (buildSlow) s = s ? `Building… · ${s}` : "Building the model…";
@@ -3279,11 +3546,18 @@ function appendSketchLines(b: LineBatch, sk: SketchFeature, col: number[]) {
 const partTool: PointerTool = {
   down(p) {
     if (mode.kind === "hole") holeDown(mode.feat, p);
+    fingerDown(p);
   },
   move(p) {
     if (mode.kind === "hole") holeMove(mode.feat, p);
+    fingerMove(p);
   },
   up(p) {
+    if (fingerDrag?.moved) {
+      fingerDrag = null;
+      return endDrag(true);
+    }
+    fingerDrag = null;
     if (mode.kind === "pickPlane") return pickPlaneAt(p);
     if (mode.kind === "mate") return void mateTap(p);
     const face = vp.pickFace(p.x, p.y);
@@ -3320,6 +3594,8 @@ const partTool: PointerTool = {
   },
   cancel() {
     holeDrag = null;
+    if (fingerDrag?.moved) endDrag(false);
+    fingerDrag = null;
   },
   hover(p) {
     if (mode.kind !== "pickPlane" || !p) return;
@@ -4026,6 +4302,8 @@ window.addEventListener("keydown", (e) => {
     const mate = mateOf(selectedFeature);
     if (key === "i") void showPartPicker();
     else if (key === "m") startMate();
+    else if (key === "x") toggleExplode();
+    else if (key === "c") void (clashes ? clearClashes() : checkInterference());
     else if (key === "d") toggleMeasure();
     else if (key === "f") vp.fit();
     else if (key === "delete" && inst) removeInstance(inst);

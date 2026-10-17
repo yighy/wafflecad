@@ -363,6 +363,12 @@ export interface Mate {
   a: MateRef;
   b: MateRef;
   value: number;
+  /**
+   * Limits instead of an exact value (a drawer's travel, a lid's opening): the gap or angle may be
+   * anywhere between them, and `value` is only where it started.
+   */
+  min?: number;
+  max?: number;
 }
 
 /** A separate solid of the part, and the faces that belong to it (B-rep hash codes). */
@@ -469,6 +475,8 @@ export type WorkerRequest =
   /** The documents of the parts the open assembly uses, by project id (kept until replaced). */
   | { type: "parts"; parts: Record<string, CadDocument> }
   | { type: "measure"; reqId: number; doc: CadDocument; picks: MeasurePick[] }
+  /** Parts of the assembly that overlap (the hidden ones left out). */
+  | { type: "clash"; reqId: number; doc: CadDocument; skip: string[] }
   /** The plane or axis of a face or edge of the model (world coordinates), to mate it. */
   | { type: "ref"; reqId: number; doc: CadDocument; pick: Exclude<MeasurePick, { kind: "point" }> };
 
@@ -478,4 +486,14 @@ export type WorkerResponse =
   | ({ type: "built"; reqId: number; preview?: PreviewResult } & BuildResult)
   | { type: "file"; reqId: number; blob: Blob | null; error?: string }
   | { type: "measured"; reqId: number; result: MeasureResult }
-  | { type: "ref"; reqId: number; ref: Omit<MateRef, "part"> | null; error?: string };
+  | { type: "ref"; reqId: number; ref: Omit<MateRef, "part"> | null; error?: string }
+  | { type: "clash"; reqId: number; clashes: Clash[]; error?: string };
+
+/** Two parts that overlap: how much, and the shape of the overlap (to draw it). */
+export interface Clash {
+  a: string;
+  b: string;
+  volume: number;
+  vertices: Float32Array;
+  triangles: Uint32Array;
+}

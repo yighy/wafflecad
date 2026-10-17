@@ -62,10 +62,18 @@ function mateErrors(mate: Mate, ma: THREE.Matrix4, mb: THREE.Matrix4): number[] 
     const off = gap.cross(a.dir);
     return [par.x, par.y, par.z, off.x, off.y, off.z];
   }
-  if (mate.kind === "angle") return [(a.dir.dot(b.dir) - Math.cos(THREE.MathUtils.degToRad(mate.value))) * DIR_WEIGHT];
+  const ranged = mate.min !== undefined && mate.max !== undefined;
+  // Within its limits a ranged mate has nothing to correct; outside, the way back to the nearest.
+  const past = (q: number) => (q < mate.min! ? q - mate.min! : q > mate.max! ? q - mate.max! : 0);
+  if (mate.kind === "angle") {
+    if (!ranged) return [(a.dir.dot(b.dir) - Math.cos(THREE.MathUtils.degToRad(mate.value))) * DIR_WEIGHT];
+    const q = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(a.dir.dot(b.dir), -1, 1)));
+    return [THREE.MathUtils.degToRad(past(q)) * DIR_WEIGHT];
+  }
   // Facing each other (touch) the normals are opposite; flush (align) they are the same.
   const turn = (mate.kind === "touch" ? a.dir.clone().add(b.dir) : a.dir.clone().sub(b.dir)).multiplyScalar(DIR_WEIGHT);
-  return [turn.x, turn.y, turn.z, gap.dot(a.dir) - mate.value];
+  const q = gap.dot(a.dir);
+  return [turn.x, turn.y, turn.z, ranged ? past(q) : q - mate.value];
 }
 
 /**

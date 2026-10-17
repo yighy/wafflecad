@@ -2,7 +2,7 @@
 import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
-import { buildResult, buildShape, exportFile, setPartDocs } from "./build";
+import { buildResult, buildShape, exportFile, interferences, setPartDocs } from "./build";
 import { measure, refGeometry } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
@@ -55,6 +55,15 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         planarFaces: [],
         errors: { _: String(e) },
       });
+    }
+    return;
+  }
+  if (req.type === "clash") {
+    try {
+      const clashes = interferences(req.doc, req.skip);
+      post({ type: "clash", reqId: req.reqId, clashes }, clashes.flatMap((c) => [c.vertices.buffer, c.triangles.buffer]));
+    } catch (e) {
+      post({ type: "clash", reqId: req.reqId, clashes: [], error: String(e) });
     }
     return;
   }
