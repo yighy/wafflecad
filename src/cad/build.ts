@@ -1,8 +1,9 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, drawEllipse, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
-import type { Axis, BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
+import type { Axis, BuildResult, CadDocument, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
+import { make3mf } from "./threemf";
 import { sketchLineWorld } from "../sketch/model";
 import { findRegions } from "../sketch/profiles";
 
@@ -314,12 +315,41 @@ const snapshot = (st: ReplayState): ReplayState => ({
   tools: new Map(st.tools),
 });
 
+/** The solids of a STEP file (its text), as one shape. */
+export function readStep(text: string): Shape3D {
+  const oc = getOC();
+  const name = `/import-${Math.random().toString(36).slice(2)}.step`;
+  oc.FS.writeFile(name, text);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const reader = new (oc as any).STEPControl_Reader();
+  try {
+    if (!reader.ReadFile(name)) throw new Error("This STEP file could not be read");
+    reader.TransferRoots();
+    let shape;
+    try {
+      shape = cast(reader.OneShape());
+    } catch {
+      throw new Error("This STEP file holds no shape that can be read");
+    }
+    if (!isShape3D(shape) || !shape.faces.length) throw new Error("This STEP file holds no solid");
+    return shape;
+  } finally {
+    reader.delete();
+    oc.FS.unlink(name);
+  }
+}
+
 /** Replays the features (from the cache where possible); a failing feature is skipped and reported. */
 export function buildShape(doc: CadDocument) {
   const names = new Map(doc.features.map((f) => [f.id, f.name]));
   const keys: string[] = [];
   let key = "";
-  for (const f of doc.features) keys.push((key = hash(key + JSON.stringify(f))));
+  // An imported file counts by its size, start and end (cheap even for a large file).
+  const fileKey = (id: string) => {
+    const t = doc.files?.[id] ?? "";
+    return `${t.length}:${hash(t.slice(0, 4096) + t.slice(-4096))}`;
+  };
+  for (const f of doc.features) keys.push((key = hash(key + JSON.stringify(f) + (f.kind === "import" ? fileKey(f.fileId) : ""))));
   // Start after the longest run of steps already built.
   let start = keys.length;
   while (start > 0 && !stepCache.has(keys[start - 1])) start--;
@@ -344,6 +374,21 @@ export function buildShape(doc: CadDocument) {
     }
     if (f.kind === "sketch") {
       sketches.set(f.id, f);
+      return;
+    }
+    if (f.kind === "import") {
+      try {
+        const text = doc.files?.[f.fileId];
+        if (!text) throw new Error("The imported file is missing");
+        const solid = readStep(text);
+        tools.set(f.id, { solid, op: f.op });
+        if (f.op === "add") shape = shape ? shape.fuse(solid) : solid;
+        else if (shape) shape = shape.cut(solid);
+        else throw new Error("Nothing to cut");
+        shape = shape.simplify();
+      } catch (e) {
+        errors[f.id] = e instanceof Error ? e.message : String(e);
+      }
       return;
     }
     if (f.kind === "hole") {
@@ -552,8 +597,12 @@ function interiorPoint(face: Face, center: Vec3): Vec3 {
   return best;
 }
 
-export function exportFile(doc: CadDocument, format: "step" | "stl"): Blob | null {
+export function exportFile(doc: CadDocument, format: ExportFormat, name = "model"): Blob | null {
   const { shape } = buildShape(doc);
   if (!shape) return null;
+  if (format === "3mf") {
+    const m = shape.mesh(MESH_OPTS);
+    return new Blob([make3mf(m.vertices, m.triangles, name)], { type: "model/3mf" });
+  }
   return format === "stl" ? shape.blobSTL({ ...MESH_OPTS, binary: true }) : shape.blobSTEP();
 }

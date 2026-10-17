@@ -266,6 +266,16 @@ export interface PatternFeature {
   offset: number;
 }
 
+/** A solid read from a STEP file, joined to the model (or cut from it) as placed in the file. */
+export interface ImportFeature {
+  id: string;
+  kind: "import";
+  name: string;
+  /** Key of the file's text in the document's `files`. */
+  fileId: string;
+  op: "add" | "cut";
+}
+
 export type Feature =
   | SketchFeature
   | ExtrudeFeature
@@ -274,7 +284,8 @@ export type Feature =
   | ShellFeature
   | FilletFeature
   | HoleFeature
-  | PatternFeature;
+  | PatternFeature
+  | ImportFeature;
 
 /** A named value usable in any dimension or feature value. */
 export interface Parameter {
@@ -290,6 +301,8 @@ export interface CadDocument {
   version: 1;
   features: Feature[];
   parameters?: Parameter[];
+  /** Imported files (STEP text) by id. Kept out of undo snapshots: they only ever get added. */
+  files?: Record<string, string>;
 }
 
 // ---------- Profiles: closed regions found in a sketch ----------
@@ -373,12 +386,14 @@ export interface PreviewResult {
   error?: string;
 }
 
+export type ExportFormat = "step" | "stl" | "3mf";
+
 export type WorkerRequest =
   /** With pickExclude: the main result leaves that feature out (to pick faces and edges on), and
    * `preview` shows the whole document, so an operation being edited is seen live. `draft`: a
    * coarser mesh and no flat faces, for builds made while a value is being dragged. */
   | { type: "build"; reqId: number; doc: CadDocument; pickExclude?: string; draft?: boolean }
-  | { type: "export"; reqId: number; doc: CadDocument; format: "step" | "stl" }
+  | { type: "export"; reqId: number; doc: CadDocument; format: ExportFormat; name: string }
   | { type: "measure"; reqId: number; doc: CadDocument; picks: MeasurePick[] };
 
 export type WorkerResponse =

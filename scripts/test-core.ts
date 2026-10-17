@@ -793,5 +793,37 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("ellipse inside a rectangle is a hole", hr.length === 1 && hr[0].holes.length === 1, JSON.stringify(hr.map((r) => r.holes.length)));
 }
 
+// --- 3MF: a closed mesh in a valid zip.
+{
+  const blob = exportFile(block(), "3mf", "Block & co")!;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const text = new TextDecoder().decode(bytes);
+  const nv = (text.match(/<vertex /g) ?? []).length;
+  const nt = (text.match(/<triangle /g) ?? []).length;
+  check("3MF: zip with the model, block welded to 8 vertices / 12 triangles", bytes[0] === 0x50 && bytes[1] === 0x4b && text.includes("3D/3dmodel.model") && nv === 8 && nt === 12, `${nv} ${nt}`);
+  check("3MF: name escaped", text.includes('name="Block &#38; co"'));
+}
+
+// --- STEP import: the block exported, read back as a step of another model.
+{
+  const stepText = await exportFile(block(), "step")!.text();
+  const imp = (op: "add" | "cut", before: CadDocument["features"] = []): CadDocument => ({
+    format: "waffle",
+    version: 1,
+    features: [...before, { id: "im", kind: "import", name: "Block", fileId: "f1", op }],
+    files: { f1: stepText },
+  });
+  const ib = buildShape(imp("add"));
+  check("STEP import: the block comes back whole", !!ib.shape && !Object.keys(ib.errors).length && near(measureVolume(ib.shape), 1000, 1e-3), JSON.stringify(ib.errors));
+  // Cut from a bigger block (30 × 10 × 5 from x = -5): 1500 − 1000 left.
+  const bigSk = newSketch("Big", XY);
+  rect(bigSk, -5, 0, 25, 10);
+  const cutDoc = imp("cut", [bigSk, { id: "eb2", kind: "extrude", name: "E", sketchId: bigSk.id, distance: 5, symmetric: false, op: "add" }]);
+  const cb = buildShape(cutDoc);
+  check("STEP import: cut from the model", !!cb.shape && near(measureVolume(cb.shape), 500, 1e-3), JSON.stringify(cb.errors));
+  const bad = buildShape({ ...imp("add"), files: { f1: "ISO-10303-21; nonsense" } });
+  check("STEP import: an unreadable file is reported on its step", !!bad.errors.im, JSON.stringify(bad.errors));
+}
+
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

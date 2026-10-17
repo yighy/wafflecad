@@ -65,7 +65,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
     return;
   }
   try {
-    post({ type: "file", reqId: req.reqId, blob: exportFile(req.doc, req.format) });
+    post({ type: "file", reqId: req.reqId, blob: exportFile(req.doc, req.format, req.name) });
   } catch (e) {
     post({ type: "file", reqId: req.reqId, blob: null, error: String(e) });
   }

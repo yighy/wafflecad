@@ -21,7 +21,7 @@ import { bounds, insertShapes, type ImportOptions, type ImportShape } from "./sk
 import { textShapes } from "./sketch/text";
 import { FONTS, loadFont, type FontId } from "./sketch/fonts";
 import type { Font } from "opentype.js";
-import type { MeasurePick, MeasureResult, MeasureRow } from "./types";
+import type { ExportFormat, MeasurePick, MeasureResult, MeasureRow } from "./types";
 import { deleteProject, freeName, getProject, listProjects, newProjectId, putProject, type ProjectMeta } from "./projects";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D, type EdgeDim } from "./cad/holePlace";
 
@@ -124,7 +124,9 @@ let showParams = false;
 let previewExclude: string | null = null;
 let lastBuild: BuildResult | null = null;
 let kernelMessage = "Loading geometry kernel…";
-const undoStack: string[] = [JSON.stringify(doc)];
+/** The document without its imported files (they only ever get added, so undo leaves them be). */
+const snapshot = () => JSON.stringify({ ...doc, files: undefined });
+const undoStack: string[] = [snapshot()];
 let undoPos = 0;
 
 const vp = new Viewport($("#view"));
@@ -145,6 +147,8 @@ let buildRunning = false;
 let buildSlow = false;
 let buildSlowTimer = 0;
 let buildAgain = false;
+/** Frame the model when the next build arrives (after an import). */
+let fitNext = false;
 /** Quality of the build waiting behind the running one: fine if any request wanted fine. */
 let againDraft = true;
 
@@ -178,7 +182,10 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     lastBuild = m;
     vp.setModel(m, m.preview);
     if (isOperation(mode)) mode.keypad.setNote(m.preview?.error ?? null);
-    if (first && m.mesh) vp.fit();
+    if ((first || fitNext) && m.mesh) {
+      fitNext = false;
+      vp.fit();
+    }
     if (mode.kind === "sketch") vp.setModelOpacity(0.45);
     if (mode.kind === "shell") highlightShellFaces(mode.feat);
     if (mode.kind === "fillet") highlightFilletEdges(mode.feat);
@@ -259,14 +266,14 @@ function rebuild(now = false) {
   }, 50);
 }
 
-function exportFile(format: "step" | "stl") {
+function exportFile(format: ExportFormat) {
   if (!kernelReady) return toast("The geometry kernel is still loading");
   const reqId = ++reqCounter;
   pendingFiles.set(reqId, (blob, err) => {
     if (!blob) return toast(err ? "Export failed: " + err : "Nothing to export");
     download(blob, `${fileName()}.${format}`);
   });
-  worker.postMessage({ type: "export", reqId, doc, format } satisfies WorkerRequest);
+  worker.postMessage({ type: "export", reqId, doc, format, name: project?.name ?? "Model" } satisfies WorkerRequest);
 }
 
 // ---------- Document, history, persistence ----------
@@ -314,7 +321,7 @@ function scheduleThumb() {
 
 function resetHistory() {
   undoStack.length = 0;
-  undoStack.push(JSON.stringify(doc));
+  undoStack.push(snapshot());
   undoPos = 0;
 }
 
@@ -390,7 +397,7 @@ async function openInitialProject() {
 }
 
 function commit() {
-  const snap = JSON.stringify(doc);
+  const snap = snapshot();
   if (snap === undoStack[undoPos]) return;
   undoStack.splice(undoPos + 1);
   undoStack.push(snap);
@@ -404,7 +411,7 @@ function commit() {
 function restore(pos: number) {
   if (isOperation(mode)) mode.keypad.close();
   undoPos = pos;
-  doc = JSON.parse(undoStack[pos]);
+  doc = { ...JSON.parse(undoStack[pos]), files: doc.files };
   save();
   if (mode.kind === "sketch") {
     const id = mode.editor.sk.id;
@@ -2070,6 +2077,16 @@ function renderPanel() {
     else if (f.kind === "hole") items.push(["edit", "Edit", () => void holeTool(f)]);
     else if (f.kind === "pattern") items.push(["edit", "Edit", () => void patternTool(f.type, f)]);
     else if (f.kind === "revolve") items.push(["edit", "Edit", () => void revolveTool(f)]);
+    else if (f.kind === "import")
+      items.push([
+        f.op === "add" ? "cut" : "extrude",
+        f.op === "add" ? "Cut it instead" : "Join it instead",
+        () => {
+          f.op = f.op === "add" ? "cut" : "add";
+          commit();
+          renderAll();
+        },
+      ]);
     else items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
     items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
@@ -2111,6 +2128,7 @@ function featureDetail(f: Feature) {
     const head = f.head === "counterbore" ? " · counterbore" : f.head === "countersink" ? " · countersink" : "";
     return `${f.size} ${n}${head} · ${f.depth > 0 ? `${fmtNum(f.depth)} mm deep` : "through"}`;
   }
+  if (f.kind === "import") return `${f.op === "add" ? "Join" : "Cut"} · STEP file`;
   if (f.kind === "fillet")
     return `${f.mode === "fillet" ? "Radius" : "Chamfer"} ${fmtNum(f.radius)} mm · ${f.edges.length} edge${f.edges.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
@@ -2125,6 +2143,7 @@ function featureIcon(f: Feature) {
   if (f.kind === "hole") return "hole";
   if (f.kind === "pattern") return f.type;
   if (f.kind === "revolve") return "revolve";
+  if (f.kind === "import") return "import";
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
 }
 
@@ -2852,6 +2871,25 @@ function shiftShape(s: ImportShape, dx: number, dy: number): ImportShape {
   }
 }
 
+/**
+ * A STEP file becomes a step of the model: its solid is joined as placed in the file, and can be
+ * cut instead, filleted, patterned like any other step.
+ */
+async function importStep() {
+  const file = await pickFile(".step,.stp,model/step");
+  if (!file) return;
+  const text = await file.text();
+  if (!text.slice(0, 400).includes("ISO-10303-21")) return toast("This is not a STEP file");
+  leaveModes();
+  const fileId = uid();
+  doc.files = { ...doc.files, [fileId]: text };
+  const name = file.name.replace(/\.(step|stp)$/i, "") || "Import";
+  doc.features.push({ id: uid(), kind: "import", name, fileId, op: "add" });
+  fitNext = true;
+  commit();
+  renderAll();
+}
+
 /** A file opened from the device becomes a new project, named after the file. */
 function openFile() {
   const input = document.createElement("input");
@@ -3014,8 +3052,10 @@ function setupMenu() {
     ["New project", () => void newProject()],
     ["Open file…", openFile],
     ["Save file (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`)],
+    ["Import STEP…", () => void importStep()],
     ["Export STEP", () => exportFile("step")],
     ["Export STL", () => exportFile("stl")],
+    ["Export 3MF", () => exportFile("3mf")],
     ["Light / dark theme", () => setTheme(prefs.theme === "light" ? "dark" : "light")],
     ["Help", () => $("#help").classList.add("open")],
   ];
