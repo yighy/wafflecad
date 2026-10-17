@@ -449,7 +449,17 @@ export class Viewport {
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array(parts), 1));
     this.highlight = new THREE.Mesh(
       geo,
-      new THREE.MeshBasicMaterial({ color: cssVar("--accent", "#ffb648"), transparent: true, opacity: 0.55, depthTest: false }),
+      // Depth-tested, pulled slightly towards the eye: only the visible part of the face is tinted
+      // (not seen through the walls in front of it), without fighting with the face itself.
+      new THREE.MeshBasicMaterial({
+        color: cssVar("--accent", "#ffb648"),
+        transparent: true,
+        opacity: 0.55,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      }),
     );
     this.highlight.renderOrder = 5;
     this.modelGroup.add(this.highlight);
