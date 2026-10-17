@@ -65,7 +65,8 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
    (it turns red, slide to pick another) and lift. A piece with no crossing removes the whole curve; a circle
    becomes an arc; cutting the middle of a line leaves two collinear lines. Reference axes do not cut.
    **Fillet** rounds a corner: tap the point where two lines meet and type the radius; an arc tangent to
-   both lines replaces the corner (a length dimension on those lines is dropped, as the corner is gone).
+   both lines replaces the corner. The corner stays as a point on both lines, so what was fixed or
+   dimensioned to it still holds; length dimensions of the two lines are dropped.
    **Use edges** adds edges of the model to the sketch: tap them in the 3D view; each becomes a line, circle,
    arc or spline flattened onto the sketch plane, with fixed points (shared where edges meet).
    It is a copy: it does not follow later changes of the model.
