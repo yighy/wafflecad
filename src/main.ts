@@ -2019,28 +2019,52 @@ const DISPLAY_MODES: [DisplayMode, string][] = [
   ["technical", "Technical lines"],
 ];
 
+/**
+ * The menu is built once when it opens and then updated in place, so its changes can animate:
+ * it scales in from the button and fades out, a pill slides to the chosen mode, and the section
+ * slider unfolds.
+ */
 function renderDisplayMenu() {
   let el = document.getElementById("display-menu");
   if (!displayMenuOpen) {
-    el?.remove();
+    if (el && !el.classList.contains("closing")) {
+      const gone = el;
+      gone.classList.add("closing");
+      const remove = () => gone.remove();
+      gone.addEventListener("animationend", remove, { once: true });
+      setTimeout(remove, 250); // no animation (reduced motion): remove anyway
+    }
     renderViewButtons();
     return;
   }
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "display-menu";
-    el.addEventListener("pointerdown", (e) => e.stopPropagation());
-    document.body.appendChild(el);
+  if (!el || el.classList.contains("closing")) {
+    el?.remove();
+    el = buildDisplayMenu();
   }
-  el.replaceChildren();
-  const head = document.createElement("div");
-  head.className = "dm-title";
-  head.textContent = "Display";
-  el.appendChild(head);
+  syncDisplayMenu(el);
+  renderViewButtons();
+}
+
+function buildDisplayMenu() {
+  const el = document.createElement("div");
+  el.id = "display-menu";
+  el.addEventListener("pointerdown", (e) => e.stopPropagation());
+  const title = (text: string) => {
+    const t = document.createElement("div");
+    t.className = "dm-title";
+    t.textContent = text;
+    return t;
+  };
+  el.appendChild(title("Display"));
+  const modes = document.createElement("div");
+  modes.className = "dm-modes";
+  const pill = document.createElement("div");
+  pill.className = "dm-pill";
+  modes.appendChild(pill);
   for (const [m, label] of DISPLAY_MODES) {
     const b = document.createElement("button");
     b.className = "dm-mode";
-    b.classList.toggle("on", vp.displayMode === m);
+    b.dataset.mode = m;
     b.textContent = label;
     b.onclick = () => {
       vp.setDisplayMode(m);
@@ -2049,39 +2073,62 @@ function renderDisplayMenu() {
       if (mode.kind === "sketch") vp.setModelOpacity(0.45);
       renderDisplayMenu();
     };
-    el.appendChild(b);
+    modes.appendChild(b);
   }
-  const sec = document.createElement("div");
-  sec.className = "dm-title";
-  sec.textContent = "Section";
-  el.appendChild(sec);
+  el.appendChild(modes);
+  el.appendChild(title("Section"));
   const seg = document.createElement("div");
   seg.className = "seg";
-  const current = vp.section;
   for (const a of ["off", "X", "Y", "Z"] as const) {
     const b = document.createElement("button");
+    b.dataset.axis = a;
     b.textContent = a === "off" ? "Off" : a;
-    b.classList.toggle("on", a === "off" ? !current : current?.axis === a);
     b.onclick = () => {
-      vp.setSection(a === "off" ? null : { axis: a, at: current?.at ?? 0.5 });
+      const cur = vp.section;
+      vp.setSection(a === "off" ? null : { axis: a, at: cur?.at ?? 0.5 });
       renderDisplayMenu();
     };
     seg.appendChild(b);
   }
   el.appendChild(seg);
-  if (current) {
-    // Slide the cutting plane through the model.
-    const range = document.createElement("input");
-    range.type = "range";
-    range.min = "0";
-    range.max = "100";
-    range.value = String(Math.round(current.at * 100));
-    range.className = "dm-range";
-    range.setAttribute("aria-label", "Section position");
-    range.oninput = () => vp.setSection({ axis: current.axis, at: Number(range.value) / 100 });
-    el.appendChild(range);
+  // Slide the cutting plane through the model; folded away while there is no section.
+  const wrap = document.createElement("div");
+  wrap.className = "dm-range-wrap";
+  const inner = document.createElement("div");
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = "0";
+  range.max = "100";
+  range.className = "dm-range";
+  range.setAttribute("aria-label", "Section position");
+  range.oninput = () => {
+    const cur = vp.section;
+    if (cur) vp.setSection({ axis: cur.axis, at: Number(range.value) / 100 });
+  };
+  inner.appendChild(range);
+  wrap.appendChild(inner);
+  el.appendChild(wrap);
+  document.body.appendChild(el);
+  return el;
+}
+
+function syncDisplayMenu(el: HTMLElement) {
+  let active: HTMLElement | null = null;
+  for (const b of el.querySelectorAll<HTMLElement>(".dm-mode")) {
+    const on = b.dataset.mode === vp.displayMode;
+    b.classList.toggle("on", on);
+    if (on) active = b;
   }
-  renderViewButtons();
+  const pill = el.querySelector<HTMLElement>(".dm-pill")!;
+  if (active) {
+    pill.style.transform = `translateY(${active.offsetTop}px)`;
+    pill.style.height = `${active.offsetHeight}px`;
+  }
+  const cur = vp.section;
+  for (const b of el.querySelectorAll<HTMLElement>(".seg button")) b.classList.toggle("on", b.dataset.axis === "off" ? !cur : cur?.axis === b.dataset.axis);
+  el.querySelector(".dm-range-wrap")!.classList.toggle("shown", !!cur);
+  const range = el.querySelector<HTMLInputElement>(".dm-range")!;
+  if (cur) range.value = String(Math.round(cur.at * 100));
 }
 
 // A tap elsewhere closes the display menu.

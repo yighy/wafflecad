@@ -523,7 +523,57 @@ body.busy #status-pill .dot {
   border-radius: 16px;
   box-shadow: var(--shadow);
   z-index: 25;
-  animation: rise 0.16s ease-out;
+  transform-origin: top right;
+  animation: dm-in 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+#display-menu.closing {
+  animation: dm-out 0.14s ease-in forwards;
+  pointer-events: none;
+}
+@keyframes dm-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px) scale(0.92);
+  }
+}
+@keyframes dm-out {
+  to {
+    opacity: 0;
+    transform: translateX(8px) scale(0.95);
+  }
+}
+/* The chosen mode sits on a pill that slides from one mode to the next. */
+.dm-modes {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dm-pill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  transition:
+    transform 0.24s cubic-bezier(0.3, 1.25, 0.5, 1),
+    height 0.24s ease;
+}
+.dm-range-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.22s ease,
+    opacity 0.2s ease;
+}
+.dm-range-wrap > div {
+  overflow: hidden;
+}
+.dm-range-wrap.shown {
+  grid-template-rows: 1fr;
+  opacity: 1;
 }
 .dm-title {
   font-size: 11px;
@@ -534,14 +584,15 @@ body.busy #status-pill .dot {
   margin: 6px 4px 2px;
 }
 .dm-mode {
+  position: relative;
   justify-content: flex-start;
   min-height: 42px;
   border: none;
   background: transparent;
   font-weight: 600;
+  transition: color 0.2s;
 }
 .dm-mode.on {
-  background: var(--accent-soft);
   color: var(--accent);
 }
 .dm-range {
@@ -777,6 +828,10 @@ body.busy #status-pill .dot {
 /* Equal widths; a long label wraps (and hyphenates) inside its own button instead of running
    into its neighbour. */
 .seg button {
+  transition:
+    background-color 0.18s,
+    color 0.18s,
+    box-shadow 0.18s;
   flex: 1 1 0;
   min-width: 0;
   min-height: 42px;
