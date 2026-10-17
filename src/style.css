@@ -1293,6 +1293,24 @@ body.busy #status-pill .dot {
   white-space: nowrap;
   pointer-events: none;
 }
+/* Align: an axis, then where along it (min, centre, max). */
+.align-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.align-row > span {
+  width: 18px;
+  font-weight: 700;
+  text-align: center;
+}
+.align-row .seg {
+  flex: 1;
+}
+.align-row .seg button:disabled {
+  opacity: 0.4;
+}
 .chip.muted {
   opacity: 0.55;
 }

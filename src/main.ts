@@ -110,7 +110,9 @@ type Mode =
   | { kind: "place"; feat: PartInstance; keypad: KeypadHandle }
   /** Choosing the two faces or holes of a new mate. */
   | { kind: "mate"; picks: MatePick[] }
-  | { kind: "mateEdit"; feat: Mate; keypad: KeypadHandle };
+  | { kind: "mateEdit"; feat: Mate; keypad: KeypadHandle }
+  /** Lining parts up: the parts chosen, the first one staying put. */
+  | { kind: "align"; ids: string[] };
 
 /** A face or hole chosen for a mate: its plane or axis, and what to highlight. */
 interface MatePick {
@@ -208,6 +210,8 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     renderTimeline();
     renderPanel();
     renderPartOverlays();
+    alignShift.clear();
+    if (mode.kind === "align") showAlignPicks();
     if (explode > 0) spreadParts(explode);
     syncGizmo();
     if (thumbStale) scheduleThumb();
@@ -577,6 +581,10 @@ function escape(): boolean {
   }
   if (mode.kind === "mate") {
     startMate();
+    return true;
+  }
+  if (mode.kind === "align") {
+    endAlign();
     return true;
   }
   if (clashes) {
@@ -1261,6 +1269,170 @@ function fingerMove(p: Ptr) {
   if (!to) return;
   dragBy(new THREE.Matrix4().makeTranslation(to.clone().sub(f.last)));
   f.last = to;
+}
+
+// ---------- Align: line parts up, spread them evenly, put them on the plate ----------
+
+/** Moves made by Align that the next build has not drawn yet (so taps in a row add up). */
+const alignShift = new Map<string, THREE.Vector3>();
+
+function startAlign() {
+  if (isOperation(mode)) return;
+  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if (mode.kind === "align") return endAlign();
+  if (measuring) endMeasure();
+  if (clashes) clearClashes();
+  // The selected part, if any, is the one the others line up with.
+  const first = instanceOf(selectedFeature);
+  mode = { kind: "align", ids: first ? [first.id] : [] };
+  selectedFeature = null;
+  showAlignPicks();
+  renderAll();
+}
+
+function endAlign() {
+  mode = { kind: "part" };
+  vp.highlightFaces([]);
+  renderAll();
+}
+
+function toggleAlignPart(id: string) {
+  if (mode.kind !== "align") return;
+  const ids = mode.ids;
+  const i = ids.indexOf(id);
+  if (i >= 0) ids.splice(i, 1);
+  else ids.push(id);
+  showAlignPicks();
+  renderAll();
+}
+
+function showAlignPicks() {
+  if (mode.kind !== "align") return;
+  const ids = new Set(mode.ids);
+  vp.highlightFaces((lastBuild?.bodies ?? []).filter((b) => ids.has(b.id)).flatMap((b) => b.faceIds));
+}
+
+/** A part's box where it is drawn (moves waiting for a build are already drawn). */
+const alignBox = (id: string) => vp.bodyBox(id);
+
+/** The part the others line up with: a fixed one among those chosen, else the first chosen. */
+function alignReference(ids: string[]) {
+  return ids.find((id) => instanceOf(id)?.fixed) ?? ids[0];
+}
+
+/** Slides parts by the given amounts (fixed ones stay), lets the mates have their say, and saves. */
+function shiftParts(moves: Map<string, THREE.Vector3>) {
+  let held = 0;
+  for (const [id, d] of moves) {
+    const inst = instanceOf(id);
+    if (!inst || d.lengthSq() < 1e-12) continue;
+    if (inst.fixed) {
+      held++;
+      continue;
+    }
+    applyMove(inst, new THREE.Matrix4().makeTranslation(d));
+    alignShift.set(id, (alignShift.get(id) ?? new THREE.Vector3()).add(d));
+  }
+  if (held) toast(`${held} fixed part${held > 1 ? "s" : ""} stayed put`);
+  applyMates();
+  vp.moveBodies(new Map([...alignShift].map(([id, d]) => [id, new THREE.Matrix4().makeTranslation(d)])));
+  commit();
+}
+
+const AXIS_INDEX = { X: 0, Y: 1, Z: 2 } as const;
+
+/** Lines the chosen parts up with the reference one, on one axis: their min, centre or max. */
+function alignParts(axis: keyof typeof AXIS_INDEX, where: "min" | "mid" | "max") {
+  if (mode.kind !== "align" || mode.ids.length < 2) return toast("Choose at least two parts");
+  const k = AXIS_INDEX[axis];
+  const at = (b: THREE.Box3) => (where === "min" ? b.min.getComponent(k) : where === "max" ? b.max.getComponent(k) : (b.min.getComponent(k) + b.max.getComponent(k)) / 2);
+  const ref = alignReference(mode.ids);
+  const rb = alignBox(ref);
+  if (!rb) return;
+  const moves = new Map<string, THREE.Vector3>();
+  for (const id of mode.ids) {
+    const b = alignBox(id);
+    if (id === ref || !b) continue;
+    moves.set(id, new THREE.Vector3().setComponent(k, at(rb) - at(b)));
+  }
+  shiftParts(moves);
+}
+
+/** Spreads three or more parts evenly on one axis: the two at the ends stay, the gaps match. */
+function distributeParts(axis: keyof typeof AXIS_INDEX) {
+  if (mode.kind !== "align" || mode.ids.length < 3) return toast("Choose at least three parts");
+  const k = AXIS_INDEX[axis];
+  const parts = mode.ids.flatMap((id) => {
+    const b = alignBox(id);
+    return b ? [{ id, lo: b.min.getComponent(k), hi: b.max.getComponent(k) }] : [];
+  });
+  parts.sort((a, b) => a.lo + a.hi - (b.lo + b.hi));
+  const span = parts[parts.length - 1].hi - parts[0].lo;
+  const gap = (span - parts.reduce((s, p) => s + p.hi - p.lo, 0)) / (parts.length - 1);
+  const moves = new Map<string, THREE.Vector3>();
+  let x = parts[0].lo;
+  for (const p of parts) {
+    moves.set(p.id, new THREE.Vector3().setComponent(k, x - p.lo));
+    x += p.hi - p.lo + gap;
+  }
+  shiftParts(moves);
+}
+
+/** Puts each chosen part (all of them if none is chosen) on the plate: its bottom at z = 0. */
+function dropParts() {
+  if (mode.kind !== "align") return;
+  const ids = mode.ids.length ? mode.ids : (doc.instances ?? []).map((i) => i.id);
+  const moves = new Map<string, THREE.Vector3>();
+  for (const id of ids) {
+    const b = alignBox(id);
+    if (b) moves.set(id, new THREE.Vector3(0, 0, -b.min.z));
+  }
+  shiftParts(moves);
+}
+
+function renderAlignPanel(el: HTMLElement, head: (title: string, sub?: string) => void, actions: (items: [string, string, () => void, string?][]) => void) {
+  if (mode.kind !== "align") return;
+  const ids = mode.ids;
+  const ref = alignReference(ids);
+  head("Align", ids.length ? `${ids.length} part${ids.length > 1 ? "s" : ""} · ${partLabel(ref)} stays put` : "Tap the parts to line up");
+  const row = (label: string, buttons: [string, () => void, boolean][]) => {
+    const r = document.createElement("div");
+    r.className = "align-row";
+    r.innerHTML = "<span></span>";
+    r.querySelector("span")!.textContent = label;
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    for (const [text, run, ok] of buttons) {
+      const b = document.createElement("button");
+      b.textContent = text;
+      b.disabled = !ok;
+      b.onclick = run;
+      seg.appendChild(b);
+    }
+    r.appendChild(seg);
+    el.appendChild(r);
+  };
+  const two = ids.length >= 2;
+  for (const axis of ["X", "Y", "Z"] as const)
+    row(axis, [
+      ["Min", () => alignParts(axis, "min"), two],
+      ["Centre", () => alignParts(axis, "mid"), two],
+      ["Max", () => alignParts(axis, "max"), two],
+    ]);
+  const three = ids.length >= 3;
+  row("↔", [
+    ["Spread X", () => distributeParts("X"), three],
+    ["Spread Y", () => distributeParts("Y"), three],
+    ["Spread Z", () => distributeParts("Z"), three],
+  ]);
+  const hint = document.createElement("p");
+  hint.className = "p-hint";
+  hint.textContent = "Tap parts in the view or below to choose them. Spread needs three: the two at the ends stay.";
+  el.appendChild(hint);
+  actions([
+    ["extrude", ids.length ? "Put them on the plate" : "Put all on the plate", dropParts],
+    ["check", "Done", endAlign, "primary"],
+  ]);
 }
 
 // ---------- Exploded view ----------
@@ -2694,6 +2866,7 @@ function renderTools() {
     el.appendChild(toolRow("plus", "Insert part", () => void showPartPicker(), { key: "I" }));
     el.appendChild(toolRow("import", "Import STEP", () => void importStep()));
     if ((doc.instances?.length ?? 0) > 1 || mode.kind === "mate") {
+      el.appendChild(toolRow("align", "Align", startAlign, { active: mode.kind === "align", key: "A" }));
       el.appendChild(section("Mates"));
       el.appendChild(toolRow("mate", "Mate", startMate, { active: mode.kind === "mate", key: "M" }));
     }
@@ -2900,6 +3073,7 @@ function renderPanel() {
     actions([["check", "Finish sketch", exitSketch, "primary"]]);
     return;
   }
+  if (mode.kind === "align") return renderAlignPanel(el, head, actions);
   if (mode.kind === "mate") {
     const n = mode.picks.length;
     head("New mate", n ? `On ${partLabel(mode.picks[0].ref.part)} · now the other part` : "Tap a face or a hole of a part");
@@ -3186,13 +3360,17 @@ function renderPartList(el: HTMLElement) {
     const b = document.createElement("button");
     b.className = "chip";
     if (chipsShown && !chipsShown.has(inst.id)) b.classList.add("pop");
-    if (inst.id === current) b.classList.add("sel");
+    if (mode.kind === "align") {
+      if (inst.id === alignReference(mode.ids)) b.classList.add("sel");
+      else if (mode.ids.includes(inst.id)) b.classList.add("picked");
+    } else if (inst.id === current) b.classList.add("sel");
     if (lastBuild?.errors[inst.id]) b.classList.add("error");
     else if (lastBuild?.warnings?.[inst.id]) b.classList.add("warn");
     if (hiddenBodies.has(inst.id)) b.classList.add("muted");
     b.innerHTML = icon(hiddenBodies.has(inst.id) ? "eyeOff" : "part", 20) + "<span></span>";
     b.querySelector("span")!.textContent = inst.name;
     b.onclick = () => {
+      if (mode.kind === "align") return toggleAlignPart(inst.id);
       if (mode.kind !== "part") return toast("Finish the current step first");
       if (measuring) endMeasure();
       selectedFeature = selectedFeature === inst.id ? null : inst.id;
@@ -3253,6 +3431,7 @@ function renderStatus() {
   }
   else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
   else if (mode.kind === "place") s = `${mode.feat.name} · choose a value and type it`;
+  else if (mode.kind === "align") s = mode.ids.length < 2 ? "Align · tap the parts to line up" : "Align · choose an axis and where to line them up";
   else if (mode.kind === "mate") s = mode.picks.length ? "Mate · now the face or hole on the other part" : "Mate · tap a flat face, a hole or a round edge of a part";
   else if (mode.kind === "mateEdit") s = `${mode.feat.name} · facing, flush or at an angle; type the gap, or limits`;
   else if (isAssembly() && clashes) s = clashes.running ? "Checking for overlaps…" : "Interference · overlaps in red";
@@ -3583,6 +3762,11 @@ const partTool: PointerTool = {
     if (mode.kind === "pickPlane") return pickPlaneAt(p);
     if (mode.kind === "mate") return void mateTap(p);
     const face = vp.pickFace(p.x, p.y);
+    if (mode.kind === "align") {
+      const body = face == null ? null : lastBuild?.bodies?.find((b) => b.faceIds.includes(face));
+      if (body) toggleAlignPart(body.id);
+      return;
+    }
     if (mode.kind === "shell") {
       if (face != null) toggleShellFace(mode.feat, face);
       return;
@@ -4353,12 +4537,17 @@ window.addEventListener("keydown", (e) => {
     const mate = mateOf(selectedFeature);
     if (key === "i") void showPartPicker();
     else if (key === "m") startMate();
+    else if (key === "a") startAlign();
     else if (key === "x") toggleExplode();
     else if (key === "c") void (clashes ? clearClashes() : checkInterference());
     else if (key === "d") toggleMeasure();
     else if (key === "f") vp.fit();
     else if (key === "delete" && inst) removeInstance(inst);
     else if (key === "delete" && mate) deleteMate(mate);
+    return;
+  }
+  if (mode.kind === "align") {
+    if (k.toLowerCase() === "a") endAlign();
     return;
   }
   if (mode.kind === "mate") {

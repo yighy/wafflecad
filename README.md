@@ -22,7 +22,8 @@
   (counterbore, countersink), mirror and patterns. Every step stays editable in the timeline.
 - **Bodies**: several solids in one part (a box and its lid), each joined, cut, renamed, hidden or shown
   alone.
-- **Assemblies**: parts from your other projects, placed with arrows and rings or typed values, and tied
+- **Assemblies**: parts from your other projects, placed with arrows and rings, typed values or Align (line
+  parts up, spread them evenly, put them on the plate), and tied
   by mates: faces facing, flush or at an angle, holes and pins on one axis, exact or between limits.
   Drag a part with a finger and its mates follow (a lid swings, a drawer slides); check for overlaps
   between parts, or spread them in an exploded view. A part changed in its own project is updated in
