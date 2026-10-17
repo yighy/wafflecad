@@ -495,5 +495,25 @@ check("distances to the two nearest edges", hd.length === 2 && near(hd[0].dist, 
 const moved3 = to3D(hf, atDistance(hd[0], 4));
 check("typing a distance moves the hole square to the edge", near(moved3[0], 3) && near(moved3[1], 4) && near(moved3[2], 5), JSON.stringify(moved3));
 
+// --- Step cache: changing the last step only replays that step.
+const heavy = (d: number): CadDocument =>
+  block(
+    { id: "hc", kind: "hole", name: "H", points: [[4, 3, 5], [16, 3, 5], [4, 7, 5], [16, 7, 5]], normal: [0, 0, 1], size: "M3", fit: "clearance", head: "counterbore", depth: 0 },
+    { id: "fc", kind: "fillet", name: "F", mode: "fillet", edges: [{ mid: [10, 0, 5] }, { mid: [10, 10, 5] }], radius: 1 },
+    { id: "pc", kind: "pushpull", name: "P", face: { center: [0, 5, 2.5], normal: [-1, 0, 0] }, distance: d },
+  );
+let t0 = performance.now();
+buildShape(heavy(1));
+const cold = performance.now() - t0;
+t0 = performance.now();
+const warm = buildShape(heavy(2));
+const warmTime = performance.now() - t0;
+const fresh = buildShape({ ...heavy(2), features: heavy(2).features.map((f) => ({ ...f, name: f.name + " " })) });
+check(
+  "cached replay matches a full one and is faster",
+  !Object.keys(warm.errors).length && near(measureVolume(warm.shape!), measureVolume(fresh.shape!), 1e-6) && warmTime < cold * 0.7,
+  `cold ${cold.toFixed(0)} ms, warm ${warmTime.toFixed(0)} ms, ${JSON.stringify(warm.errors)}`,
+);
+
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

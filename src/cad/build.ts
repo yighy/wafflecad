@@ -264,14 +264,60 @@ function pattern(shape: Shape3D, f: PatternFeature, tools: Map<string, Tool>, na
 }
 
 /** Replays the features; a failing feature is skipped and reported. */
+/** Everything the replay carries from one step to the next. */
+interface ReplayState {
+  shape: Shape3D | null;
+  errors: Record<string, string>;
+  warnings: Record<string, string>;
+  sketches: Map<string, SketchFeature>;
+  tools: Map<string, Tool>;
+}
+
+/**
+ * States after each step, keyed by the steps that led there. Editing a step (dragging Press
+ * Pull, typing a fillet radius…) then only replays from that step on: the earlier ones are
+ * taken from here. Shapes are never changed in place (operations return new ones), so sharing
+ * them is safe.
+ */
+const stepCache = new Map<string, ReplayState>();
+const STEP_CACHE_MAX = 150;
+
+/** Short hash of a string (FNV-1a, two 32-bit halves). */
+function hash(text: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x1234567;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193);
+    b = Math.imul(b ^ c, 0x5bd1e995);
+  }
+  return (a >>> 0).toString(36) + (b >>> 0).toString(36);
+}
+
+const snapshot = (st: ReplayState): ReplayState => ({
+  shape: st.shape,
+  errors: { ...st.errors },
+  warnings: { ...st.warnings },
+  sketches: new Map(st.sketches),
+  tools: new Map(st.tools),
+});
+
+/** Replays the features (from the cache where possible); a failing feature is skipped and reported. */
 export function buildShape(doc: CadDocument) {
-  let shape: Shape3D | null = null;
-  const errors: Record<string, string> = {};
-  const warnings: Record<string, string> = {};
-  const sketches = new Map<string, SketchFeature>();
-  const tools = new Map<string, Tool>();
   const names = new Map(doc.features.map((f) => [f.id, f.name]));
-  for (const f of doc.features) {
+  const keys: string[] = [];
+  let key = "";
+  for (const f of doc.features) keys.push((key = hash(key + JSON.stringify(f))));
+  // Start after the longest run of steps already built.
+  let start = keys.length;
+  while (start > 0 && !stepCache.has(keys[start - 1])) start--;
+  const cached = start > 0 ? stepCache.get(keys[start - 1])! : null;
+  const st: ReplayState = cached
+    ? snapshot(cached)
+    : { shape: null, errors: {}, warnings: {}, sketches: new Map(), tools: new Map() };
+  const { errors, warnings, sketches, tools } = st;
+  let shape = st.shape;
+  const step = (f: CadDocument["features"][number]) => {
     noteMoved = () => (warnings[f.id] = "Its face or edge moved: the closest one was used. Check it, or edit the step to pick again.");
     if (f.kind === "pattern") {
       try {
@@ -282,11 +328,11 @@ export function buildShape(doc: CadDocument) {
       } catch (e) {
         errors[f.id] = e instanceof Error ? e.message : String(e);
       }
-      continue;
+      return;
     }
     if (f.kind === "sketch") {
       sketches.set(f.id, f);
-      continue;
+      return;
     }
     if (f.kind === "hole") {
       try {
@@ -297,7 +343,7 @@ export function buildShape(doc: CadDocument) {
       } catch (e) {
         errors[f.id] = e instanceof Error ? e.message : String(e);
       }
-      continue;
+      return;
     }
     if (f.kind === "pushpull" || f.kind === "shell" || f.kind === "fillet") {
       try {
@@ -313,7 +359,7 @@ export function buildShape(doc: CadDocument) {
       } catch (e) {
         errors[f.id] = e instanceof Error ? e.message : String(e);
       }
-      continue;
+      return;
     }
     try {
       const sk = sketches.get(f.sketchId);
@@ -328,6 +374,21 @@ export function buildShape(doc: CadDocument) {
       shape = shape.simplify();
     } catch (e) {
       errors[f.id] = e instanceof Error ? e.message : String(e);
+    }
+  };
+  doc.features.forEach((f, i) => {
+    if (i < start) return;
+    step(f);
+    stepCache.delete(keys[i]);
+    stepCache.set(keys[i], snapshot({ shape, errors, warnings, sketches, tools }));
+    if (stepCache.size > STEP_CACHE_MAX) stepCache.delete(stepCache.keys().next().value!);
+  });
+  // Keep the steps just used at the young end of the cache.
+  for (const k of keys.slice(0, start)) {
+    const v = stepCache.get(k);
+    if (v) {
+      stepCache.delete(k);
+      stepCache.set(k, v);
     }
   }
   noteMoved = null;
