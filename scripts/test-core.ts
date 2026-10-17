@@ -11,7 +11,7 @@ import { insertShapes } from "../src/sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } from "../src/cad/holePlace";
 import { filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
-import { buildResult, buildShape, exportFile, interferences, setPartDocs } from "../src/cad/build";
+import { buildResult, buildShape, exportFile, interferences, layFlat, placeShape, readStep, setPartDocs, splitStep } from "../src/cad/build";
 import * as THREE from "three";
 import { hasRef, measure, refGeometry } from "../src/cad/measure";
 import { instanceMatrix, solveMates, worldRef } from "../src/cad/mates";
@@ -952,6 +952,26 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("interference: overlapping parts, with the volume", over.length === 1 && near(over[0].volume, 500, 1e-3) && over[0].triangles.length > 0, JSON.stringify(over.map((c) => c.volume)));
   check("interference: parts that only touch do not count", interferences(two(20)).length === 0);
   check("interference: hidden parts are left out", interferences(two(10), ["b"]).length === 0);
+}
+
+// --- Outputs: named STEP, the 3MF plate, an assembly's STEP read back as parts.
+{
+  setPartDocs({ p1: block() });
+  const asmDoc: CadDocument = { format: "waffle", version: 1, features: [], kind: "assembly", instances: [
+    { id: "a", project: "p1", name: "Box 1", at: [0, 0, 0], rot: [0, 0, 0] },
+    { id: "b", project: "p1", name: "Box 2", at: [0, 0, 30], rot: [90, 0, 0] },
+  ] };
+  const step = await exportFile(asmDoc, "step", "Asm")!.text();
+  check("outputs: STEP names and colours each part", step.includes("'Box 1'") && step.includes("'Box 2'") && /COLOUR_RGB/.test(step));
+  const stood = placeShape(buildShape(block()).shape!, { at: [3, 4, 9], rot: [90, 0, 0] });
+  const flat = layFlat(stood).boundingBox.bounds;
+  check("outputs: a part stood on its side lies flat again", near(flat[0][2], 0, 1e-6) && near(flat[1][2], 5, 1e-6) && near(flat[0][0], 0, 1e-6), JSON.stringify(flat));
+  const plate3mf = new TextDecoder().decode(new Uint8Array(await exportFile(asmDoc, "plate", "Asm")!.arrayBuffer()));
+  const zs = [...plate3mf.matchAll(/ z="([-\d.e]+)"/g)].map((m) => Number(m[1]));
+  check("outputs: the plate has every part, all resting on z = 0", (plate3mf.match(/<object /g) ?? []).length === 2 && Math.min(...zs) > -1e-6 && Math.max(...zs) < 5 + 1e-6, JSON.stringify([Math.min(...zs), Math.max(...zs)]));
+  const parts = await splitStep(step);
+  check("outputs: an assembly's STEP splits into its parts", parts.length === 2 && parts.every((t) => near(measureVolume(readStep(t)), 1000, 1e-3)), String(parts.length));
+  check("outputs: a single solid is not split", (await splitStep(await exportFile(block(), "step")!.text())).length === 0);
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

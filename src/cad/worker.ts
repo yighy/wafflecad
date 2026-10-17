@@ -2,7 +2,7 @@
 import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
-import { buildResult, buildShape, exportFile, interferences, setPartDocs } from "./build";
+import { buildResult, buildShape, exportFile, interferences, setPartDocs, splitStep } from "./build";
 import { measure, refGeometry } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
@@ -55,6 +55,14 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         planarFaces: [],
         errors: { _: String(e) },
       });
+    }
+    return;
+  }
+  if (req.type === "split") {
+    try {
+      post({ type: "split", reqId: req.reqId, parts: await splitStep(req.text) });
+    } catch (e) {
+      post({ type: "split", reqId: req.reqId, parts: [], error: String(e) });
     }
     return;
   }

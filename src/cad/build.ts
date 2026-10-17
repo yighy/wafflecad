@@ -1,6 +1,6 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
+import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
 import type { Axis, BuildResult, CadDocument, Clash, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
@@ -603,6 +603,13 @@ export function interferences(doc: CadDocument, skip: string[] = []): Clash[] {
   return out;
 }
 
+/** The solids of a STEP file, each written as a STEP file of its own (none when it has only one). */
+export async function splitStep(text: string): Promise<string[]> {
+  const solids = readStep(text).solids;
+  if (solids.length < 2) return [];
+  return Promise.all(solids.map((s) => s.blobSTEP().text()));
+}
+
 /** Display data of a shape: meshes at each quality, and its flat faces once asked for. */
 interface Meshed {
   fine?: Pick<BuildResult, "mesh" | "edges" | "edgeGroups">;
@@ -763,9 +770,73 @@ function interiorPoint(face: Face, center: Vec3): Vec3 {
   return best;
 }
 
+/** Colours of the parts in a STEP file: the app's model colour with each body's tint. */
+const STEP_COLORS = ["#9fb0c6", "#d2ac8f", "#89d0a2", "#b297e6", "#7cc5d6", "#c2c28b"];
+
+/** A solid turned to rest on its largest flat face (the one facing down first), its corner at 0. */
+export function layFlat(s: Shape3D): Shape3D {
+  let best: { area: number; n: Vec3 } | null = null;
+  for (const f of s.faces) {
+    if (f.geomType !== "PLANE") continue;
+    const v = f.normalAt(f.center);
+    const n: Vec3 = [v.x, v.y, v.z];
+    // A face already facing down wins a tie.
+    const area = measureArea(f) * (n[2] < -0.999 ? 1.001 : 1);
+    if (!best || area > best.area + 1e-6) best = { area, n };
+  }
+  let out = s.clone();
+  if (best) {
+    const [nx, ny, nz] = best.n;
+    if (nz > 1 - 1e-9) out = out.rotate(180, [0, 0, 0], [1, 0, 0]);
+    else if (nz > -1 + 1e-9) out = out.rotate((Math.acos(-nz) * 180) / Math.PI, [0, 0, 0], [-ny, nx, 0]);
+  }
+  const [lo] = out.boundingBox.bounds;
+  return out.translate([-lo[0], -lo[1], -lo[2]]);
+}
+
+/** Every part (or body) laid flat and set out in rows on a 220 mm plate, 5 mm apart. */
+function plate(bodies: { shape: Shape3D }[]): Shape3D[] {
+  const flat = bodies.map((b) => layFlat(b.shape));
+  const size = (s: Shape3D) => {
+    const [lo, hi] = s.boundingBox.bounds;
+    return [hi[0] - lo[0], hi[1] - lo[1]];
+  };
+  const order = flat.map((s, i) => i).sort((a, b) => size(flat[b])[1] - size(flat[a])[1]);
+  const out: Shape3D[] = [];
+  let x = 0;
+  let y = 0;
+  let row = 0;
+  for (const i of order) {
+    const [w, d] = size(flat[i]);
+    if (x > 0 && x + w > 220) {
+      x = 0;
+      y += row + 5;
+      row = 0;
+    }
+    out[i] = flat[i].translate([x, y, 0]);
+    x += w + 5;
+    row = Math.max(row, d);
+  }
+  return out;
+}
+
 export function exportFile(doc: CadDocument, format: ExportFormat, name = "model"): Blob | null {
   const { shape, bodies } = buildShape(doc);
   if (!shape) return null;
+  const apart = bodies.length > 1 || doc.kind === "assembly";
+  if (format === "plate") {
+    const names = apart ? bodyNames(doc, bodies.map((b) => b.id)) : [name];
+    const objects = plate(bodies).map((s, i) => {
+      const m = s.mesh(MESH_OPTS);
+      return { name: names[i], vertices: m.vertices, triangles: m.triangles };
+    });
+    return new Blob([make3mf(objects, name)], { type: "model/3mf" });
+  }
+  if (format === "step" && apart) {
+    // Named and coloured parts, which other CAD software shows as an assembly.
+    const names = bodyNames(doc, bodies.map((b) => b.id));
+    return exportSTEP(bodies.map((b, i) => ({ shape: b.shape.clone(), name: names[i], color: STEP_COLORS[i % STEP_COLORS.length] })));
+  }
   if (format === "3mf") {
     // One object per body, so the slicer can place and set each one apart.
     const names = bodies.length > 1 ? bodyNames(doc, bodies.map((b) => b.id)) : [name];

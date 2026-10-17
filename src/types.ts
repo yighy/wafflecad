@@ -464,7 +464,8 @@ export interface PreviewResult {
   error?: string;
 }
 
-export type ExportFormat = "step" | "stl" | "3mf";
+/** "plate": a 3MF with every part laid flat on its largest face, side by side, ready to print. */
+export type ExportFormat = "step" | "stl" | "3mf" | "plate";
 
 export type WorkerRequest =
   /** With pickExclude: the main result leaves that feature out (to pick faces and edges on), and
@@ -475,6 +476,8 @@ export type WorkerRequest =
   /** The documents of the parts the open assembly uses, by project id (kept until replaced). */
   | { type: "parts"; parts: Record<string, CadDocument> }
   | { type: "measure"; reqId: number; doc: CadDocument; picks: MeasurePick[] }
+  /** The solids of a STEP file, each as a STEP file of its own (an assembly read as parts). */
+  | { type: "split"; reqId: number; text: string }
   /** Parts of the assembly that overlap (the hidden ones left out). */
   | { type: "clash"; reqId: number; doc: CadDocument; skip: string[] }
   /** The plane or axis of a face or edge of the model (world coordinates), to mate it. */
@@ -487,7 +490,8 @@ export type WorkerResponse =
   | { type: "file"; reqId: number; blob: Blob | null; error?: string }
   | { type: "measured"; reqId: number; result: MeasureResult }
   | { type: "ref"; reqId: number; ref: Omit<MateRef, "part"> | null; error?: string }
-  | { type: "clash"; reqId: number; clashes: Clash[]; error?: string };
+  | { type: "clash"; reqId: number; clashes: Clash[]; error?: string }
+  | { type: "split"; reqId: number; parts: string[]; error?: string };
 
 /** Two parts that overlap: how much, and the shape of the overlap (to draw it). */
 export interface Clash {
