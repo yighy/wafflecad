@@ -9,7 +9,7 @@ import { parseDxf } from "../src/sketch/dxf";
 import { parseSvg } from "../src/sketch/svg";
 import { insertShapes } from "../src/sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } from "../src/cad/holePlace";
-import { filletCorner, mirrorEntities, projectEdge } from "../src/sketch/ops";
+import { filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
@@ -592,6 +592,33 @@ const sStepText = sStep ? await sStep.text() : "";
 check("SVG: STEP keeps the Béziers as B-spline curves", sStepText.includes("B_SPLINE_CURVE"));
 const px = parseSvg('<svg width="96" height="96"><path d="m0 0 h96"/><path d="M0 10 a5 5 0 016 0"/></svg>');
 check("SVG: px at 96 per inch; compact arc flags", near(px.unitScale, 25.4 / 96) && px.shapes.length === 2 && px.shapes[1].kind === "arc", JSON.stringify(px.shapes.map((x) => x.kind)));
+
+// --- Moving, turning and scaling a selection (an imported, pinned drawing).
+const gsk = newSketch("G", XY);
+insertShapes(gsk, parseDxf(stadium).shapes, { scale: 1, place: "file", fixed: true });
+const gAll = gsk.entities.filter((e) => e.type !== "point" && !(e.type === "line" && e.axis)).map((e) => e.id);
+let gr = transformGroup(gsk, gAll, { kind: "move", dx: 5, dy: -3 });
+let gs = solver.solve(gsk);
+const gPts = () => gsk.entities.filter((e): e is SkPoint => e.type === "point" && !e.fixed);
+check("move a pinned drawing: pins follow", !gr.error && gs.ok && gs.dof === 0 && gPts().some((q) => near(q.x, 5) && near(q.y, -3)), JSON.stringify(gr));
+const gc = groupCentre(gsk, gAll);
+transformGroup(gsk, gAll, { kind: "scale", factor: 2, about: gc });
+gs = solver.solve(gsk);
+const gArea = (() => {
+  const r = findRegions(gsk);
+  return r[0]?.outer.kind === "path" ? signedArea(sampleSegments(r[0].outer.segments)) : 0;
+})();
+check("scale ×2 about its centre: radii and area follow", gs.ok && near(gArea, 4 * (200 + Math.PI * 25), 1.5) && gsk.entities.some((e) => e.type === "circle" && near(e.r, 4)), `area=${gArea}`);
+const beforeTurn = gPts().map((q) => [q.id, q.x, q.y] as const);
+transformGroup(gsk, gAll, { kind: "rotate", deg: 90, about: [0, 0] });
+gs = solver.solve(gsk);
+check("turn 90° about the origin", gs.ok && gs.dof === 0 && beforeTurn.every(([id, x, y]) => near(ent<SkPoint>(gsk, id).x, -y, 1e-6) && near(ent<SkPoint>(gsk, id).y, x, 1e-6)));
+const hv = newSketch("HV", XY);
+const hvr = rect(hv, 0, 0, 10, 5);
+hv.constraints.push({ id: "hh", type: "horizontal", refs: [hvr.lines[0]] }, { id: "vv", type: "vertical", refs: [hvr.lines[1]] });
+const hvDrop = transformGroup(hv, hvr.lines, { kind: "rotate", deg: 30, about: [0, 0] });
+check("a turn drops the H/V it breaks", hvDrop.dropped === 2 && solver.solve(hv).ok);
+check("the origin cannot move", !!transformGroup(newSketch("O", XY), ["O"], { kind: "move", dx: 1, dy: 0 }).error);
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

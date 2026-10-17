@@ -84,8 +84,12 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
    The bar above the tools offers the constraints that fit the selection:
    horizontal, vertical, parallel, perpendicular, equal, tangent, coincident, concentric, point on curve,
    midpoint, symmetric, fix, and dimensions (length, distance, horizontal/vertical distance, radius, diameter, angle).
+   **Move**, **Rotate** and **Scale** act on the selection as one piece (keypad, shown live; turns and scales
+   about its centre or the origin); dragging any selected item when several are selected moves them all.
+   Pinned points (an imported drawing) move with it, lengths and radii inside it scale, and
+   horizontal/vertical constraints a turn breaks are dropped. **Select all** picks every drawn item.
    **Mirror** appears when the selection holds geometry and a line: the copy is mirrored about a selected axis,
-   else a construction line, else the last line picked, and stays tied to the original by symmetry constraints.
+   else a construction line, else the line tapped last, and stays tied to the original by symmetry constraints.
    **Tangent** on an open spline and a line or arc ending at its first or last point makes the spline carry on
    smoothly from that curve.
 4. Dimensions open an on-screen keypad that accepts expressions (`20*2+3`). Tap a dimension to edit it.

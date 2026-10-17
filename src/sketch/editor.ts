@@ -8,9 +8,9 @@ import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } f
 import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleSpline, splineSpans, uid } from "./model";
 import { arcMid, findRegions, sampleSegments } from "./profiles";
 import { trimPlan, type TrimPlan } from "./trim";
-import { cornerLines, filletCorner, mirrorAxis, mirrorEntities, projectEdge } from "./ops";
+import { cornerLines, filletCorner, groupCentre, groupPoints, mirrorEntities, projectEdge, transformGroup, type GroupTransform } from "./ops";
 import type { Drag, SolveResult, Solver } from "./solver";
-import { keypad } from "../ui/keypad";
+import { keypad, openKeypad } from "../ui/keypad";
 
 export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point" | "trim" | "fillet" | "project";
 
@@ -84,7 +84,16 @@ export class SketchEditor implements PointerTool {
   /** Line tool: the chain continues from this point. */
   private chainFrom: string | null = null;
   private press: { p: Ptr; snap: Snap; hit: string | null; moved: boolean } | null = null;
-  private dragState: { ids: string[]; starts: Map<string, P2>; from: P2; radius?: string } | null = null;
+  /** The item tapped last into the selection (a box or Select all leaves none). */
+  private lastTapped: string | null = null;
+  private dragState: {
+    ids: string[];
+    starts: Map<string, P2>;
+    from: P2;
+    radius?: string;
+    /** Dragging a multi-selection: the sketch before, and what moves. */
+    group?: { base: Pick<SketchFeature, "entities" | "constraints">; ids: string[] };
+  } | null = null;
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null;
   /** Trim tool: the piece that the current press (or hover) would remove. */
   private trimPreview: TrimPlan | null = null;
@@ -512,6 +521,118 @@ export class SketchEditor implements PointerTool {
     this.checkOrRevert(backup, "Fillet", "This fillet conflicts with the existing constraints");
   }
 
+  /**
+   * Puts the sketch back to `base`, then moves/turns/scales the selection and solves. Returns
+   * false (with the sketch left at `base`) when the rest of the sketch holds the piece back.
+   */
+  private applyGroup(base: Pick<SketchFeature, "entities" | "constraints">, ids: string[], t: GroupTransform): { ok: boolean; error?: string; dropped: number } {
+    this.sk.entities = structuredClone(base.entities);
+    this.sk.constraints = structuredClone(base.constraints);
+    const r = transformGroup(this.sk, ids, t);
+    if (r.error) {
+      this.solve();
+      return { ok: false, error: r.error, dropped: 0 };
+    }
+    const v = this.view;
+    const want = [...groupPoints(this.sk, ids)].map((id) => [id, v.xy(id)] as const);
+    const res = this.solve();
+    const after = this.view;
+    const held = !res.ok || res.conflicting.length > 0 || want.some(([id, [x, y]]) => Math.hypot(after.xy(id)[0] - x, after.xy(id)[1] - y) > 1e-6 * Math.max(1, Math.abs(x) + Math.abs(y)));
+    return { ok: !held, dropped: r.dropped };
+  }
+
+  /** Move, Rotate or Scale the selection with the keypad, shown live; the origin of a turn or scale can be chosen. */
+  async transformSelection(kind: GroupTransform["kind"]) {
+    const ids = [...this.selection].filter((id) => this.view.get(id));
+    if (!ids.length) return this.hooks.toast("Select what to transform first");
+    const base = { entities: structuredClone(this.sk.entities), constraints: structuredClone(this.sk.constraints) };
+    const centre = groupCentre(this.sk, ids);
+    let about: "centre" | "origin" = "centre";
+    let field: "dx" | "dy" = "dx";
+    const val = { dx: 0, dy: 0, deg: 90, factor: 2 };
+    const make = (): GroupTransform => {
+      const at: P2 = about === "centre" ? centre : [0, 0];
+      if (kind === "move") return { kind, dx: val.dx, dy: val.dy };
+      if (kind === "rotate") return { kind, deg: val.deg, about: at };
+      return { kind, factor: val.factor, about: at };
+    };
+    const show = () => {
+      const r = this.applyGroup(base, ids, make());
+      kp.setNote(r.error ?? (r.ok ? null : "Held by constraints linking it to the rest of the sketch"));
+      this.render();
+    };
+    const aboutSeg = {
+      options: [
+        { value: "centre", label: "About its centre" },
+        { value: "origin", label: "About the origin" },
+      ],
+      get: () => about,
+      set: (v: string) => {
+        about = v as typeof about;
+        show();
+      },
+    };
+    const titles = { move: "Move", rotate: "Rotate", scale: "Scale" };
+    const kp = openKeypad({
+      title: titles[kind],
+      subtitle: `${ids.length} item${ids.length > 1 ? "s" : ""}`,
+      label: kind === "move" ? "Along X" : kind === "rotate" ? "Angle (counter-clockwise)" : "Factor",
+      unit: kind === "move" ? "mm" : kind === "rotate" ? "°" : "×",
+      value: kind === "move" ? 0 : kind === "rotate" ? val.deg : val.factor,
+      confirmLabel: titles[kind],
+      scope: this.hooks.scope(),
+      segments:
+        kind === "move"
+          ? [
+              {
+                options: [
+                  { value: "dx", label: "Along X" },
+                  { value: "dy", label: "Along Y" },
+                ],
+                get: () => field,
+                set: (v: string) => {
+                  field = v as typeof field;
+                  kp.setLabel(field === "dx" ? "Along X" : "Along Y", "mm");
+                  kp.set(val[field]);
+                },
+              },
+            ]
+          : [aboutSeg],
+      onInput: (x) => {
+        if (kind === "move") val[field] = x;
+        else if (kind === "rotate") val.deg = x;
+        else if (x > 0) val.factor = x;
+        show();
+      },
+    });
+    show();
+    const res = await kp.result;
+    if (res !== null) {
+      if (kind === "move") val[field] = res.value;
+      else if (kind === "rotate") val.deg = res.value;
+      else if (res.value > 0) val.factor = res.value;
+    }
+    const r = res === null ? null : this.applyGroup(base, ids, make());
+    if (!r?.ok) {
+      this.sk.entities = base.entities;
+      this.sk.constraints = base.constraints;
+      this.solve();
+      if (r) this.hooks.toast(r.error ?? "Cannot move it there: constraints link it to the rest of the sketch");
+    } else {
+      this.hooks.commit(titles[kind]);
+      if (r.dropped) this.hooks.toast(`${r.dropped} horizontal/vertical constraint${r.dropped > 1 ? "s" : ""} dropped by the turn`);
+    }
+    this.render();
+    this.hooks.changed();
+  }
+
+  selectAll() {
+    this.lastTapped = null;
+    for (const e of this.sk.entities) if (!isReference(e) && !(e.type === "point" && isHiddenPoint(e.id))) this.selection.add(e.id);
+    this.render();
+    this.hooks.changed();
+  }
+
   /** Solves after an edit; keeps it as an undo step, or puts the sketch back with a message. */
   private checkOrRevert(backup: SketchFeature, label: string, failure: string) {
     const r = this.solve();
@@ -728,7 +849,10 @@ export class SketchEditor implements PointerTool {
       return;
     }
     if (this.selection.has(id)) this.selection.delete(id);
-    else this.selection.add(id);
+    else {
+      this.selection.add(id);
+      this.lastTapped = id;
+    }
   }
 
   private beginDrag(pr: NonNullable<SketchEditor["press"]>) {
@@ -741,6 +865,17 @@ export class SketchEditor implements PointerTool {
     }
     if (isReference(e)) return;
     const from = this.toSketch(pr.p);
+    // Grabbing one of several selected items moves them all, as one piece.
+    const chosen = [...this.selection].filter((id) => v.get(id));
+    if (chosen.length > 1 && this.selection.has(e.id)) {
+      this.dragState = {
+        ids: [],
+        starts: new Map(),
+        from,
+        group: { base: { entities: structuredClone(this.sk.entities), constraints: structuredClone(this.sk.constraints) }, ids: chosen },
+      };
+      return;
+    }
     if (e.type === "circle") {
       // Grabbing the rim changes the radius.
       this.dragState = { ids: [], starts: new Map(), from, radius: e.id };
@@ -754,6 +889,17 @@ export class SketchEditor implements PointerTool {
   private dragTo(p: Ptr) {
     const d = this.dragState!;
     const at = this.toSketch(p);
+    if (d.group) {
+      const r = this.applyGroup(d.group.base, d.group.ids, { kind: "move", dx: at[0] - d.from[0], dy: at[1] - d.from[1] });
+      if (!r.ok) {
+        // Held by the rest of the sketch: it stays where it was.
+        this.sk.entities = structuredClone(d.group.base.entities);
+        this.sk.constraints = structuredClone(d.group.base.constraints);
+        this.solve();
+      }
+      this.render();
+      return;
+    }
     const drag: Drag = {};
     if (d.radius) {
       const c = this.view.get(d.radius) as SkCurve & { c: string };
@@ -786,6 +932,7 @@ export class SketchEditor implements PointerTool {
     const b = this.box!;
     this.box = null;
     this.boxEl.style.display = "none";
+    this.lastTapped = null;
     const [xa, xb] = [Math.min(b.x0, p.x), Math.max(b.x0, p.x)];
     const [ya, yb] = [Math.min(b.y0, p.y), Math.max(b.y0, p.y)];
     const inside = (xy: P2) => {
@@ -890,7 +1037,11 @@ export class SketchEditor implements PointerTool {
       const already = this.sk.constraints.some((c) => c.type === "tangent" && c.refs.includes(S[0].id) && c.refs.includes(other.id));
       if (joined && !already) con("tan", "T", "Tangent", "tangent", [S[0].id, other.id], "T");
     }
-    const axis = mirrorAxis(this.sk, sel.filter((id) => v.get(id)));
+    // The mirror line: a selected axis or construction line, else the line tapped last (a box
+    // or Select all picks no line in particular).
+    const lineOf = (id: string | null) => (id && this.selection.has(id) && v.get(id)?.type === "line" ? id : null);
+    const axis =
+      ents.find((e): e is SkLine => e.type === "line" && (!!e.axis || !!e.construction) && ents.length > 1)?.id ?? (ents.length > 1 ? lineOf(this.lastTapped) : null);
     if (axis && ents.some((e) => e.id !== axis && !isReference(e)))
       out.push({ id: "mirror", label: "⇋", title: "Mirror about line", key: "I", run: () => this.mirror(sel, axis) });
     if (n === 3 && P.length === 2 && L.length === 1) con("sym", "⇹", "Symmetric about line", "symmetric", [P[0].id, P[1].id, L[0].id], "S");
@@ -904,6 +1055,13 @@ export class SketchEditor implements PointerTool {
       if (DIMENSION_TYPES.includes(c.type)) out.push({ id: "edit", label: "✎", title: "Edit value", run: () => void this.editDimension(c) });
     }
     const editable = ents.filter((e) => !isReference(e));
+    if (editable.length) {
+      out.push({ id: "move", label: "✥", title: "Move", run: () => void this.transformSelection("move") });
+      out.push({ id: "rotate", label: "⟲", title: "Rotate", run: () => void this.transformSelection("rotate") });
+      out.push({ id: "scale", label: "⤢", title: "Scale", run: () => void this.transformSelection("scale") });
+    }
+    const all = this.sk.entities.filter((e) => !isReference(e) && !(e.type === "point" && isHiddenPoint(e.id)));
+    if (all.length && all.some((e) => !this.selection.has(e.id))) out.push({ id: "selall", label: "▣", title: "Select all", run: () => this.selectAll() });
     if (editable.some((e) => e.type !== "point"))
       out.push({ id: "constr", label: "┄", title: "Toggle construction", key: "G", run: () => this.toggleConstruction() });
     if (editable.length || cons.length) out.push({ id: "del", label: "🗑", title: "Delete", key: "Delete", run: () => this.deleteSelection() });

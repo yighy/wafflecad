@@ -237,3 +237,94 @@ function fitCircle(pts: P2[], tol: number): [P2, number] | null {
   // The mesh is within 0.01 mm of the true edge: allow that much on top of the tolerance.
   return pts.every((p) => Math.abs(len(sub(p, ctr)) - r) < tol + 0.01) ? [ctr, r] : null;
 }
+
+export type GroupTransform =
+  | { kind: "move"; dx: number; dy: number }
+  | { kind: "rotate"; deg: number; about: P2 }
+  | { kind: "scale"; factor: number; about: P2 };
+
+/** The points a selection moves: chosen points and the points of chosen curves. */
+export function groupPoints(sk: SketchFeature, ids: string[]): Set<string> {
+  const v = new SketchView(sk);
+  const out = new Set<string>();
+  for (const id of ids) {
+    const e = v.get(id);
+    if (!e || (e.type === "line" && e.axis)) continue;
+    for (const p of v.defPoints(e)) out.add(p);
+  }
+  return out;
+}
+
+/** Centre of the box around a selection's points. */
+export function groupCentre(sk: SketchFeature, ids: string[]): P2 {
+  const v = new SketchView(sk);
+  const pts = [...groupPoints(sk, ids)].map((id) => v.xy(id));
+  if (!pts.length) return [0, 0];
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+}
+
+/**
+ * Moves, turns or scales a selection as one piece. Pinned points move with it (their pins
+ * follow), lengths and radii inside it scale, and horizontal/vertical constraints that a turn
+ * breaks are dropped. Returns an error message, or how many constraints were dropped.
+ */
+export function transformGroup(sk: SketchFeature, ids: string[], t: GroupTransform): { error?: string; dropped: number } {
+  const v = new SketchView(sk);
+  const group = groupPoints(sk, ids);
+  if (!group.size) return { error: "Select what to transform first", dropped: 0 };
+  const moved = (id: string) => group.has(id);
+  for (const id of group) if ((v.get(id) as { fixed?: boolean }).fixed) return { error: "The origin cannot move: leave it out of the selection", dropped: 0 };
+
+  const f = ((): ((p: P2) => P2) => {
+    if (t.kind === "move") return ([x, y]) => [x + t.dx, y + t.dy];
+    if (t.kind === "rotate") {
+      const a = (t.deg * Math.PI) / 180;
+      const [c, s] = [Math.cos(a), Math.sin(a)];
+      return ([x, y]) => {
+        const [u, w] = [x - t.about[0], y - t.about[1]];
+        return [t.about[0] + c * u - s * w, t.about[1] + s * u + c * w];
+      };
+    }
+    return ([x, y]) => [t.about[0] + (x - t.about[0]) * t.factor, t.about[1] + (y - t.about[1]) * t.factor];
+  })();
+  const k = t.kind === "scale" ? t.factor : 1;
+  if (!(k > 0)) return { error: "The factor must be positive", dropped: 0 };
+
+  for (const e of sk.entities) {
+    if (e.type === "point" && moved(e.id)) [e.x, e.y] = f([e.x, e.y]);
+    if (e.type === "circle" && moved(e.c)) e.r *= k;
+  }
+  // Whether a constraint's references all lie inside the moved piece.
+  const inside = (id: string) => {
+    const e = v.get(id);
+    return !!e && v.defPoints(e).every(moved);
+  };
+  const quarterTurn = t.kind === "rotate" && Math.abs(((t.deg % 180) + 180) % 180) > 1e-9;
+  const halfTurn = t.kind === "rotate" && !quarterTurn && Math.round(t.deg / 180) % 2 !== 0;
+  let dropped = 0;
+  sk.constraints = sk.constraints.filter((c) => {
+    if (c.type === "fix" && moved(c.refs[0])) {
+      c.at = f(c.at ?? v.xy(c.refs[0]));
+      return true;
+    }
+    const all = c.refs.every(inside);
+    if (all && k !== 1 && (c.type === "distance" || c.type === "radius" || c.type === "diameter" || c.type === "distanceX" || c.type === "distanceY") && c.value !== undefined) {
+      c.value *= k;
+      c.expr = undefined;
+    }
+    // A turn (other than half turns) breaks horizontal and vertical relations it carries.
+    if (quarterTurn && c.refs.some(inside) && (c.type === "horizontal" || c.type === "vertical" || c.type === "distanceX" || c.type === "distanceY")) {
+      dropped++;
+      return false;
+    }
+    // A half turn swaps left and right, up and down: signed distances change sign.
+    if (halfTurn && all && (c.type === "distanceX" || c.type === "distanceY") && c.value !== undefined) {
+      c.value = -c.value;
+      c.expr = undefined;
+    }
+    return true;
+  });
+  return { dropped };
+}
