@@ -650,8 +650,9 @@ async function holeTool(existing?: HoleFeature, from?: { sketch: SketchFeature }
       {
         options: [
           { value: "none", label: "Plain" },
-          { value: "counterbore", label: "Counterbore" },
-          { value: "countersink", label: "Countersink" },
+          // Soft hyphens: on a narrow panel the words break as Counter-bore / Counter-sink.
+          { value: "counterbore", label: "Counter­bore" },
+          { value: "countersink", label: "Counter­sink" },
         ],
         get: () => feat.head,
         set: (v) => {

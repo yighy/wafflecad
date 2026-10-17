@@ -683,14 +683,22 @@ body.busy #status-pill .dot {
   padding: 3px;
   gap: 3px;
 }
+/* Equal widths; a long label wraps (and hyphenates) inside its own button instead of running
+   into its neighbour. */
 .seg button {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
   min-height: 42px;
   border: none;
   background: transparent;
-  padding: 0 4px;
+  padding: 4px 6px;
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1.15;
+  white-space: normal;
+  text-align: center;
+  hyphens: auto;
+  text-wrap: balance;
   color: var(--muted);
 }
 .seg button.on {
