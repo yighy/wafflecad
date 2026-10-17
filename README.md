@@ -85,7 +85,8 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
    horizontal, vertical, parallel, perpendicular, equal, tangent, coincident, concentric, point on curve,
    midpoint, symmetric, fix, and dimensions (length, distance, horizontal/vertical distance, radius, diameter, angle).
    **Move**, **Rotate** and **Scale** act on the selection as one piece (keypad, shown live; turns and scales
-   about its centre or the origin); dragging any selected item when several are selected moves them all.
+   about its centre or the origin); while Move is open, sliding a finger anywhere on the view moves the
+   piece (the keypad shows the offset). Dragging any selected item when several are selected moves them all.
    Pinned points (an imported drawing) move with it, lengths and radii inside it scale, and
    horizontal/vertical constraints a turn breaks are dropped. **Select all** picks every drawn item.
    **Mirror** appears when the selection holds geometry and a line: the copy is mirrored about a selected axis,

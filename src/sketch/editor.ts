@@ -84,6 +84,8 @@ export class SketchEditor implements PointerTool {
   /** Line tool: the chain continues from this point. */
   private chainFrom: string | null = null;
   private press: { p: Ptr; snap: Snap; hit: string | null; moved: boolean } | null = null;
+  /** While Move is open: a drag anywhere slides the selection (sketch-space offset from the press). */
+  private slide: { onDrag: (dx: number, dy: number) => void; onEnd: () => void; from: P2 | null } | null = null;
   /** The item tapped last into the selection (a box or Select all leaves none). */
   private lastTapped: string | null = null;
   private dragState: {
@@ -332,6 +334,10 @@ export class SketchEditor implements PointerTool {
   // ---------- Pointer handling ----------
 
   down(p: Ptr) {
+    if (this.slide) {
+      this.slide.from = this.toSketch(p);
+      return;
+    }
     if (this.tool === "project") {
       this.press = { p, snap: { kind: "free", at: this.toSketch(p) }, hit: null, moved: false };
       this.showEdgeUnder(p);
@@ -353,6 +359,11 @@ export class SketchEditor implements PointerTool {
   }
 
   move(p: Ptr) {
+    if (this.slide?.from) {
+      const at = this.toSketch(p);
+      this.slide.onDrag(at[0] - this.slide.from[0], at[1] - this.slide.from[1]);
+      return;
+    }
     const pr = this.press;
     if (!pr) return;
     if (this.tool === "project") return this.showEdgeUnder(p);
@@ -384,6 +395,11 @@ export class SketchEditor implements PointerTool {
   }
 
   up(p: Ptr) {
+    if (this.slide) {
+      if (this.slide.from) this.slide.onEnd();
+      this.slide.from = null;
+      return;
+    }
     const pr = this.press;
     this.press = null;
     this.vp.loupe = null;
@@ -575,7 +591,7 @@ export class SketchEditor implements PointerTool {
     const titles = { move: "Move", rotate: "Rotate", scale: "Scale" };
     const kp = openKeypad({
       title: titles[kind],
-      subtitle: `${ids.length} item${ids.length > 1 ? "s" : ""}`,
+      subtitle: `${ids.length} item${ids.length > 1 ? "s" : ""}${kind === "move" ? " · or slide a finger on the view" : ""}`,
       label: kind === "move" ? "Along X" : kind === "rotate" ? "Angle (counter-clockwise)" : "Factor",
       unit: kind === "move" ? "mm" : kind === "rotate" ? "°" : "×",
       value: kind === "move" ? 0 : kind === "rotate" ? val.deg : val.factor,
@@ -599,14 +615,37 @@ export class SketchEditor implements PointerTool {
             ]
           : [aboutSeg],
       onInput: (x) => {
-        if (kind === "move") val[field] = x;
+        if (kind === "move") {
+          val[field] = x;
+          if (this.slide) this.slide.onEnd();
+        }
         else if (kind === "rotate") val.deg = x;
         else if (x > 0) val.factor = x;
         show();
       },
     });
     show();
+    if (kind === "move") {
+      // Sliding a finger anywhere moves the piece too; the keypad shows the offset reached.
+      let start = { dx: 0, dy: 0 };
+      this.slide = {
+        from: null,
+        onDrag: (ddx, ddy) => {
+          if (!this.slide?.from) return;
+          // Clean values, like drawn points: a tenth of the grid step.
+          const q = gridStep(this.vp.viewHeight) / 10;
+          const snap = (x: number) => Math.round(Math.round(x / q) * q * 1e6) / 1e6;
+          val.dx = snap(start.dx + ddx);
+          val.dy = snap(start.dy + ddy);
+          kp.set(val[field]);
+          show();
+        },
+        // The next slide (or typed value) starts from where this one ended.
+        onEnd: () => (start = { dx: val.dx, dy: val.dy }),
+      };
+    }
     const res = await kp.result;
+    this.slide = null;
     if (res !== null) {
       if (kind === "move") val[field] = res.value;
       else if (kind === "rotate") val.deg = res.value;
