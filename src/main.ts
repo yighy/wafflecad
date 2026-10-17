@@ -3053,15 +3053,41 @@ function setupMenu() {
     ["Open file…", openFile],
     ["Save file (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`)],
     ["Import STEP…", () => void importStep()],
-    ["Export STEP", () => exportFile("step")],
-    ["Export STL", () => exportFile("stl")],
-    ["Export 3MF", () => exportFile("3mf")],
+    ["Export", () => {}],
     ["Light / dark theme", () => setTheme(prefs.theme === "light" ? "dark" : "light")],
     ["Help", () => $("#help").classList.add("open")],
   ];
+  // Export unfolds its formats in place.
+  const formats = document.createElement("div");
+  formats.className = "menu-sub";
+  const inner = document.createElement("div");
+  for (const [format, label, hint] of [
+    ["step", "STEP", "other CAD software"],
+    ["stl", "STL", "slicers"],
+    ["3mf", "3MF", "slicers, with units"],
+  ] as const) {
+    const b = document.createElement("button");
+    b.innerHTML = `<b></b><span></span>`;
+    b.querySelector("b")!.textContent = label;
+    b.querySelector("span")!.textContent = hint;
+    b.onclick = () => {
+      menu.classList.remove("open");
+      formats.classList.remove("open");
+      exportFile(format);
+    };
+    inner.appendChild(b);
+  }
+  formats.appendChild(inner);
   for (const [label, run] of items) {
     const b = document.createElement("button");
     b.textContent = label;
+    if (label === "Export") {
+      b.classList.add("menu-fold");
+      b.innerHTML = `<span>Export</span>${icon("chevron", 18)}`;
+      b.onclick = () => b.classList.toggle("open", formats.classList.toggle("open"));
+      menu.append(b, formats);
+      continue;
+    }
     b.onclick = () => {
       menu.classList.remove("open");
       run();
@@ -3076,6 +3102,9 @@ function setupMenu() {
   btn.innerHTML = icon("menu", 22);
   btn.onclick = (e) => {
     e.stopPropagation();
+    // Opens folded again.
+    formats.classList.remove("open");
+    menu.querySelector(".menu-fold")?.classList.remove("open");
     menu.classList.toggle("open");
   };
   document.addEventListener("pointerdown", (e) => {
