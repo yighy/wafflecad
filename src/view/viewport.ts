@@ -502,7 +502,8 @@ export class Viewport {
    */
   pickEdge(x: number, y: number, radius: number): number | null {
     const L = this.edgeLines;
-    let best: { i: number; d: number; p: THREE.Vector3 } | null = null;
+    // Closest point of each edge within the radius.
+    const near = new Map<number, { d: number; p: THREE.Vector3 }>();
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     this.edgeGroups.forEach((g, i) => {
@@ -516,19 +517,20 @@ export class Viewport {
         const len2 = dx * dx + dy * dy;
         const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2)) : 0;
         const d = Math.hypot(ax + t * dx - x, ay + t * dy - y);
-        if (d < radius && (!best || d < best.d)) best = { i, d, p: a.clone().lerp(b, t) };
+        const cur = near.get(i);
+        if (d < radius && (!cur || d < cur.d)) near.set(i, { d, p: a.clone().lerp(b, t) });
       }
     });
-    if (!best) return null;
-    const hit = best as { i: number; d: number; p: THREE.Vector3 };
+    if (!near.size) return null;
+    const rc = this.ray(x, y);
+    const depth = (p: THREE.Vector3) => p.clone().sub(rc.ray.origin).dot(rc.ray.direction);
+    // Edges that look the same on screen (one straight behind another): the one in front first.
+    const order = [...near.entries()].sort(([, u], [, v]) => (Math.abs(u.d - v.d) < 2 ? depth(u.p) - depth(v.p) : u.d - v.d));
+    const front = this.mesh ? rc.intersectObject(this.mesh)[0] : undefined;
+    const slack = Math.max(this.viewHeight * 0.01, 0.05);
     // Visible only if nothing of the model is clearly in front of that point.
-    if (this.mesh) {
-      const rc = this.ray(x, y);
-      const front = rc.intersectObject(this.mesh)[0];
-      const toEdge = hit.p.clone().sub(rc.ray.origin).dot(rc.ray.direction);
-      if (front && front.distance < toEdge - Math.max(this.viewHeight * 0.01, 0.05)) return null;
-    }
-    return hit.i;
+    const visible = order.find(([, h]) => !front || front.distance >= depth(h.p) - slack);
+    return visible ? visible[0] : null;
   }
 
   /** Index of the build's edge whose midpoint is at `mid`, if any. */

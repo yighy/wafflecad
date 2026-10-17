@@ -43,6 +43,6 @@ export function sketchHolePoints(sk: SketchFeature): Vec3[] {
   const yd: Vec3 = [n[1] * xd[2] - n[2] * xd[1], n[2] * xd[0] - n[0] * xd[2], n[0] * xd[1] - n[1] * xd[0]];
   return v
     .points()
-    .filter((p) => !used.has(p.id) && !p.fixed)
+    .filter((p) => !used.has(p.id) && !p.fixed && !p.sharp)
     .map((p) => [0, 1, 2].map((i) => sk.plane.origin[i] + xd[i] * p.x + yd[i] * p.y) as Vec3);
 }

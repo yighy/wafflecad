@@ -1,6 +1,6 @@
 // Bridge between the sketch model and FreeCAD's planegcs solver (WebAssembly).
 import { DebugMode, GcsWrapper, SolveStatus, init_planegcs_module, type SketchPrimitive } from "@salusoft89/planegcs";
-import type { SkConstraint, SketchFeature } from "../types";
+import type { SkConstraint, SkEntity, SketchFeature } from "../types";
 import { SketchView } from "./model";
 
 const DEG = Math.PI / 180;
@@ -144,7 +144,11 @@ function constraintPrims(c: SkConstraint, view: SketchView): SketchPrimitive[] {
           return [{ id, type: "equal_radius_aa", a1_id: a, a2_id: b }];
       }
       return [];
-    case "tangent":
+    case "tangent": {
+      // Curves joined at an end (a sketch fillet): tangency as the angle between them at that
+      // point, as FreeCAD does. The distance form is degenerate there and reads as redundant.
+      const joint = jointOf(view, A, B);
+      if (joint) return [{ id, type: "angle_via_point", crv1_id: a, crv2_id: b, p_id: joint.p, angle: joint.angle }];
       switch (t) {
         case "line/circle":
           return [{ id, type: "tangent_lc", l_id: a, c_id: b }];
@@ -164,6 +168,7 @@ function constraintPrims(c: SkConstraint, view: SketchView): SketchPrimitive[] {
           return [{ id, type: "tangent_ca", c_id: b, a_id: a }];
       }
       return [];
+    }
     case "pointOn":
       switch (B?.type) {
         case "line":
@@ -211,4 +216,25 @@ function constraintPrims(c: SkConstraint, view: SketchView): SketchPrimitive[] {
     case "angle":
       return [{ id, type: "l2l_angle_ll", l1_id: a, l2_id: b, angle: v * DEG }];
   }
+}
+
+/** Shared end of a line and an arc (or two arcs), and whether their directions there agree (0) or oppose (π). */
+function jointOf(view: SketchView, A: SkEntity | undefined, B: SkEntity | undefined): { p: string; angle: number } | null {
+  const ends = (e: SkEntity | undefined): string[] => (e?.type === "line" ? [e.p1, e.p2] : e?.type === "arc" ? [e.s, e.e] : []);
+  if (!A || !B || A.type === "point" || B.type === "point" || (A.type === "line" && B.type === "line")) return null;
+  const p = ends(A).find((id) => ends(B).includes(id));
+  if (!p) return null;
+  // Direction of each curve at p, following its own parameter (line p1 → p2, arc counter-clockwise).
+  const dir = (e: SkEntity): [number, number] => {
+    if (e.type === "line") {
+      const [x1, y1] = view.xy(e.p1);
+      const [x2, y2] = view.xy(e.p2);
+      return [x2 - x1, y2 - y1];
+    }
+    const [cx, cy] = view.xy((e as { c: string }).c);
+    const [px, py] = view.xy(p);
+    return [-(py - cy), px - cx];
+  };
+  const [u, w] = [dir(A), dir(B)];
+  return { p, angle: u[0] * w[0] + u[1] * w[1] >= 0 ? 0 : Math.PI };
 }

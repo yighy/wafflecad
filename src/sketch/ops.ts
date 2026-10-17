@@ -1,7 +1,7 @@
 // Sketch editing operations that rebuild geometry: corner fillet, mirror, projected edges.
 // Pure sketch-model code (no DOM), testable under Node.
 import type { SkConstraint, SkCurve, SkEntity, SkLine, SketchFeature } from "../types";
-import { SketchView, deleteEntities, isReference, uid } from "./model";
+import { SketchView, isReference, uid } from "./model";
 
 type P2 = [number, number];
 const sub = (p: P2, q: P2): P2 => [p[0] - q[0], p[1] - q[1]];
@@ -58,15 +58,17 @@ export function filletCorner(sk: SketchFeature, pointId: string, r: number): str
   const ccw = (T1[0] - C[0]) * (T2[1] - C[1]) - (T1[1] - C[1]) * (T2[0] - C[0]) > 0;
   const arc = { id: uid(), type: "arc" as const, c, s: ccw ? t1 : t2, e: ccw ? t2 : t1, construction: l1.construction && l2.construction ? true : undefined };
   sk.entities.push(arc);
+  // The corner stays as a "virtual sharp" on both lines: its own constraints (fixed, dimensions
+  // to it) keep holding the lines where they were.
+  const corner = sk.entities.find((e) => e.id === pointId);
+  if (corner?.type === "point" && !corner.fixed) corner.sharp = true;
   sk.constraints.push(
+    { id: uid(), type: "pointOn", refs: [pointId, l1.id] },
+    { id: uid(), type: "pointOn", refs: [pointId, l2.id] },
     { id: uid(), type: "tangent", refs: [l1.id, arc.id] },
     { id: uid(), type: "tangent", refs: [l2.id, arc.id] },
     { id: uid(), type: "radius", refs: [arc.id], value: r },
   );
-  // The sharp corner point goes unless something else still uses it.
-  const after = new SketchView(sk);
-  const used = after.curves().some((k) => after.defPoints(k).includes(pointId));
-  if (!used && !(after.get(pointId) as { fixed?: boolean } | undefined)?.fixed) deleteEntities(sk, [pointId]);
   return null;
 }
 

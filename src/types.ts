@@ -20,6 +20,8 @@ export interface SkPoint {
   y: number;
   /** Reference geometry (origin, axis ends): never moves, never deleted. */
   fixed?: boolean;
+  /** Where two lines met before a fillet rounded the corner: kept on both lines, not a hole position. */
+  sharp?: boolean;
 }
 
 export interface SkLine {
