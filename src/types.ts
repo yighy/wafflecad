@@ -310,6 +310,24 @@ export interface EdgeGroup {
   start: number;
   count: number;
   mid: Vec3;
+  /** The B-rep edge's hash code in this build (to find it again in the worker). */
+  id: number;
+}
+
+/** Something tapped to be measured: a face or an edge of the last build (by hash code), or a corner. */
+export type MeasurePick = { kind: "face"; id: number } | { kind: "edge"; id: number } | { kind: "point"; p: Vec3 };
+
+export interface MeasureRow {
+  label: string;
+  value: number;
+  unit: "mm" | "mm²" | "°";
+}
+
+export interface MeasureResult {
+  rows: MeasureRow[];
+  /** Where the distance was measured, to draw it. */
+  line?: [Vec3, Vec3];
+  error?: string;
 }
 
 export interface PlanarFace {
@@ -345,10 +363,12 @@ export type WorkerRequest =
    * `preview` shows the whole document, so an operation being edited is seen live. `draft`: a
    * coarser mesh and no flat faces, for builds made while a value is being dragged. */
   | { type: "build"; reqId: number; doc: CadDocument; pickExclude?: string; draft?: boolean }
-  | { type: "export"; reqId: number; doc: CadDocument; format: "step" | "stl" };
+  | { type: "export"; reqId: number; doc: CadDocument; format: "step" | "stl" }
+  | { type: "measure"; reqId: number; doc: CadDocument; picks: MeasurePick[] };
 
 export type WorkerResponse =
   | { type: "ready" }
   | { type: "fatal"; message: string }
   | ({ type: "built"; reqId: number; preview?: PreviewResult } & BuildResult)
-  | { type: "file"; reqId: number; blob: Blob | null; error?: string };
+  | { type: "file"; reqId: number; blob: Blob | null; error?: string }
+  | { type: "measured"; reqId: number; result: MeasureResult };

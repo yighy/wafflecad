@@ -12,6 +12,7 @@ import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } f
 import { filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
+import { measure } from "../src/cad/measure";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
 import type { CadDocument, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
@@ -632,6 +633,45 @@ check("600 pinned Béziers solve quickly", bres.ok && bres.dof === 0 && bMs < 50
 const fixedPt = bsk.entities.find((e): e is SkPoint => e.type === "point" && !e.fixed)!;
 solver.solve(bsk, { points: [{ id: fixedPt.id, x: fixedPt.x + 5, y: fixedPt.y }] });
 check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id).x, fixedPt.x));
+
+// --- Measure, on the 20 × 10 × 5 block with an M3 clearance hole through it at (5, 5).
+{
+  const mDoc = block({ id: "h1", kind: "hole", name: "H1", points: [[5, 5, 5]], normal: [0, 0, 1], size: "M3", fit: "clearance", head: "none", depth: 0 } as never);
+  const shape = buildShape(mDoc).shape!;
+  const res = buildResult(mDoc);
+  check("edge groups carry the B-rep edge ids", res.edgeGroups.every((g) => shape.edges.some((e) => e.hashCode === g.id)));
+  const faceAt = (n: [number, number, number], c: number) =>
+    shape.faces.find((f) => {
+      if (f.geomType !== "PLANE") return false;
+      const v = f.normalAt(f.center);
+      const p = f.center;
+      return Math.abs(v.x - n[0]) + Math.abs(v.y - n[1]) + Math.abs(v.z - n[2]) < 1e-6 && Math.abs(p.x * n[0] + p.y * n[1] + p.z * n[2] - c) < 1e-6;
+    })!;
+  const left = faceAt([-1, 0, 0], 0);
+  const right = faceAt([1, 0, 0], 20);
+  const top = faceAt([0, 0, 1], 5);
+  const row = (r: ReturnType<typeof measure>, label: string) => r.rows.find((x) => x.label === label)?.value ?? NaN;
+  let r = measure(shape, [{ kind: "face", id: left.hashCode }, { kind: "face", id: right.hashCode }]);
+  check("measure: opposite faces 20 apart, parallel", near(row(r, "Distance"), 20) && near(row(r, "Angle"), 0), JSON.stringify(r.rows));
+  r = measure(shape, [{ kind: "face", id: left.hashCode }, { kind: "face", id: top.hashCode }]);
+  check("measure: side and top at 90°", near(row(r, "Angle"), 90) && near(row(r, "Distance"), 0), JSON.stringify(r.rows));
+  r = measure(shape, [{ kind: "face", id: right.hashCode }]);
+  check("measure: face area", near(row(r, "Area"), 50), JSON.stringify(r.rows));
+  const circle = shape.edges.find((e) => e.geomType === "CIRCLE")!;
+  r = measure(shape, [{ kind: "edge", id: circle.hashCode }]);
+  check("measure: hole edge diameter 3.4 (M3 clearance)", near(row(r, "Diameter"), 3.4, 1e-3), JSON.stringify(r.rows));
+  const cz = circle.startPoint.z;
+  r = measure(shape, [{ kind: "edge", id: circle.hashCode }, { kind: "point", p: [20, 5, cz] }]);
+  check("measure: hole centre to a point", near(row(r, "Centre distance"), 15) && !!r.line, JSON.stringify(r.rows));
+  r = measure(shape, [{ kind: "point", p: [0, 0, 0] }, { kind: "point", p: [20, 10, 5] }]);
+  check("measure: two corners", near(row(r, "Distance"), Math.hypot(20, 10, 5)) && near(row(r, "ΔY"), 10), JSON.stringify(r.rows));
+  const cyl = shape.faces.find((f) => f.geomType === "CYLINDRE")!;
+  r = measure(shape, [{ kind: "face", id: cyl.hashCode }]);
+  check("measure: hole wall radius", near(row(r, "Radius"), 1.7, 1e-3), JSON.stringify(r.rows));
+  r = measure(shape, [{ kind: "face", id: cyl.hashCode }, { kind: "face", id: top.hashCode }]);
+  check("measure: hole axis square to the top", near(row(r, "Angle"), 90), JSON.stringify(r.rows));
+  check("measure: a face of another build", !!measure(shape, [{ kind: "face", id: -1 }]).error);
+}
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

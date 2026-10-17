@@ -650,6 +650,16 @@ export class Viewport {
     return i < 0 ? null : i;
   }
 
+  /** Index in this build's edges of the B-rep edge with that hash code. */
+  edgeIndexOf(id: number): number | null {
+    const i = this.edgeGroups.findIndex((g) => g.id === id);
+    return i < 0 ? null : i;
+  }
+
+  edgeId(i: number): number {
+    return this.edgeGroups[i].id;
+  }
+
   edgeMid(i: number): Vec3 {
     return this.edgeGroups[i].mid;
   }

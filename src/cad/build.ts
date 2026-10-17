@@ -450,7 +450,7 @@ function meshShape(shape: Shape3D, draft: boolean): Pick<BuildResult, "mesh" | "
       faceGroups: m.faceGroups,
     },
     edges: new Float32Array(e.lines),
-    edgeGroups: e.edgeGroups.map((g): EdgeGroup => ({ start: g.start, count: g.count, mid: polylineMid(e.lines, g.start, g.count) })),
+    edgeGroups: e.edgeGroups.map((g): EdgeGroup => ({ start: g.start, count: g.count, mid: polylineMid(e.lines, g.start, g.count), id: g.edgeId })),
   };
 }
 

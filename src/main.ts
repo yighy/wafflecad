@@ -18,6 +18,7 @@ import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
 import { parseDxf } from "./sketch/dxf";
 import { parseSvg } from "./sketch/svg";
 import { bounds, insertShapes, type ImportOptions } from "./sketch/importShapes";
+import type { MeasurePick, MeasureResult, MeasureRow } from "./types";
 import { deleteProject, freeName, getProject, listProjects, newProjectId, putProject, type ProjectMeta } from "./projects";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D, type EdgeDim } from "./cad/holePlace";
 
@@ -182,6 +183,12 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     renderPanel();
     renderPartOverlays();
     if (thumbStale) scheduleThumb();
+    if (measuring) showMeasurePicks();
+  } else if (m.type === "measured") {
+    if (!measuring || m.reqId !== measureReq) return;
+    measuring.result = m.result;
+    renderPanel();
+    renderPartOverlays();
   } else if (m.type === "file") {
     pendingFiles.get(m.reqId)?.(m.blob, m.error);
     pendingFiles.delete(m.reqId);
@@ -494,6 +501,10 @@ function exitSketch() {
 function escape(): boolean {
   if (document.getElementById("projects")) {
     closeProjects();
+    return true;
+  }
+  if (measuring) {
+    endMeasure();
     return true;
   }
   if (isOperation(mode)) {
@@ -1720,7 +1731,11 @@ function toolRow(
   holdForName(b, label);
   b.title = opts.key ? `${label} (${opts.key})` : label;
   b.setAttribute("aria-label", label);
-  b.onclick = run;
+  // Any other tool puts the measure away.
+  b.onclick = () => {
+    if (measuring && run !== toggleMeasure) endMeasure();
+    run();
+  };
   return b;
 }
 
@@ -1856,6 +1871,7 @@ function renderTools() {
       el.appendChild(toolRow("circular", "Circular pattern", () => void patternTool("circular"), { key: "O" }));
     }
     el.appendChild(section("Design"));
+    if (solid) el.appendChild(toolRow("measure", "Measure", toggleMeasure, { active: !!measuring, key: "D" }));
     el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
   }
   // Consecutive tools of a section share one icon column; their labels stay separate cards.
@@ -1914,7 +1930,9 @@ function renderPanel() {
       ? `sketch:${mode.editor.sk.id}`
       : isOperation(mode)
         ? `op:${mode.feat.id}`
-        : showParams
+        : measuring
+          ? "measure"
+          : showParams
           ? "params"
           : selectedFace
             ? "face"
@@ -1986,6 +2004,12 @@ function renderPanel() {
     return;
   }
   if (mode.kind !== "part") return;
+  if (measuring) {
+    head("Measure", "", false);
+    renderMeasurePanel(el);
+    actions([["check", "Done", endMeasure, "primary"]]);
+    return;
+  }
   if (showParams) return renderParamsPanel(el);
 
   if (selectedFace) {
@@ -2362,6 +2386,24 @@ function renderPartOverlays() {
     });
     labels = holeDimLabels(f, batch);
   }
+  if (measuring && mode.kind === "part") {
+    const acc = rgb("--accent");
+    for (const k of measuring.picks)
+      if (k.kind === "point") {
+        marks.positions.push(...k.p);
+        marks.colors.push(...acc);
+      }
+    const line = measuring.result?.line;
+    const main = measuring.result?.rows.find((r) => r.unit === "mm" && /distance/i.test(r.label));
+    if (line && main && main.value > 1e-6) {
+      batch.positions.push(...line[0], ...line[1]);
+      batch.colors.push(...acc, ...acc);
+      const tag = document.createElement("div");
+      tag.className = "sk-label dim";
+      tag.textContent = measureValue(main);
+      labels.push({ el: tag, at: new THREE.Vector3((line[0][0] + line[1][0]) / 2, (line[0][1] + line[1][1]) / 2, (line[0][2] + line[1][2]) / 2) });
+    }
+  }
   vp.setSketchLayer([batch], [marks]);
   vp.setLabels(labels);
 }
@@ -2416,6 +2458,7 @@ const partTool: PointerTool = {
       return;
     }
     if (mode.kind === "fillet") return toggleFilletEdge(mode.feat, p);
+    if (mode.kind === "part" && measuring) return measureTap(p);
     if (mode.kind === "hole") return holeUp(mode.feat, p);
     if (mode.kind === "revolve") {
       const sk = doc.features.find((x): x is SketchFeature => x.id === (mode as { feat: RevolveFeature }).feat.sketchId && x.kind === "sketch");
@@ -2444,6 +2487,100 @@ const partTool: PointerTool = {
     vp.highlightFace(vp.pickFace(p.x, p.y));
   },
 };
+
+// ---------- Measure ----------
+
+/** Measuring: what was tapped (one or two things) and what the worker found. */
+let measuring: { picks: MeasurePick[]; result: MeasureResult | null } | null = null;
+let measureReq = 0;
+
+function toggleMeasure() {
+  if (measuring) return endMeasure();
+  showParams = false;
+  pendingFaceTool = null;
+  selectedFeature = null;
+  selectedFace = null;
+  vp.highlightFace(null);
+  measuring = { picks: [], result: null };
+  renderAll();
+}
+
+function endMeasure() {
+  measuring = null;
+  vp.highlightFaces([]);
+  vp.highlightEdges([]);
+  renderAll();
+}
+
+/** What is under the finger: a corner (the end of an edge, close on screen), else an edge, else a face. */
+function measurePickAt(p: Ptr): MeasurePick | null {
+  const edge = vp.pickEdge(p.x, p.y, 14);
+  if (edge != null) {
+    const line = vp.edgePolyline(edge);
+    const ends = [line[0], line[line.length - 1]];
+    const closed = Math.hypot(ends[0][0] - ends[1][0], ends[0][1] - ends[1][1], ends[0][2] - ends[1][2]) < 1e-6;
+    if (!closed)
+      for (const end of ends) {
+        const [sx, sy] = vp.toScreen(new THREE.Vector3(...end));
+        if (Math.hypot(sx - p.x, sy - p.y) < 18) return { kind: "point", p: end };
+      }
+    return { kind: "edge", id: vp.edgeId(edge) };
+  }
+  const face = vp.pickFace(p.x, p.y);
+  return face == null ? null : { kind: "face", id: face };
+}
+
+/** A third tap starts again; a tap on nothing clears. */
+function measureTap(p: Ptr) {
+  if (!measuring) return;
+  const pick = measurePickAt(p);
+  measuring.picks = !pick ? [] : measuring.picks.length >= 2 ? [pick] : [...measuring.picks, pick];
+  measuring.result = null;
+  showMeasurePicks();
+  if (measuring.picks.length) {
+    measureReq = ++reqCounter;
+    worker.postMessage({ type: "measure", reqId: measureReq, doc, picks: measuring.picks } satisfies WorkerRequest);
+  }
+  renderPanel();
+  renderPartOverlays();
+}
+
+function showMeasurePicks() {
+  const picks = measuring?.picks ?? [];
+  vp.highlightFaces(picks.flatMap((k) => (k.kind === "face" ? [k.id] : [])));
+  vp.highlightEdges(picks.flatMap((k) => (k.kind === "edge" ? [vp.edgeIndexOf(k.id) ?? -1] : [])));
+}
+
+function measureValue(r: MeasureRow) {
+  return `${fmtNum(r.value)}${r.unit === "°" ? "°" : " " + r.unit}`;
+}
+
+function renderMeasurePanel(el: HTMLElement) {
+  if (!measuring) return;
+  const n = measuring.picks.length;
+  const rows = measuring.result?.rows ?? [];
+  const box = document.createElement("div");
+  box.className = "p-measure";
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.innerHTML = "<span></span><b></b>";
+    row.querySelector("span")!.textContent = r.label;
+    row.querySelector("b")!.textContent = measureValue(r);
+    box.appendChild(row);
+  }
+  if (rows.length) el.appendChild(box);
+  const hint = document.createElement("p");
+  hint.className = "p-hint";
+  hint.textContent =
+    measuring.result?.error ??
+    (n === 0
+      ? "Tap a face, an edge or a corner."
+      : n === 1
+        ? "Tap a second one to measure between them."
+        : "Tap again to start a new measure.");
+  if (n && !measuring.result) hint.textContent = "Measuring…";
+  el.appendChild(hint);
+}
 
 // ---------- Menu, files ----------
 
@@ -2869,6 +3006,7 @@ window.addEventListener("keydown", (e) => {
     else if (key === "e") void extrude();
     else if (key === "q") faceTool("pushpull");
     else if (key === "p") toggleParams();
+    else if (key === "d") toggleMeasure();
     else if (key === "r") void filletTool();
     else if (key === "h") startHoles();
     else if (key === "m") void patternTool("mirror");

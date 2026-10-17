@@ -2,7 +2,8 @@
 import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
-import { buildResult, exportFile } from "./build";
+import { buildResult, buildShape, exportFile } from "./build";
+import { measure } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
 const post = (msg: WorkerResponse, transfer: Transferable[] = []) =>
@@ -51,6 +52,16 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         errors: { _: String(e) },
       });
     }
+    return;
+  }
+  if (req.type === "measure") {
+    let result;
+    try {
+      result = measure(buildShape(req.doc).shape, req.picks);
+    } catch (e) {
+      result = { rows: [], error: String(e) };
+    }
+    post({ type: "measured", reqId: req.reqId, result });
     return;
   }
   try {

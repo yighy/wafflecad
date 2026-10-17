@@ -675,6 +675,27 @@ body.busy #status-pill .dot {
   background: transparent;
   color: var(--muted);
 }
+/* Measure results: name on the left, value on the right. */
+.p-measure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 8px;
+}
+.p-measure > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--card2);
+  font-size: 14px;
+}
+.p-measure b {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
 .p-hint {
   font-size: 13px;
   color: var(--muted);
