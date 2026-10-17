@@ -696,6 +696,22 @@ body.busy #status-pill .dot {
   font-variant-numeric: tabular-nums;
   user-select: text;
 }
+.kp-text {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card2);
+  color: var(--text);
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+}
+.kp-text:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .p-hint {
   font-size: 13px;
   color: var(--muted);

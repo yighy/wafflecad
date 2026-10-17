@@ -44,6 +44,7 @@ const P: Record<string, string> = {
   trash: '<path d="M5 7l1 13h12l1-13z" fill="currentColor" fill-opacity=".14"/><path d="M3.5 7h17M9 7V4h6v3M10 11v5.5M14 11v5.5"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z" fill="currentColor" fill-opacity=".14"/><path d="M13 7l4 4"/>',
   measure: '<path d="M3 15.5 15.5 3 21 8.5 8.5 21z" fill="currentColor" fill-opacity=".14"/><path d="M7.5 11l2 2M10.5 8l1.5 1.5M13.5 5l2 2M4.5 14l1.5 1.5"/>',
+  text: '<path d="M4 4h16v4h-1.5l-1-2H13v12l2 .5V20H9v-1.5l2-.5V6H6.5l-1 2H4z" fill="currentColor" fill-opacity=".14"/>',
   folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z" fill="currentColor" fill-opacity=".14"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2" fill="currentColor" fill-opacity=".14"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>',
   more: '<circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/>',

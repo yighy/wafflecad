@@ -13,6 +13,9 @@ import { filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup 
 import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
 import { measure } from "../src/cad/measure";
+import { textShapes } from "../src/sketch/text";
+import { parse as parseFont } from "opentype.js";
+import { readFileSync } from "node:fs";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
 import type { CadDocument, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
@@ -671,6 +674,24 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   r = measure(shape, [{ kind: "face", id: cyl.hashCode }, { kind: "face", id: top.hashCode }]);
   check("measure: hole axis square to the top", near(row(r, "Angle"), 90), JSON.stringify(r.rows));
   check("measure: a face of another build", !!measure(shape, [{ kind: "face", id: -1 }]).error);
+}
+
+// --- Text: letter outlines extrude, holes of O / 8 / a stay holes.
+{
+  const buf = readFileSync("node_modules/@fontsource/roboto/files/roboto-latin-700-normal.woff");
+  const font = parseFont(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  const shapes = textShapes(font, "Oa8", 10);
+  const hb = shapes.flatMap((s) => (s.kind === "line" ? [s.a, s.b] : s.kind === "bezier" ? [s.a, s.b] : []));
+  const top = Math.max(...hb.map((p) => p[1]));
+  check("text: capitals are as tall as asked (round letters overshoot a little)", Math.abs(top - 10) < 0.3, top.toFixed(2));
+  const tSk = newSketch("T", XY);
+  insertShapes(tSk, shapes, { scale: 1, place: "file", fixed: true });
+  const tRegions = findRegions(tSk);
+  check("text: one region per letter (holes inside)", tRegions.length === 3, String(tRegions.length));
+  const tDoc: CadDocument = { format: "waffle", version: 1, features: [tSk, { id: "te", kind: "extrude", name: "TE", sketchId: tSk.id, distance: 2, symmetric: false, op: "add" }] };
+  const tb = buildShape(tDoc);
+  const vol = tb.shape ? measureVolume(tb.shape) : 0;
+  check("text extrudes", !!tb.shape && !Object.keys(tb.errors).length && vol > 20, `${vol.toFixed(1)} mm³ ${JSON.stringify(tb.errors)}`);
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

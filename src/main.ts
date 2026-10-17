@@ -17,7 +17,10 @@ import { findRegions } from "./sketch/profiles";
 import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
 import { parseDxf } from "./sketch/dxf";
 import { parseSvg } from "./sketch/svg";
-import { bounds, insertShapes, type ImportOptions } from "./sketch/importShapes";
+import { bounds, insertShapes, type ImportOptions, type ImportShape } from "./sketch/importShapes";
+import { textShapes } from "./sketch/text";
+import { FONTS, loadFont, type FontId } from "./sketch/fonts";
+import type { Font } from "opentype.js";
 import type { MeasurePick, MeasureResult, MeasureRow } from "./types";
 import { deleteProject, freeName, getProject, listProjects, newProjectId, putProject, type ProjectMeta } from "./projects";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D, type EdgeDim } from "./cad/holePlace";
@@ -1822,6 +1825,7 @@ function renderTools() {
       );
     }
     el.appendChild(section("Insert"));
+    el.appendChild(toolRow("text", "Text", () => void insertText(), { key: "X" }));
     el.appendChild(toolRow("import", "Import DXF / SVG", () => void importDrawing()));
     el.appendChild(section("Options"));
     el.appendChild(
@@ -2702,6 +2706,122 @@ async function importDrawing() {
   renderAll();
 }
 
+/**
+ * Text: the letters' outlines go into the sketch as fixed curves, centred where the view looks,
+ * and stay selected so they can be slid into place. Typed words, height and font preview live.
+ */
+async function insertText() {
+  if (mode.kind !== "sketch") return;
+  const ed = mode.editor;
+  const opt = { text: "Text", height: 10, font: "bold" as FontId };
+  let font: Font;
+  try {
+    font = await loadFont(opt.font);
+  } catch {
+    return toast("The font could not be loaded");
+  }
+  if (mode.kind !== "sketch" || mode.editor !== ed) return;
+  const at = vp.screenToPlane(vp.width / 2, vp.height / 2, ed.sk.plane) ?? [0, 0];
+  const before = { entities: structuredClone(ed.sk.entities), constraints: structuredClone(ed.sk.constraints) };
+  let added: string[] = [];
+  const show = (frame = false) => {
+    ed.sk.entities = structuredClone(before.entities);
+    ed.sk.constraints = structuredClone(before.constraints);
+    const shapes = textShapes(font, opt.text, opt.height);
+    const b = bounds(shapes);
+    if (b) {
+      // Centred on the point the view looks at.
+      const dx = at[0] - (b.min[0] + b.max[0]) / 2;
+      const dy = at[1] - (b.min[1] + b.max[1]) / 2;
+      const moved = shapes.map((s) => shiftShape(s, dx, dy));
+      const known = new Set(before.entities.map((e) => e.id));
+      insertShapes(ed.sk, moved, { scale: 1, place: "file", fixed: true });
+      added = ed.sk.entities.filter((e) => !known.has(e.id)).map((e) => e.id);
+      if (frame) {
+        // Room around the words, which the panel may partly cover.
+        const { origin: o, xDir: xd, normal: n } = ed.sk.plane;
+        const yd = [n[1] * xd[2] - n[2] * xd[1], n[2] * xd[0] - n[0] * xd[2], n[0] * xd[1] - n[1] * xd[0]];
+        const w = (x: number, y: number) => new THREE.Vector3(...[0, 1, 2].map((i) => o[i] + xd[i] * x + yd[i] * y));
+        const pad = opt.height * 2;
+        const [x0, y0, x1, y1] = [b.min[0] + dx - pad, b.min[1] + dy - pad, b.max[0] + dx + pad, b.max[1] + dy + pad];
+        vp.fit(new THREE.Box3().setFromPoints([w(x0, y0), w(x1, y1), w(x0, y1), w(x1, y0)]));
+      }
+    } else added = [];
+    ed.solve();
+    ed.render();
+  };
+  show(true);
+  const kp = openKeypad({
+    title: "Text",
+    subtitle: "Capital letters this tall",
+    label: "Height",
+    value: opt.height,
+    unit: "mm",
+    confirmLabel: "Insert",
+    text: {
+      value: opt.text,
+      placeholder: "Type the text",
+      onInput: (v) => {
+        opt.text = v;
+        show();
+      },
+    },
+    segments: [
+      {
+        options: FONTS.map((f) => ({ value: f.id, label: f.label })),
+        get: () => opt.font,
+        set: (v) => {
+          opt.font = v as FontId;
+          void loadFont(opt.font).then((f) => {
+            if (opt.font !== v) return;
+            font = f;
+            show();
+          });
+        },
+      },
+    ],
+    onInput: (v) => {
+      if (v > 0) {
+        opt.height = v;
+        show();
+      }
+    },
+  });
+  const r = await kp.result;
+  if (r === null || !(r.value > 0) || !opt.text.trim()) {
+    ed.sk.entities = before.entities;
+    ed.sk.constraints = before.constraints;
+    ed.solve();
+    ed.render();
+    renderAll();
+    return;
+  }
+  opt.height = r.value;
+  show();
+  commit();
+  ed.setTool("select");
+  ed.selection.clear();
+  for (const id of added) ed.selection.add(id);
+  ed.render();
+  renderAll();
+}
+
+function shiftShape(s: ImportShape, dx: number, dy: number): ImportShape {
+  const m = (p: [number, number]): [number, number] => [p[0] + dx, p[1] + dy];
+  switch (s.kind) {
+    case "line":
+      return { ...s, a: m(s.a), b: m(s.b) };
+    case "bezier":
+      return { ...s, a: m(s.a), c1: m(s.c1), c2: m(s.c2), b: m(s.b) };
+    case "circle":
+      return { ...s, c: m(s.c) };
+    case "arc":
+      return { ...s, c: m(s.c), s: m(s.s), e: m(s.e) };
+    case "spline":
+      return { ...s, pts: s.pts.map(m) };
+  }
+}
+
 /** A file opened from the device becomes a new project, named after the file. */
 function openFile() {
   const input = document.createElement("input");
@@ -2997,6 +3117,7 @@ window.addEventListener("keydown", (e) => {
     const t = SKETCH_TOOLS.find((x) => x.key.toLowerCase() === k.toLowerCase());
     if (t) ed.setTool(t.tool);
     else if (k.toLowerCase() === "g") ed.construction = !ed.construction;
+    else if (k.toLowerCase() === "x") return void insertText();
     else return;
     return renderAll();
   }

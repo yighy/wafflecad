@@ -27,6 +27,8 @@ export interface KeypadOptions {
   scope?: Scope;
   /** Expression to start from (instead of the plain value). */
   expr?: string;
+  /** A line of text to type above the number (e.g. the words of a text). */
+  text?: { value: string; placeholder?: string; onInput: (v: string) => void };
 }
 
 /** The typed value, and the expression when it uses parameters. */
@@ -68,6 +70,7 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
     <div class="kp-head">
       <div><div class="kp-title"></div><div class="kp-sub"></div><div class="kp-note"></div></div>
     </div>
+    <input class="kp-text" type="text" enterkeyhint="done" autocomplete="off" hidden>
     <div class="kp-display">
       <span class="kp-label"></span>
       <span class="kp-value"><span class="kp-expr"></span><span class="kp-unit"></span></span>
@@ -86,6 +89,13 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
   root.querySelector(".kp-label")!.textContent = opt.label ?? "Value";
   root.querySelector(".kp-unit")!.textContent = opt.unit ?? "mm";
   root.querySelector(".kp-ok")!.innerHTML = icon("check", 18) + `<span>${opt.confirmLabel ?? "OK"}</span>`;
+  const textEl = root.querySelector<HTMLInputElement>(".kp-text")!;
+  if (opt.text) {
+    textEl.hidden = false;
+    textEl.value = opt.text.value;
+    textEl.placeholder = opt.text.placeholder ?? "";
+    textEl.oninput = () => opt.text!.onInput(textEl.value);
+  }
   const exprEl = root.querySelector(".kp-expr") as HTMLElement;
   const resEl = root.querySelector(".kp-result") as HTMLElement;
   const scope = opt.scope ?? {};
@@ -176,6 +186,8 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
   renderSegs();
 
   const onKey = (e: KeyboardEvent) => {
+    // Typing in the text line: only Enter and Escape are the keypad's.
+    if (e.target === textEl && e.key !== "Enter" && e.key !== "Escape") return;
     if (e.key === "Enter") press("ok");
     else if (e.key === "Escape") finish(null);
     else if (e.key === "Backspace") press("back");
