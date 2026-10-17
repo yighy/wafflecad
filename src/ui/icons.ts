@@ -17,7 +17,7 @@ const P: Record<string, string> = {
   planeXZ: '<path d="M5 5l12 5v10L5 15z" fill="currentColor" fill-opacity=".22"/>',
   planeYZ: '<path d="M7 10l12-5v10L7 20z" fill="currentColor" fill-opacity=".22"/>',
   plane: '<path d="M3 16 9 8h12l-6 8z" fill="currentColor" fill-opacity=".14"/>',
-  variable: '<rect x="3" y="5" width="18" height="14" rx="2" fill="currentColor" fill-opacity=".14"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/>',
+  variable: '<path d="M3 6h18M3 12h18M3 18h18"/><circle cx="8" cy="6" r="2.4" style="fill:var(--card)"/><circle cx="16" cy="12" r="2.4" style="fill:var(--card)"/><circle cx="11" cy="18" r="2.4" style="fill:var(--card)"/>',
   extrude: '<path d="M4 15l8-3.5 8 3.5v3l-8 3.5-8-3.5z" fill="currentColor" fill-opacity=".14"/><path d="M4 15l8 3.5 8-3.5M12 18.5v3"/><path d="M12 3v6.5M8.5 6.5 12 3l3.5 3.5"/>',
   cut: '<path d="M3 10h6v5h6v-5h6v10H3z" fill="currentColor" fill-opacity=".14"/><path d="M12 3v8.5M9.5 9 12 11.5 14.5 9"/>',
   pushpull: '<path d="M3 16.5l9-4 9 4-9 4z" fill="currentColor" fill-opacity=".14"/><path d="M12 2.5v8M9.5 5 12 2.5 14.5 5M9.5 8 12 10.5 14.5 8"/>',
