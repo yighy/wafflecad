@@ -1,6 +1,7 @@
 // Offline support. Hashed build assets never change: cache first.
 // The page itself: network first, so a new version is picked up when online.
-const CACHE = "waffle-v1";
+// One cache per app version (the page registers sw.js?v=<version>): a new version replaces it.
+const CACHE = "waffle-" + (new URL(location.href).searchParams.get("v") || "dev");
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => {

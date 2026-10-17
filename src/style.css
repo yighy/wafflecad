@@ -1002,6 +1002,13 @@ body.busy #status-pill .dot {
   display: flex;
   animation: rise 0.16s ease-out;
 }
+.menu-version {
+  padding: 8px 12px 4px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
 .menu button {
   justify-content: flex-start;
   background: transparent;

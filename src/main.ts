@@ -2441,6 +2441,10 @@ function setupMenu() {
     };
     menu.appendChild(b);
   }
+  const version = document.createElement("div");
+  version.className = "menu-version";
+  version.textContent = `WaffleCAD ${__APP_VERSION__}`;
+  menu.appendChild(version);
   const btn = $("#menu");
   btn.innerHTML = icon("menu", 22);
   btn.onclick = (e) => {
@@ -2635,7 +2639,7 @@ async function boot() {
     onRedo: redo,
   });
   if (!doc.features.length) $("#help").classList.add("open");
-  if ("serviceWorker" in navigator && import.meta.env.PROD) navigator.serviceWorker.register("./sw.js");
+  if ("serviceWorker" in navigator && import.meta.env.PROD) navigator.serviceWorker.register(`./sw.js?v=${__APP_VERSION__}`);
 }
 
 void boot();
