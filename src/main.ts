@@ -375,7 +375,6 @@ async function openProject(id: string, from: { id: string; name: string } | null
     solveState = null;
   }
   explode = explodeTarget = 0;
-  showBom = false;
   clashes = null;
   vp.setClashes(null);
   prefs.project = id;
@@ -582,10 +581,6 @@ function escape(): boolean {
   }
   if (clashes) {
     clearClashes();
-    return true;
-  }
-  if (showBom) {
-    toggleBom();
     return true;
   }
   if (explodeTarget) {
@@ -1304,36 +1299,6 @@ function toggleExplode() {
 }
 
 // ---------- Interference ----------
-
-// ---------- Parts list ----------
-
-/** The parts list is shown in the panel. */
-let showBom = false;
-
-/** Each part used, with how many times and under which names. */
-function partsList() {
-  const rows = new Map<string, { part: string; names: string[] }>();
-  for (const i of doc.instances ?? []) {
-    const r = rows.get(i.project) ?? { part: partNames[i.project] ?? "Missing project", names: [] };
-    r.names.push(i.name);
-    rows.set(i.project, r);
-  }
-  return [...rows.values()];
-}
-
-function toggleBom() {
-  if (measuring) endMeasure();
-  if (clashes) clearClashes();
-  showBom = !showBom;
-  selectedFeature = null;
-  renderAll();
-}
-
-function downloadBom() {
-  const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
-  const lines = ["Part,Quantity,Names", ...partsList().map((r) => [q(r.part), r.names.length, q(r.names.join(", "))].join(","))];
-  download(new Blob([lines.join("\r\n") + "\r\n"], { type: "text/csv" }), `${fileName()}-parts.csv`);
-}
 
 /** Overlapping parts found by the last check (null: no check shown). */
 let clashes: { list: Clash[]; running: boolean; error?: string } | null = null;
@@ -2341,11 +2306,21 @@ function applyParamChange(change: () => void) {
   if (problems.length) {
     doc = JSON.parse(backup);
     toast(problems[0]);
+    reloadSketch();
     renderAll();
     return false;
   }
+  reloadSketch();
   commit();
   return true;
+}
+
+/** The sketch being edited takes the document's version of it again (after parameters changed it). */
+function reloadSketch() {
+  if (mode.kind !== "sketch") return;
+  const id = mode.editor.sk.id;
+  const sk = doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
+  if (sk) mode.editor.load(sk);
 }
 
 function askName(title: string, initial: string, except?: string): string | null {
@@ -2400,6 +2375,7 @@ function renameParameter(p: Parameter) {
   for (const slot of expressionSlots(doc)) slot.set(renameInExpr(slot.get(), p.name, name));
   const live = doc.parameters?.find((x) => x.id === p.id);
   if (live) live.name = name;
+  reloadSketch();
   commit();
 }
 
@@ -2696,6 +2672,7 @@ function renderTools() {
     el.appendChild(toolRow("text", "Text", () => void insertText(), { key: "X" }));
     el.appendChild(toolRow("import", "Import DXF / SVG", () => void importDrawing()));
     el.appendChild(section("Options"));
+    el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams }));
     el.appendChild(
       toolRow("construction", "Construction", () => {
         ed.construction = !ed.construction;
@@ -2718,7 +2695,6 @@ function renderTools() {
     if (doc.instances?.length) {
       el.appendChild(section("Check"));
       el.appendChild(toolRow("measure", "Measure", toggleMeasure, { active: !!measuring, key: "D" }));
-      el.appendChild(toolRow("list", "Parts list", toggleBom, { active: showBom, key: "B" }));
       if (doc.instances.length > 1) {
         el.appendChild(toolRow("clash", "Interference", () => (clashes ? clearClashes() : checkInterference()), { active: !!clashes, key: "C" }));
         el.appendChild(toolRow("explode", "Exploded view", toggleExplode, { active: explodeTarget > 0, key: "X" }));
@@ -2867,6 +2843,7 @@ function renderPanel() {
   };
 
   if (mode.kind === "sketch") {
+    if (showParams) return renderParamsPanel(el);
     const ed = mode.editor;
     head(ed.sk.name, dofText(ed.dof));
     const acts = ed.actions();
@@ -2939,26 +2916,6 @@ function renderPanel() {
   }
   if (showParams) return renderParamsPanel(el);
 
-  if (isAssembly() && showBom) {
-    const list = partsList();
-    const total = list.reduce((s, r) => s + r.names.length, 0);
-    head("Parts list", `${total} part${total > 1 ? "s" : ""}, ${list.length} different`);
-    const box = document.createElement("div");
-    box.className = "p-measure";
-    for (const r of list) {
-      const row = document.createElement("div");
-      row.innerHTML = "<span></span><b></b>";
-      row.querySelector("span")!.textContent = r.part;
-      row.querySelector("b")!.textContent = `× ${r.names.length}`;
-      box.appendChild(row);
-    }
-    if (list.length) el.appendChild(box);
-    actions([
-      ["import", "Download CSV", downloadBom, "primary"],
-      ["close", "Close", toggleBom],
-    ]);
-    return;
-  }
   if (isAssembly() && clashes) {
     const c = clashes;
     const n = c.list.length;
@@ -4392,7 +4349,6 @@ window.addEventListener("keydown", (e) => {
     if (key === "i") void showPartPicker();
     else if (key === "m") startMate();
     else if (key === "x") toggleExplode();
-    else if (key === "b") toggleBom();
     else if (key === "c") void (clashes ? clearClashes() : checkInterference());
     else if (key === "d") toggleMeasure();
     else if (key === "f") vp.fit();

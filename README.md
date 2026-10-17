@@ -32,8 +32,8 @@
 - **Parameters**: name a value (`wall = 2`) and use it in any dimension (`width - 2*wall`).
 - **Projects**: several models kept in the browser, in a gallery with pictures.
 - **Exchange**: STEP import and export for other CAD software (an assembly's parts named and coloured, and
-  read back as parts), STL and 3MF (one object per part) for slicers, a 3MF plate with every part laid
-  flat, and a parts list with quantities (CSV).
+  read back as parts), STL and 3MF (one object per part) for slicers, and a 3MF plate with every part
+  laid flat.
 - **Installable** (PWA) and works offline once loaded. A keyboard and a mouse work but are never needed.
 
 ## Gestures

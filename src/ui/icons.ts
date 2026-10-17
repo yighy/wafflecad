@@ -55,7 +55,6 @@ const P: Record<string, string> = {
   mate: '<rect x="3" y="14" width="18" height="6" rx="1.5" fill="currentColor" fill-opacity=".14"/><rect x="7" y="4" width="10" height="6" rx="1.5" fill="currentColor" fill-opacity=".14"/><path d="M12 10v4M9.5 12.5 12 14l2.5-1.5"/>',
   explode: '<rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" fill-opacity=".14"/><path d="M4 4l3 3M20 4l-3 3M4 20l3-3M20 20l-3-3"/><path d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/>',
   clash: '<rect x="3" y="7" width="11" height="11" rx="1.5" fill="currentColor" fill-opacity=".14"/><rect x="10" y="3" width="11" height="11" rx="1.5"/><path d="M10 7h4v4h-4z" fill="currentColor"/>',
-  list: '<rect x="3" y="3" width="18" height="18" rx="2" fill="currentColor" fill-opacity=".14"/><path d="M7 8h2M11 8h6M7 12h2M11 12h6M7 16h2M11 16h6"/>',
   part: '<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z" fill="currentColor" fill-opacity=".14"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>',
   assembly: '<path d="M8 3.5l5 2.8v5.6L8 14.7 3 11.9V6.3z" fill="currentColor" fill-opacity=".14"/><path d="M16 9.3l5 2.8v5.6l-5 2.8-5-2.8v-5.6z" fill="currentColor" fill-opacity=".14"/>',
   back: '<path d="M10 5 3 12l7 7z" fill="currentColor" fill-opacity=".14"/><path d="M3 12h11a6 6 0 0 1 6 6v1"/>',
