@@ -1665,12 +1665,19 @@ function animateNewTools(el: HTMLElement) {
 function renderPanel() {
   const el = $("#panel-content");
   el.replaceChildren();
+  // Animate when the kind of panel changes, not when the same kind shows another face or step.
   const what =
     mode.kind === "sketch"
       ? `sketch:${mode.editor.sk.id}`
       : isOperation(mode)
         ? `op:${mode.feat.id}`
-        : `${mode.kind}:${showParams}:${selectedFeature}:${selectedFace?.faceId ?? ""}`;
+        : showParams
+          ? "params"
+          : selectedFace
+            ? "face"
+            : selectedFeature
+              ? "feature"
+              : "none";
   playEnter("panel", what, el);
   const head = (title: string, sub = "", err = false, closable = false) => {
     const h = document.createElement("div");
@@ -2280,6 +2287,27 @@ window.addEventListener("popstate", () => {
 
 // ---------- Boot ----------
 
+/** The timeline scrolls sideways: finger or pen drag, mouse wheel; faded ends show there is more. */
+function setupTimelineScroll() {
+  const el = $("#chips");
+  const edges = () => {
+    el.classList.toggle("more-left", el.scrollLeft > 2);
+    el.classList.toggle("more-right", el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
+  };
+  el.addEventListener("scroll", edges, { passive: true });
+  new ResizeObserver(edges).observe(el);
+  new MutationObserver(edges).observe(el, { childList: true });
+  el.addEventListener(
+    "wheel",
+    (e) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      el.scrollLeft += e.deltaY;
+      e.preventDefault();
+    },
+    { passive: false },
+  );
+}
+
 async function boot() {
   setKeypadHost($("#panel"));
   setupPanelDrag();
@@ -2294,6 +2322,7 @@ async function boot() {
     b.onclick = redo;
   }
   createAxisGizmo($("#gizmo"), vp, 124);
+  setupTimelineScroll();
   $("#help-close").onclick = () => $("#help").classList.remove("open");
   renderAll();
   solver = await Solver.create(planegcsWasm);
