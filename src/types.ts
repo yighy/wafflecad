@@ -78,7 +78,20 @@ export interface SkBezier {
   construction?: boolean;
 }
 
-export type SkCurve = SkLine | SkCircle | SkArc | SkSpline | SkBezier;
+/**
+ * Ellipse around the point c: m is the end of its major axis (so the major radius and the tilt
+ * follow that point), rb the minor radius.
+ */
+export interface SkEllipse {
+  id: string;
+  type: "ellipse";
+  c: string;
+  m: string;
+  rb: number;
+  construction?: boolean;
+}
+
+export type SkCurve = SkLine | SkCircle | SkArc | SkSpline | SkBezier | SkEllipse;
 export type SkEntity = SkPoint | SkCurve;
 
 export type ConstraintType =
@@ -288,6 +301,8 @@ export type ProfileSegment =
 
 export type ProfileLoop =
   | { kind: "circle"; c: [number, number]; r: number }
+  /** ra along the direction at `angle` (radians), rb across. */
+  | { kind: "ellipse"; c: [number, number]; ra: number; rb: number; angle: number }
   | { kind: "path"; segments: ProfileSegment[] };
 
 /** A filled region: an outer loop minus holes. */

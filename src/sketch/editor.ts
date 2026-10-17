@@ -5,14 +5,15 @@ import type { ConstraintType, SkArc, SkConstraint, SkCurve, SkEntity, SkLine, Sk
 import { DIMENSION_TYPES } from "../types";
 import type { PointerTool, Ptr } from "../view/input";
 import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
-import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, splineSpans, uid } from "./model";
-import { arcMid, findRegions, sampleSegments } from "./profiles";
+import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleEllipse, splineSpans, uid } from "./model";
+import { arcMid, findRegions, loopPolygon, sampleSegments } from "./profiles";
 import { trimPlan, type TrimPlan } from "./trim";
+import { offsetEntities } from "./offset";
 import { cornerLines, filletCorner, groupCentre, groupPoints, mirrorEntities, projectEdge, transformGroup, type GroupTransform } from "./ops";
 import type { Drag, SolveResult, Solver } from "./solver";
 import { keypad, openKeypad } from "../ui/keypad";
 
-export type SketchToolName = "select" | "line" | "rect" | "circle" | "arc" | "spline" | "point" | "trim" | "fillet" | "project";
+export type SketchToolName = "select" | "line" | "rect" | "polygon" | "slot" | "circle" | "ellipse" | "arc" | "spline" | "point" | "trim" | "fillet" | "project";
 
 type P2 = [number, number];
 
@@ -268,7 +269,7 @@ export class SketchEditor implements PointerTool {
       if (!c.axis) t = Math.max(0, Math.min(1, t));
       return [a[0] + t * dx, a[1] + t * dy];
     }
-    if (c.type === "spline" || c.type === "bezier") return closestOnPolyline(sampleCurve(v, c), s);
+    if (c.type === "spline" || c.type === "bezier" || c.type === "ellipse") return closestOnPolyline(sampleCurve(v, c), s);
     const ctr = v.xy(c.c);
     const r = c.type === "circle" ? c.r : v.arcRadius(c);
     let ang = Math.atan2(s[1] - ctr[1], s[0] - ctr[0]);
@@ -321,6 +322,9 @@ export class SketchEditor implements PointerTool {
     if (s.kind === "curve" && this.autoConstrain) this.sk.constraints.push({ id: uid(), type: "pointOn", refs: [id, s.id] });
     return id;
   }
+
+  /** Sides of the next polygon (changed from the panel while the tool is on). */
+  polygonSides = 6;
 
   private addCurve(c: SkCurve) {
     if (this.construction) c.construction = true;
@@ -484,6 +488,21 @@ export class SketchEditor implements PointerTool {
       case "circle":
         if (!this.anchors.length) return void (this.anchors = [s]);
         return this.placeCircle(this.anchors[0], s);
+      case "polygon":
+        if (!this.anchors.length) return void (this.anchors = [s]);
+        return this.placePolygon(this.anchors[0], s);
+      case "ellipse":
+        if (this.anchors.length < 2) {
+          if (this.anchors.length && this.near(this.anchorXY(this.anchors[0]), s.at)) return;
+          return void this.anchors.push(s);
+        }
+        return this.placeEllipse(this.anchors[0], this.anchors[1], s);
+      case "slot":
+        if (this.anchors.length < 2) {
+          if (this.anchors.length && this.near(this.anchorXY(this.anchors[0]), s.at)) return;
+          return void this.anchors.push(s);
+        }
+        return this.placeSlot(this.anchors[0], this.anchors[1], s);
       case "arc":
         if (this.anchors.length < 2) {
           this.anchors.push(s);
@@ -547,6 +566,70 @@ export class SketchEditor implements PointerTool {
     const after = this.view;
     const held = !res.ok || res.conflicting.length > 0 || want.some(([id, [x, y]]) => Math.hypot(after.xy(id)[0] - x, after.xy(id)[1] - y) > 1e-6 * Math.max(1, Math.abs(x) + Math.abs(y)));
     return { ok: !held, dropped: r.dropped };
+  }
+
+  /**
+   * Offset of the selected lines, arcs and circles: the distance is typed (shown live), positive
+   * outwards; "Other side" flips it. The copy ends up selected.
+   */
+  async offsetSelection() {
+    const ids = [...this.selection];
+    const probe = offsetEntities(structuredClone(this.sk), ids, 1);
+    if (probe.error) return this.hooks.toast(probe.error);
+    const base = { entities: structuredClone(this.sk.entities), constraints: structuredClone(this.sk.constraints) };
+    const restore = () => {
+      this.sk.entities = structuredClone(base.entities);
+      this.sk.constraints = structuredClone(base.constraints);
+    };
+    let d = Math.max(0.5, Math.round(gridStep(this.vp.viewHeight) / 4));
+    let added: string[] = [];
+    const show = () => {
+      restore();
+      const r = offsetEntities(this.sk, ids, d);
+      added = r.added;
+      if (r.error) restore();
+      this.solve();
+      this.render();
+      return r.error ?? null;
+    };
+    show();
+    const kp = openKeypad({
+      title: "Offset",
+      subtitle: "Positive grows outlines outwards",
+      label: "Distance",
+      value: d,
+      unit: "mm",
+      confirmLabel: "Offset",
+      extras: [
+        {
+          label: "Other side",
+          icon: "flip",
+          run: () => {
+            d = -d;
+            kp.set(d);
+            kp.setNote(show());
+          },
+        },
+      ],
+      onInput: (v) => {
+        d = v;
+        kp.setNote(show());
+      },
+    });
+    const res = await kp.result;
+    if (res !== null) d = res.value;
+    const err = res === null || !d ? "cancel" : show();
+    if (err) {
+      restore();
+      this.solve();
+      if (err !== "cancel") this.hooks.toast(err);
+    } else {
+      this.selection.clear();
+      for (const id of added) if (this.view.get(id)?.type !== "point") this.selection.add(id);
+      this.hooks.commit("Offset");
+    }
+    this.render();
+    this.hooks.changed();
   }
 
   /** Move, Rotate or Scale the selection with the keypad, shown live; the origin of a turn or scale can be chosen. */
@@ -761,6 +844,98 @@ export class SketchEditor implements PointerTool {
     lines.forEach((l, i) => this.sk.constraints.push({ id: uid(), type: t[i], refs: [l.id] }));
     this.anchors = [];
     this.afterEdit("Rectangle");
+  }
+
+  /**
+   * Regular polygon: its corners on a construction circle, all sides equal. Free to move, turn
+   * and size (4 degrees of freedom), as in FreeCAD.
+   */
+  private placePolygon(c: Snap, corner: Snap) {
+    const ctr = this.anchorXY(c);
+    const r = Math.hypot(corner.at[0] - ctr[0], corner.at[1] - ctr[1]);
+    if (r < 1e-6) return;
+    const n = this.polygonSides;
+    const a0 = Math.atan2(corner.at[1] - ctr[1], corner.at[0] - ctr[0]);
+    const ci = this.realize(c);
+    const circle: SkCurve = { id: uid(), type: "circle", c: ci, r, construction: true };
+    this.sk.entities.push(circle);
+    const ids = Array.from({ length: n }, (_, i) =>
+      i === 0 ? this.realize(corner) : this.realize({ kind: "free", at: [ctr[0] + r * Math.cos(a0 + (2 * Math.PI * i) / n), ctr[1] + r * Math.sin(a0 + (2 * Math.PI * i) / n)] }),
+    );
+    const lines = ids.map((id, i): SkLine => ({ id: uid(), type: "line", p1: id, p2: ids[(i + 1) % n] }));
+    lines.forEach((l) => this.addCurve(l));
+    for (const id of ids) this.sk.constraints.push({ id: uid(), type: "pointOn", refs: [id, circle.id] });
+    for (let i = 1; i < n; i++) this.sk.constraints.push({ id: uid(), type: "equal", refs: [lines[0].id, lines[i].id] });
+    this.anchors = [];
+    this.afterEdit("Polygon");
+  }
+
+  /** The outline of a slot around the axis a–b, `r` wide on each side (preview and placing). */
+  private slotOutline(a: P2, b: P2, r: number) {
+    const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const u: P2 = [(b[0] - a[0]) / d, (b[1] - a[1]) / d];
+    const n: P2 = [-u[1], u[0]];
+    const at = (p: P2, k: number): P2 => [p[0] + n[0] * r * k, p[1] + n[1] * r * k];
+    const ang = Math.atan2(n[1], n[0]);
+    return { lo1: at(a, -1), lo2: at(b, -1), hi2: at(b, 1), hi1: at(a, 1), ang };
+  }
+
+  /**
+   * Slot: two half circles on the centres a and b, joined by tangent lines; the third tap sets the
+   * width. Equal radii and tangencies keep it a slot when edited (5 degrees of freedom).
+   */
+  private placeSlot(a: Snap, b: Snap, w: Snap) {
+    const A = this.anchorXY(a);
+    const B = this.anchorXY(b);
+    const d = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    if (d < 1e-6) return;
+    // Distance from the axis line to the third tap.
+    const r = Math.abs(((B[0] - A[0]) * (w.at[1] - A[1]) - (B[1] - A[1]) * (w.at[0] - A[0])) / d);
+    if (r < 1e-6) return;
+    const o = this.slotOutline(A, B, r);
+    const c1 = this.realize(a);
+    const c2 = this.realize(b);
+    const [lo1, lo2, hi2, hi1] = [o.lo1, o.lo2, o.hi2, o.hi1].map((at) => this.realize({ kind: "free", at }));
+    const bottom: SkLine = { id: uid(), type: "line", p1: lo1, p2: lo2 };
+    const top: SkLine = { id: uid(), type: "line", p1: hi2, p2: hi1 };
+    // Arcs run counter-clockwise: around b from the low side to the high side, around a back.
+    const arcB: SkCurve = { id: uid(), type: "arc", c: c2, s: lo2, e: hi2 };
+    const arcA: SkCurve = { id: uid(), type: "arc", c: c1, s: hi1, e: lo1 };
+    for (const c of [bottom, arcB, top, arcA]) this.addCurve(c);
+    this.sk.constraints.push(
+      { id: uid(), type: "tangent", refs: [bottom.id, arcB.id] },
+      { id: uid(), type: "tangent", refs: [top.id, arcB.id] },
+      { id: uid(), type: "tangent", refs: [top.id, arcA.id] },
+      { id: uid(), type: "tangent", refs: [bottom.id, arcA.id] },
+      { id: uid(), type: "equal", refs: [arcA.id, arcB.id] },
+    );
+    this.anchors = [];
+    this.afterEdit("Slot");
+  }
+
+  /** Ellipse through the centre c, the end m of one axis, and w setting the other radius. */
+  private ellipseFrom(c: P2, m: P2, w: P2) {
+    const ra = Math.hypot(m[0] - c[0], m[1] - c[1]);
+    const u: P2 = ra > 1e-12 ? [(m[0] - c[0]) / ra, (m[1] - c[1]) / ra] : [1, 0];
+    const rb = Math.abs(u[0] * (w[1] - c[1]) - u[1] * (w[0] - c[0]));
+    // The first axis drawn may be the short one: the major axis is then across it.
+    if (rb <= ra) return { c, ra, rb, angle: Math.atan2(u[1], u[0]), swapped: false };
+    return { c, ra: rb, rb: ra, angle: Math.atan2(u[0], -u[1]), swapped: true };
+  }
+
+  /**
+   * Ellipse: tap the centre, the end of one axis, then how wide. The end of the major axis is a
+   * point (drag it to turn or stretch the ellipse); the minor radius can be dimensioned.
+   */
+  private placeEllipse(c: Snap, m: Snap, w: Snap) {
+    const C = this.anchorXY(c);
+    const e = this.ellipseFrom(C, this.anchorXY(m), w.at);
+    if (e.rb < 1e-6) return;
+    const ci = this.realize(c);
+    const mi = e.swapped ? this.realize({ kind: "free", at: [C[0] + e.ra * Math.cos(e.angle), C[1] + e.ra * Math.sin(e.angle)] }) : this.realize(m);
+    this.addCurve({ id: uid(), type: "ellipse", c: ci, m: mi, rb: e.rb });
+    this.anchors = [];
+    this.afterEdit("Ellipse");
   }
 
   private placeCircle(c: Snap, edge: Snap) {
@@ -1049,6 +1224,9 @@ export class SketchEditor implements PointerTool {
       dim("↔", "Distance to line", "distance", [P[0].id, L[0].id]);
     }
     if (n === 2 && P.length === 1 && R.length === 1) con("on", "•◯", "Point on curve", "pointOn", [P[0].id, R[0].id], "O");
+    if (n === 1 && ents[0].type === "ellipse") dim("r", "Minor radius", "radius", [ents[0].id], "R");
+    if (n === 2 && P.length === 1 && ents.some((e) => e.type === "ellipse"))
+      con("on", "•◯", "Point on curve", "pointOn", [P[0].id, ents.find((e) => e.type === "ellipse")!.id], "O");
     if (n === 1 && R.length === 1) {
       dim("R", "Radius", "radius", [R[0].id], "R");
       dim("⌀", "Diameter", "diameter", [R[0].id], "D");
@@ -1091,6 +1269,8 @@ export class SketchEditor implements PointerTool {
       out.push({ id: "move", label: "✥", title: "Move", run: () => void this.transformSelection("move") });
       out.push({ id: "rotate", label: "⟲", title: "Rotate", run: () => void this.transformSelection("rotate") });
       out.push({ id: "scale", label: "⤢", title: "Scale", run: () => void this.transformSelection("scale") });
+      if (editable.some((e) => e.type === "line" || e.type === "arc" || e.type === "circle"))
+        out.push({ id: "offset", label: "⧈", title: "Offset", run: () => void this.offsetSelection() });
     }
     const all = this.sk.entities.filter((e) => !isReference(e) && !(e.type === "point" && isHiddenPoint(e.id)));
     if (all.length && all.some((e) => !this.selection.has(e.id))) out.push({ id: "selall", label: "▣", title: "Select all", run: () => this.selectAll() });
@@ -1157,7 +1337,7 @@ export class SketchEditor implements PointerTool {
       case "distanceY":
         return v.xy(b.id)[1] - v.xy(a.id)[1];
       case "radius":
-        return a.type === "circle" ? a.r : v.arcRadius(a as SkArc);
+        return a.type === "circle" ? a.r : a.type === "ellipse" ? a.rb : v.arcRadius(a as SkArc);
       case "diameter":
         return 2 * (a.type === "circle" ? a.r : v.arcRadius(a as SkArc));
       case "angle": {
@@ -1337,7 +1517,7 @@ export class SketchEditor implements PointerTool {
       }
       const flat = cachedPolyline(c.id, () => {
         if (c.type === "circle") return circlePts(v.xy(c.c), c.r);
-        if (c.type === "spline" || c.type === "bezier") return sampleCurve(v, c);
+        if (c.type === "spline" || c.type === "bezier" || c.type === "ellipse") return sampleCurve(v, c);
         const [a0, a1] = v.arcAngles(c);
         return circlePts(v.xy(c.c), v.arcRadius(c), a0, a1);
       });
@@ -1393,6 +1573,29 @@ export class SketchEditor implements PointerTool {
           poly(preview, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], col);
         }
         if (this.tool === "circle") poly(preview, circlePts(from, Math.hypot(cur.at[0] - from[0], cur.at[1] - from[1])), col);
+        if (this.tool === "polygon") {
+          const r = Math.hypot(cur.at[0] - from[0], cur.at[1] - from[1]);
+          const a0 = Math.atan2(cur.at[1] - from[1], cur.at[0] - from[0]);
+          const n = this.polygonSides;
+          poly(preview, Array.from({ length: n + 1 }, (_, i): P2 => [from[0] + r * Math.cos(a0 + (2 * Math.PI * i) / n), from[1] + r * Math.sin(a0 + (2 * Math.PI * i) / n)]), col);
+        }
+        if (this.tool === "ellipse") {
+          if (this.anchors.length === 1) seg(preview, from, cur.at, col);
+          else poly(preview, sampleEllipse(this.ellipseFrom(from, this.anchorXY(this.anchors[1]), cur.at), 72), col);
+        }
+        if (this.tool === "slot") {
+          if (this.anchors.length === 1) seg(preview, from, cur.at, col);
+          else {
+            const b = this.anchorXY(this.anchors[1]);
+            const d = Math.hypot(b[0] - from[0], b[1] - from[1]);
+            const r = d > 1e-9 ? Math.abs(((b[0] - from[0]) * (cur.at[1] - from[1]) - (b[1] - from[1]) * (cur.at[0] - from[0])) / d) : 0;
+            const o = this.slotOutline(from, b, r);
+            seg(preview, o.lo1, o.lo2, col);
+            seg(preview, o.hi2, o.hi1, col);
+            poly(preview, circlePts(b, r, o.ang - Math.PI, o.ang), col);
+            poly(preview, circlePts(from, r, o.ang, o.ang + Math.PI), col);
+          }
+        }
         if (this.tool === "spline") {
           const ps = this.anchors.map((a) => this.anchorXY(a));
           const closing = ps.length >= 3 && this.near(ps[0], cur.at);
@@ -1448,9 +1651,9 @@ export class SketchEditor implements PointerTool {
         const c = v.xy(e.c);
         return [c[0] - e.r * 0.7071, c[1] + e.r * 0.7071];
       }
-      if (e.type === "spline" || e.type === "bezier") {
+      if (e.type === "spline" || e.type === "bezier" || e.type === "ellipse") {
         const ps = sampleCurve(v, e);
-        return ps[Math.floor(ps.length / 2)];
+        return ps[Math.floor(ps.length / (e.type === "ellipse" ? 8 : 2))];
       }
       return arcMid(v, e);
     };
@@ -1545,15 +1748,5 @@ function closestOnPolyline(ps: P2[], s: P2): P2 | null {
   return best;
 }
 
-function loopPoly(l: import("../types").ProfileLoop): P2[] {
-  if (l.kind === "circle") {
-    const out: P2[] = [];
-    for (let i = 0; i < 64; i++) {
-      const t = (i / 64) * Math.PI * 2;
-      out.push([l.c[0] + l.r * Math.cos(t), l.c[1] + l.r * Math.sin(t)]);
-    }
-    return out;
-  }
-  return sampleSegments(l.segments);
-}
+const loopPoly = loopPolygon;
 

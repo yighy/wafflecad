@@ -70,6 +70,8 @@ export class Solver {
         e.y = p.y;
       } else if (p.type === "circle" && e.type === "circle") {
         e.r = p.radius;
+      } else if (p.type === "ellipse" && e.type === "ellipse") {
+        e.rb = p.radmin;
       }
     }
     return result;
@@ -108,6 +110,21 @@ function toPrimitives(sk: SketchFeature, view: SketchView): SketchPrimitive[] {
           end_angle: ea,
         });
         out.push({ id: `${e.id}#rules`, type: "arc_rules", a_id: e.id });
+        break;
+      }
+      case "ellipse": {
+        // As in FreeCAD: centre, a focus (a hidden point, here) and the minor radius; the major
+        // axis end point is held at its place on the ellipse.
+        const ax = view.ellipseAxes(e);
+        const f = Math.sqrt(Math.max(ax.ra * ax.ra - ax.rb * ax.rb, 0));
+        out.push({ id: `${e.id}#f`, type: "point", x: ax.c[0] + f * Math.cos(ax.angle), y: ax.c[1] + f * Math.sin(ax.angle), fixed: false });
+        out.push({ id: e.id, type: "ellipse", c_id: e.c, focus1_id: `${e.id}#f`, radmin: e.rb });
+        // m and a hidden opposite end hold the major diameter (single-point alignments lose
+        // their X/Y type on the way to the solver: both would act as X).
+        out.push(
+          { id: `${e.id}#n`, type: "point", x: ax.c[0] - ax.ra * Math.cos(ax.angle), y: ax.c[1] - ax.ra * Math.sin(ax.angle), fixed: false },
+          { id: `${e.id}#md`, type: "internal_alignment_ellipse_major_diameter", e_id: e.id, p1_id: e.m, p2_id: `${e.id}#n` },
+        );
         break;
       }
     }
@@ -183,6 +200,8 @@ function constraintPrims(c: SkConstraint, view: SketchView): SketchPrimitive[] {
           return [{ id, type: "point_on_circle", p_id: a, c_id: b }];
         case "arc":
           return [{ id, type: "point_on_arc", p_id: a, a_id: b }];
+        case "ellipse":
+          return [{ id, type: "point_on_ellipse", p_id: a, e_id: b }];
       }
       return [];
     case "midpoint":
@@ -208,6 +227,12 @@ function constraintPrims(c: SkConstraint, view: SketchView): SketchPrimitive[] {
     case "distanceY":
       return [{ id, type: "difference", param1: { o_id: a, prop: "y" }, param2: { o_id: b, prop: "y" }, difference: v }];
     case "radius":
+      // An ellipse's radius is its minor one (the major one is the distance from the centre to m).
+      if (A?.type === "ellipse")
+        return [
+          { id: `${id}#zero`, type: "point", x: 0, y: 0, fixed: true },
+          { id, type: "difference", param1: { o_id: `${id}#zero`, prop: "x" }, param2: { o_id: a, prop: "radmin" }, difference: v },
+        ];
       return A?.type === "arc"
         ? [{ id, type: "arc_radius", a_id: a, radius: v }]
         : [{ id, type: "circle_radius", c_id: a, radius: v }];

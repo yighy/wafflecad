@@ -6,7 +6,7 @@
 // Faces are then nested even-odd: a face inside another face becomes a hole of it,
 // a face inside a hole becomes an island again.
 import type { ProfileLoop, ProfileRegion, ProfileSegment, SkArc, SketchFeature } from "../types";
-import { SketchView, sampleBezier } from "./model";
+import { SketchView, sampleBezier, sampleEllipse } from "./model";
 
 type P2 = [number, number];
 
@@ -27,6 +27,13 @@ interface Face {
 
 const ARC_SAMPLES = 24;
 
+/** Outline of a loop as a polygon (circles and ellipses sampled). */
+export function loopPolygon(l: ProfileLoop): P2[] {
+  if (l.kind === "ellipse") return sampleEllipse(l, 64).slice(0, -1);
+  if (l.kind === "circle") return Array.from({ length: 64 }, (_, i): P2 => [l.c[0] + l.r * Math.cos((i / 64) * Math.PI * 2), l.c[1] + l.r * Math.sin((i / 64) * Math.PI * 2)]);
+  return sampleSegments(l.segments);
+}
+
 export function findRegions(sk: SketchFeature): ProfileRegion[] {
   const view = new SketchView(sk);
   const faces: Face[] = [];
@@ -41,6 +48,12 @@ export function findRegions(sk: SketchFeature): ProfileRegion[] {
     }
     faces.push({ loop: { kind: "circle", c: ctr, r: c.r }, poly, area: Math.PI * c.r * c.r });
   }
+  for (const c of view.curves()) {
+    if (c.type !== "ellipse" || c.construction) continue;
+    const e = view.ellipseAxes(c);
+    if (!(e.ra > 1e-9 && e.rb > 1e-9)) continue;
+    faces.push({ loop: { kind: "ellipse", ...e }, poly: sampleEllipse(e, 64).slice(0, -1), area: Math.PI * e.ra * e.rb });
+  }
 
   // Graph of non-construction lines and arcs.
   const out = new Map<string, HalfEdge[]>();
@@ -49,7 +62,7 @@ export function findRegions(sk: SketchFeature): ProfileRegion[] {
     out.get(h.from)!.push(h);
   };
   for (const c of view.curves()) {
-    if (c.construction || c.type === "circle") continue;
+    if (c.construction || c.type === "circle" || c.type === "ellipse") continue;
     if (c.type === "line") {
       const a = view.xy(c.p1);
       const b = view.xy(c.p2);

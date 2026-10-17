@@ -1,5 +1,5 @@
 // Pure helpers over the sketch data model (no DOM, no solver).
-import type { PlaneDef, SkArc, SkBezier, SkConstraint, SkCurve, SkEntity, SkPoint, SkSpline, SketchFeature, Vec3 } from "../types";
+import type { PlaneDef, SkArc, SkBezier, SkConstraint, SkCurve, SkEllipse, SkEntity, SkPoint, SkSpline, SketchFeature, Vec3 } from "../types";
 
 export const ORIGIN = "O";
 export const X_AXIS = "AX";
@@ -87,7 +87,15 @@ export class SketchView {
         return e.pts;
       case "bezier":
         return [e.p0, e.c1, e.c2, e.p3];
+      case "ellipse":
+        return [e.c, e.m];
     }
+  }
+  /** Centre, radii (ra along the major axis) and tilt (radians) of an ellipse. */
+  ellipseAxes(e: SkEllipse) {
+    const c = this.xy(e.c);
+    const m = this.xy(e.m);
+    return { c, ra: Math.hypot(m[0] - c[0], m[1] - c[1]), rb: e.rb, angle: Math.atan2(m[1] - c[1], m[0] - c[0]) };
   }
   bezierSpan(b: SkBezier): BezierSpan {
     return { a: this.xy(b.p0), c1: this.xy(b.c1), c2: this.xy(b.c2), b: this.xy(b.p3) };
@@ -194,8 +202,23 @@ export function sampleBezier(s: BezierSpan, n: number): P2[] {
 }
 
 /** Polyline of a spline or a Bézier (for drawing and picking). */
-export function sampleCurve(view: SketchView, c: SkSpline | SkBezier, perSpan = 16): P2[] {
+export function sampleCurve(view: SketchView, c: SkSpline | SkBezier | SkEllipse, perSpan = 16): P2[] {
+  if (c.type === "ellipse") return sampleEllipse(view.ellipseAxes(c), perSpan * 6);
   return c.type === "bezier" ? sampleBezier(view.bezierSpan(c), perSpan * 2) : sampleSpline(view, c, perSpan);
+}
+
+/** Closed polyline round an ellipse (the first point repeated at the end). */
+export function sampleEllipse(e: { c: P2; ra: number; rb: number; angle: number }, n = 96): P2[] {
+  const cos = Math.cos(e.angle);
+  const sin = Math.sin(e.angle);
+  const out: P2[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    const x = e.ra * Math.cos(t);
+    const y = e.rb * Math.sin(t);
+    out.push([e.c[0] + x * cos - y * sin, e.c[1] + x * sin + y * cos]);
+  }
+  return out;
 }
 
 /** Polyline of a whole spline (for drawing and picking). */
@@ -260,6 +283,8 @@ export function mergePoints(sk: SketchFeature, keep: string, drop: string) {
           return { ...e, p1: sub(e.p1), p2: sub(e.p2) };
         case "circle":
           return { ...e, c: sub(e.c) };
+        case "ellipse":
+          return { ...e, c: sub(e.c), m: sub(e.m) };
         case "arc":
           return { ...e, c: sub(e.c), s: sub(e.s), e: sub(e.e) };
         case "bezier":

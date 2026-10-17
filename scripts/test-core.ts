@@ -14,6 +14,7 @@ import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
 import { measure } from "../src/cad/measure";
 import { textShapes } from "../src/sketch/text";
+import { offsetEntities } from "../src/sketch/offset";
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
@@ -583,7 +584,7 @@ const ssk = newSketch("SVG", XY);
 insertShapes(ssk, sres.shapes, { scale: sres.unitScale, place: "file", fixed: true });
 const sSolve = solver.solve(ssk);
 const sRegions = findRegions(ssk);
-const area = (r: (typeof sRegions)[number]) => (r.outer.kind === "path" ? signedArea(sampleSegments(r.outer.segments)) : Math.PI * r.outer.r ** 2);
+const area = (r: (typeof sRegions)[number]) => (r.outer.kind === "path" ? signedArea(sampleSegments(r.outer.segments)) : r.outer.kind === "circle" ? Math.PI * r.outer.r ** 2 : Math.PI * r.outer.ra * r.outer.rb);
 const roundRect = 40 * 30 - (4 - Math.PI) * 25;
 check("SVG: two closed regions, the rectangle with its hole", sSolve.ok && sRegions.length === 2 && sRegions.some((r) => r.holes.length === 1 && near(area(r), roundRect, 0.5)), `regions=${sRegions.length} areas=${sRegions.map(area).join(",")}`);
 const ymax = Math.max(...ssk.entities.filter((e): e is SkPoint => e.type === "point" && !e.fixed).map((q) => q.y));
@@ -692,6 +693,104 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   const tb = buildShape(tDoc);
   const vol = tb.shape ? measureVolume(tb.shape) : 0;
   check("text extrudes", !!tb.shape && !Object.keys(tb.errors).length && vol > 20, `${vol.toFixed(1)} mm³ ${JSON.stringify(tb.errors)}`);
+}
+
+// --- Offset.
+{
+  const box = (pts: [number, number][]) => {
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)].map((n) => +n.toFixed(6));
+  };
+  const newPts = (k: SketchFeature, ids: string[]) => ids.map((id) => k.entities.find((e) => e.id === id)).filter((e): e is SkPoint => e?.type === "point").map((e) => [e.x, e.y] as [number, number]);
+  // Rectangle, drawn clockwise or counter-clockwise: positive grows it either way.
+  for (const cw of [false, true]) {
+    const o = newSketch("O", XY);
+    const r = cw ? rect(o, 0, 10, 20, 0) : rect(o, 0, 0, 20, 10);
+    const res = offsetEntities(o, r.lines, 2);
+    const pts = newPts(o, res.added);
+    check(`offset: rectangle grows by 2 (${cw ? "clockwise" : "counter-clockwise"})`, !res.error && pts.length === 4 && JSON.stringify(box(pts)) === JSON.stringify([-2, -2, 22, 12]), JSON.stringify(box(pts)));
+    check("offset: the outline and its offset make a ring", findRegions(o).length === 2 || findRegions(o).some((g) => g.holes?.length), String(findRegions(o).length));
+  }
+  const inner = newSketch("I", XY);
+  const ri = rect(inner, 0, 0, 20, 10);
+  const resIn = offsetEntities(inner, ri.lines, -2);
+  check("offset: negative shrinks", JSON.stringify(box(newPts(inner, resIn.added))) === JSON.stringify([2, 2, 18, 8]), JSON.stringify(box(newPts(inner, resIn.added))));
+  // Slot: lines and half circles; arcs stay concentric, tangent corners stay shared.
+  const so = newSketch("S", XY);
+  const P = (x: number, y: number) => {
+    const id = uid();
+    so.entities.push({ id, type: "point", x, y });
+    return id;
+  };
+  const [c1, c2, lo1, lo2, hi2, hi1] = [P(0, 0), P(20, 0), P(0, -5), P(20, -5), P(20, 5), P(0, 5)];
+  const slotIds = [uid(), uid(), uid(), uid()];
+  so.entities.push(
+    { id: slotIds[0], type: "line", p1: lo1, p2: lo2 },
+    { id: slotIds[1], type: "arc", c: c2, s: lo2, e: hi2 },
+    { id: slotIds[2], type: "line", p1: hi2, p2: hi1 },
+    { id: slotIds[3], type: "arc", c: c1, s: hi1, e: lo1 },
+  );
+  const rs = offsetEntities(so, slotIds, 1);
+  const arcs = rs.added.map((id) => so.entities.find((e) => e.id === id)).filter((e) => e?.type === "arc") as { c: string; s: string }[];
+  const sv = new SketchView(so);
+  check(
+    "offset: slot arcs concentric, radius 6, 4 corner points",
+    arcs.length === 2 && arcs.every((a) => near(Math.hypot(sv.xy(a.s)[0] - sv.xy(a.c)[0], sv.xy(a.s)[1] - sv.xy(a.c)[1]), 6)) && arcs.some((a) => a.c === c1) && newPts(so, rs.added).length === 4,
+    JSON.stringify(box(newPts(so, rs.added))),
+  );
+  const slotRegions = findRegions(so);
+  check("offset: slot ring is extrudable", slotRegions.length >= 1);
+  // Circle, and an open L.
+  const co = newSketch("C", XY);
+  const cc = uid();
+  const circ = uid();
+  co.entities.push({ id: cc, type: "point", x: 0, y: 0 }, { id: circ, type: "circle", c: cc, r: 5 });
+  const rc = offsetEntities(co, [circ], -1.5);
+  check("offset: circle shrinks around the same centre", (co.entities.find((e) => e.id === rc.added[0]) as { r: number; c: string }).r === 3.5);
+  check("offset: too far inside is refused", !!offsetEntities(co, [circ], -6).error);
+  const lo = newSketch("L", XY);
+  const lp = [uid(), uid(), uid()];
+  lo.entities.push({ id: lp[0], type: "point", x: 0, y: 10 }, { id: lp[1], type: "point", x: 0, y: 0 }, { id: lp[2], type: "point", x: 10, y: 0 });
+  const ll = [uid(), uid()];
+  lo.entities.push({ id: ll[0], type: "line", p1: lp[0], p2: lp[1] }, { id: ll[1], type: "line", p1: lp[1], p2: lp[2] });
+  const rl = offsetEntities(lo, ll, 1);
+  const lpts = newPts(lo, rl.added);
+  // Running down then right, its right side is the outside of the corner.
+  check("offset: open L keeps a sharp corner", lpts.length === 3 && lpts.some((p) => near(p[0], -1) && near(p[1], -1)), JSON.stringify(lpts));
+}
+
+// --- Ellipse: solver, minor radius dimension, extrusion (tilted), as a hole.
+{
+  const ek = newSketch("E", XY);
+  const [ec, em] = [uid(), uid()];
+  const ang = Math.PI / 6;
+  ek.entities.push({ id: ec, type: "point", x: 5, y: 3 }, { id: em, type: "point", x: 5 + 10 * Math.cos(ang), y: 3 + 10 * Math.sin(ang) });
+  const ell = uid();
+  ek.entities.push({ id: ell, type: "ellipse", c: ec, m: em, rb: 4 });
+  let er = solver.solve(ek);
+  check("ellipse: 5 degrees of freedom, unchanged by solving", er.ok && er.dof === 5 && near((ek.entities.find((e) => e.id === ell) as { rb: number }).rb, 4), `dof=${er.dof}`);
+  const rdim = { id: uid(), type: "radius" as const, refs: [ell], value: 2.5 };
+  ek.constraints.push(rdim);
+  er = solver.solve(ek);
+  const ev = new SketchView(ek);
+  check("ellipse: minor radius dimension", er.ok && er.dof === 4 && near((ek.entities.find((e) => e.id === ell) as { rb: number }).rb, 2.5), `dof=${er.dof}`);
+  const ra = Math.hypot(ev.xy(em)[0] - ev.xy(ec)[0], ev.xy(em)[1] - ev.xy(ec)[1]);
+  const eRegions = findRegions(ek);
+  check("ellipse: one region", eRegions.length === 1 && eRegions[0].outer.kind === "ellipse");
+  const eDoc: CadDocument = { format: "waffle", version: 1, features: [ek, { id: "ee", kind: "extrude", name: "EE", sketchId: ek.id, distance: 2, symmetric: false, op: "add" }] };
+  const eb = buildShape(eDoc);
+  const ev2 = eb.shape ? measureVolume(eb.shape) : 0;
+  check("ellipse extrudes (π·ra·rb·h)", near(ev2, Math.PI * ra * 2.5 * 2, 1e-3), `${ev2.toFixed(4)} ra=${ra.toFixed(3)}`);
+  const ebb = eb.shape!.boundingBox.bounds;
+  // The tilt shows in the box: wider than the minor radius both ways.
+  check("ellipse keeps its tilt", ebb[1][1] - ebb[0][1] > 2 * 2.5 + 1, JSON.stringify(ebb));
+  const hk = newSketch("H", XY);
+  rect(hk, -20, -10, 30, 20);
+  const [hc, hm] = [uid(), uid()];
+  hk.entities.push({ id: hc, type: "point", x: 5, y: 5 }, { id: hm, type: "point", x: 13, y: 5 }, { id: uid(), type: "ellipse", c: hc, m: hm, rb: 3 });
+  const hr = findRegions(hk);
+  check("ellipse inside a rectangle is a hole", hr.length === 1 && hr[0].holes.length === 1, JSON.stringify(hr.map((r) => r.holes.length)));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

@@ -50,7 +50,8 @@ function shapesOf(v: SketchView, c: SkCurve): Shape[] {
       return [{ kind: "circ", c: v.xy(c.c), r: v.arcRadius(c), a0, a1 }];
     }
     case "spline":
-    case "bezier": {
+    case "bezier":
+    case "ellipse": {
       const ps = sampleCurve(v, c, 32);
       return ps.slice(1).map((b, i): Shape => ({ kind: "seg", a: ps[i], b }));
     }
@@ -132,7 +133,7 @@ function carrierProject(s: Shape, p: P2): P2 {
 export function trimPlan(sk: SketchFeature, curveId: string, at: P2): TrimPlan | null {
   const v = new SketchView(sk);
   const C = v.get(curveId);
-  if (!C || C.type === "point" || C.type === "spline" || C.type === "bezier" || (C.type === "line" && C.axis)) return null;
+  if (!C || C.type === "point" || C.type === "spline" || C.type === "bezier" || C.type === "ellipse" || (C.type === "line" && C.axis)) return null;
   const [T] = shapesOf(v, C);
   const size = T.kind === "seg" ? dist(T.a, T.b) : T.r;
   const tol = Math.max(size, 1) * 1e-6;
@@ -179,7 +180,7 @@ export function trimPlan(sk: SketchFeature, curveId: string, at: P2): TrimPlan |
     if (other.id === C.id || (other.type === "line" && other.axis)) continue;
     for (const s of shapesOf(v, other)) {
       for (const p of carrierHits(T, s)) {
-        if (within(s, p, tol)) addCut(p, { cutter: other.type === "spline" || other.type === "bezier" ? undefined : other.id });
+        if (within(s, p, tol)) addCut(p, { cutter: other.type === "spline" || other.type === "bezier" || other.type === "ellipse" ? undefined : other.id });
       }
     }
   }

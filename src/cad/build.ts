@@ -1,6 +1,6 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
+import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, draw, drawCircle, drawEllipse, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
 import type { Axis, BuildResult, CadDocument, EdgeGroup, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { sketchLineWorld } from "../sketch/model";
@@ -10,6 +10,10 @@ const MESH_OPTS = { tolerance: 0.01, angularTolerance: 0.1 };
 
 function loopDrawing(loop: ProfileLoop): Drawing {
   if (loop.kind === "circle") return drawCircle(loop.r).translate(loop.c[0], loop.c[1]);
+  if (loop.kind === "ellipse")
+    return drawEllipse(loop.ra, loop.rb)
+      .rotate((loop.angle * 180) / Math.PI, [0, 0])
+      .translate(loop.c[0], loop.c[1]);
   const pen = draw(loop.segments[0].a);
   const n = loop.segments.length;
   loop.segments.forEach((s, i) => {

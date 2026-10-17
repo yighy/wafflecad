@@ -128,6 +128,8 @@ export function mirrorEntities(sk: SketchFeature, ids: string[], axisId: string)
           return { ...e, id: uid(), pts: e.pts.map(mp) };
         case "bezier":
           return { ...e, id: uid(), p0: mp(e.p0), c1: mp(e.c1), c2: mp(e.c2), p3: mp(e.p3) };
+        case "ellipse":
+          return { ...e, id: uid(), c: mp(e.c), m: mp(e.m) };
       }
     })();
     added.push(copy);
@@ -287,6 +289,7 @@ export function transformGroup(sk: SketchFeature, ids: string[], t: GroupTransfo
   for (const e of sk.entities) {
     if (e.type === "point" && moved(e.id)) [e.x, e.y] = f([e.x, e.y]);
     if (e.type === "circle" && moved(e.c)) e.r *= k;
+    if (e.type === "ellipse" && moved(e.c)) e.rb *= k;
   }
   // Whether a constraint's references all lie inside the moved piece.
   const inside = (id: string) => {

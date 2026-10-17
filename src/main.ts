@@ -1691,7 +1691,10 @@ const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: st
   { tool: "select", icon: "select", label: "Select", key: "Esc" },
   { tool: "line", icon: "line", label: "Line", key: "L" },
   { tool: "rect", icon: "rect", label: "Rectangle", key: "R" },
+  { tool: "polygon", icon: "polygon", label: "Polygon", key: "N" },
+  { tool: "slot", icon: "slot", label: "Slot", key: "O" },
   { tool: "circle", icon: "circle", label: "Circle", key: "C" },
+  { tool: "ellipse", icon: "ellipse", label: "Ellipse", key: "E" },
   { tool: "arc", icon: "arc", label: "Arc", key: "A" },
   { tool: "spline", icon: "spline", label: "Spline", key: "S" },
   { tool: "point", icon: "point", label: "Point", key: "P" },
@@ -1824,6 +1827,12 @@ function renderTools() {
         }, { active: ed.tool === t.tool, key: t.key }),
       );
     }
+    el.appendChild(
+      toolRow("offset", "Offset", () => {
+        if (!ed.selection.size) return toast("Select the lines, arcs or circles to offset first");
+        void ed.offsetSelection();
+      }),
+    );
     el.appendChild(section("Insert"));
     el.appendChild(toolRow("text", "Text", () => void insertText(), { key: "X" }));
     el.appendChild(toolRow("import", "Import DXF / SVG", () => void importDrawing()));
@@ -1982,6 +1991,17 @@ function renderPanel() {
     const acts = ed.actions();
     if (ed.tool === "line")
       acts.unshift({ id: "endline", label: "⏎", title: "End line", key: "Enter", run: () => ed.escape() });
+    if (ed.tool === "polygon") {
+      const n = ed.polygonSides;
+      const sides = (k: number) => () => {
+        ed.polygonSides = Math.min(24, Math.max(3, n + k));
+        renderPanel();
+      };
+      acts.unshift(
+        { id: "sides-", label: "−", title: `${Math.max(3, n - 1)} sides`, run: sides(-1) },
+        { id: "sides+", label: "+", title: `${Math.min(24, n + 1)} sides`, run: sides(1) },
+      );
+    }
     if (ed.tool === "spline" && ed.pending >= 2)
       acts.unshift({ id: "endspline", label: "⏎", title: "Finish spline", key: "Enter", run: () => ed.escape() });
     if (acts.length) {
@@ -1989,6 +2009,12 @@ function renderPanel() {
       grid.className = "p-grid";
       for (const a of acts) grid.appendChild(actionTile(a));
       el.appendChild(grid);
+      if (ed.tool === "polygon") {
+        const hint = document.createElement("p");
+        hint.className = "p-hint";
+        hint.textContent = `${ed.polygonSides} sides. Tap the centre, then a corner.`;
+        el.appendChild(hint);
+      }
     } else {
       const hint = document.createElement("p");
       hint.className = "p-hint";
@@ -2001,6 +2027,10 @@ function renderPanel() {
               ? "Tap the corner point between two lines, then type the radius."
               : ed.tool === "project"
                 ? "Tap edges of the model: each one is added to the sketch, flattened onto its plane and fixed."
+                : ed.tool === "slot"
+                  ? "Tap the two centres, then how wide."
+                  : ed.tool === "ellipse"
+                    ? "Tap the centre, the end of an axis, then how wide."
           : "Tap or drag to draw. Points snap to existing geometry.";
       el.appendChild(hint);
     }
@@ -2438,7 +2468,7 @@ function appendSketchLines(b: LineBatch, sk: SketchFeature, col: number[]) {
     if (c.construction) continue;
     if (c.type === "line") seg(v.xy(c.p1), v.xy(c.p2));
     else if (c.type === "circle") arc(v.xy(c.c), c.r, 0, 2 * Math.PI);
-    else if (c.type === "spline" || c.type === "bezier") {
+    else if (c.type === "spline" || c.type === "bezier" || c.type === "ellipse") {
       const ps = sampleCurve(v, c);
       for (let i = 0; i + 1 < ps.length; i++) seg(ps[i], ps[i + 1]);
     } else arc(v.xy(c.c), v.arcRadius(c), ...v.arcAngles(c));

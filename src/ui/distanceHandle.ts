@@ -2,7 +2,7 @@
 // (extrusions from a sketch, Press Pull from a face).
 import * as THREE from "three";
 import type { SketchFeature } from "../types";
-import { findRegions, sampleSegments, signedArea } from "../sketch/profiles";
+import { findRegions, loopPolygon, signedArea } from "../sketch/profiles";
 import { SketchView } from "../sketch/model";
 import { V, gridStep, type Viewport } from "../view/viewport";
 
@@ -106,10 +106,7 @@ function profileCentroid(sk: SketchFeature): P2 {
   let ay = 0;
   let total = 0;
   for (const r of findRegions(sk)) {
-    const poly: P2[] =
-      r.outer.kind === "circle"
-        ? [[r.outer.c[0] + r.outer.r, r.outer.c[1]], [r.outer.c[0], r.outer.c[1] + r.outer.r], [r.outer.c[0] - r.outer.r, r.outer.c[1]], [r.outer.c[0], r.outer.c[1] - r.outer.r]]
-        : sampleSegments(r.outer.segments);
+    const poly = loopPolygon(r.outer);
     const a = Math.abs(signedArea(poly));
     const c = poly.reduce((s, p) => [s[0] + p[0] / poly.length, s[1] + p[1] / poly.length], [0, 0]);
     ax += c[0] * a;
