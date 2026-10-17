@@ -1441,8 +1441,42 @@ function deleteFeature(f: Feature) {
 
 // ---------- Rendering ----------
 
+/** Sketch / Model switch at the top: shows the mode, and moves between them. */
+function renderModeSwitch() {
+  const el = $("#mode-switch");
+  el.replaceChildren();
+  const inSketch = mode.kind === "sketch" || mode.kind === "pickPlane";
+  // During an operation, Confirm or Cancel comes first.
+  const locked = isOperation(mode);
+  el.classList.toggle("locked", locked);
+  const tab = (label: string, on: boolean, run: () => void) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", String(on));
+    b.onclick = () => {
+      if (on) return;
+      if (locked) return toast("Confirm or cancel the current step first");
+      run();
+    };
+    el.appendChild(b);
+  };
+  tab("Sketch", inSketch, () => {
+    // The selected sketch, else the last one not used yet, else a new one.
+    pendingFaceTool = null;
+    const sk = pickSketchForExtrude();
+    if (sk) enterSketch(sk);
+    else startNewSketch();
+  });
+  tab("Model", !inSketch, () => {
+    if (mode.kind === "sketch") exitSketch();
+    else escape();
+  });
+}
+
 function renderAll() {
   document.body.dataset.mode = mode.kind;
+  renderModeSwitch();
   vp.forceOrtho = mode.kind === "sketch";
   document.body.classList.toggle("busy", mode.kind !== "part");
   renderTools();

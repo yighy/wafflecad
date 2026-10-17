@@ -39,6 +39,8 @@ While a stylus touches the screen, finger contacts are ignored (palm rejection).
 
 The 3D view fills the screen; the controls float above it.
 
+- **Top**: a **Sketch / Model** switch. Sketch edits the selected sketch (else the last one not used yet,
+  else starts a new one); Model finishes the sketch. The status line sits under it.
 - **Left**: the tools of the current mode, grouped by section. The panel folds down to icons only.
   Tapping an active tool again puts it down.
   A tool that needs something first (a sketch, a solid) stays in place, greyed; tapping it says what is missing.
