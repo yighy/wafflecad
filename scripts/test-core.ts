@@ -825,5 +825,43 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("STEP import: an unreadable file is reported on its step", !!bad.errors.im, JSON.stringify(bad.errors));
 }
 
+// --- Bodies: a 20 × 10 × 5 box and a 2 mm lid on it, kept apart.
+{
+  const lidSk = newSketch("L", { ...XY, origin: [0, 0, 5] });
+  rect(lidSk, 0, 0, 20, 10);
+  const two = (...more: CadDocument["features"]): CadDocument =>
+    block(lidSk, { id: "lid", kind: "extrude", name: "Lid", sketchId: lidSk.id, distance: 2, symmetric: false, op: "add", body: "new" }, ...more);
+  const vol = (d: CadDocument) => {
+    const r = buildShape(d);
+    return { r, v: r.bodies.map((b) => measureVolume(b.shape)) };
+  };
+  let t = vol(two());
+  check("bodies: box and lid stay two solids", t.r.bodies.length === 2 && near(t.v[0], 1000) && near(t.v[1], 400), JSON.stringify(t.v));
+  const joined = vol(block(lidSk, { id: "lid", kind: "extrude", name: "Lid", sketchId: lidSk.id, distance: 2, symmetric: false, op: "add" }));
+  check("bodies: without New body it joins (as before)", joined.r.bodies.length === 1 && near(joined.v[0], 1400), JSON.stringify(joined.v));
+  // A hole goes through both.
+  const hole = { id: "h", kind: "hole", name: "H", points: [[10, 5, 7]], normal: [0, 0, 1], size: "M3", fit: "clearance", head: "none", depth: 0 } as never;
+  t = vol(two(hole));
+  const hv = Math.PI * 1.7 * 1.7;
+  check("bodies: a hole drills both", near(t.v[0], 1000 - hv * 5, 1e-3) && near(t.v[1], 400 - hv * 2, 1e-3), JSON.stringify(t.v));
+  // Press Pull on the lid's top only grows the lid.
+  t = vol(two({ id: "pp", kind: "pushpull", name: "PP", face: { center: [10, 5, 7], normal: [0, 0, 1] }, distance: 3 }));
+  check("bodies: Press Pull works on the face's body", near(t.v[0], 1000) && near(t.v[1], 1000), JSON.stringify(t.v));
+  // A fillet on a top edge of the lid.
+  t = vol(two({ id: "fl", kind: "fillet", name: "F", mode: "fillet", edges: [{ mid: [10, 0, 7] }], radius: 1 }));
+  check("bodies: a fillet rounds the lid, not the box", near(t.v[0], 1000) && t.v[1] < 400 && t.v[1] > 395, JSON.stringify(t.v));
+  // A cut limited to the lid.
+  const cutSk = newSketch("C", { ...XY, origin: [0, 0, 7] });
+  rect(cutSk, 5, 2, 15, 8);
+  t = vol(two(cutSk, { id: "cl", kind: "extrude", name: "Cut", sketchId: cutSk.id, distance: -4, symmetric: false, op: "cut", body: "lid" }));
+  check("bodies: a cut can keep to one body", near(t.v[0], 1000) && near(t.v[1], 400 - 120), JSON.stringify(t.v));
+  t = vol(two(cutSk, { id: "cl", kind: "extrude", name: "Cut", sketchId: cutSk.id, distance: -4, symmetric: false, op: "cut" }));
+  check("bodies: a cut with no body chosen cuts them all", near(t.v[0], 1000 - 120) && near(t.v[1], 400 - 120), JSON.stringify(t.v));
+  const res = buildResult({ ...two(), bodyNames: { lid: "Lid" } });
+  check("bodies: names and faces reported", res.bodies?.map((b) => b.name).join() === "Body 1,Lid" && res.bodies.every((b) => b.faceIds.length === 6), JSON.stringify(res.bodies?.map((b) => [b.name, b.faceIds.length])));
+  const text = new TextDecoder().decode(new Uint8Array(await exportFile({ ...two(), bodyNames: { lid: "Lid" } }, "3mf", "Box")!.arrayBuffer()));
+  check("bodies: 3MF has one object per body", (text.match(/<object /g) ?? []).length === 2 && text.includes('name="Lid"') && (text.match(/<item /g) ?? []).length === 2);
+}
+
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

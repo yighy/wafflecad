@@ -150,7 +150,15 @@ export interface ExtrudeFeature {
   distanceExpr?: string;
   symmetric: boolean;
   op: ExtrudeOp;
+  body?: BodyTarget;
 }
+
+/**
+ * Which body a step works on. Joining: "new" starts a body of its own (named after the step),
+ * an id joins that body, none joins the first body. Cutting or intersecting: an id works on that
+ * body only, none on every body.
+ */
+export type BodyTarget = "new" | string;
 
 /**
  * A flat face of the solid, found again on rebuild by a point on it and its normal
@@ -236,6 +244,7 @@ export interface RevolveFeature {
   angleExpr?: string;
   symmetric: boolean;
   op: ExtrudeOp;
+  body?: BodyTarget;
 }
 
 export type Axis = "X" | "Y" | "Z";
@@ -274,6 +283,7 @@ export interface ImportFeature {
   /** Key of the file's text in the document's `files`. */
   fileId: string;
   op: "add" | "cut";
+  body?: BodyTarget;
 }
 
 export type Feature =
@@ -303,6 +313,15 @@ export interface CadDocument {
   parameters?: Parameter[];
   /** Imported files (STEP text) by id. Kept out of undo snapshots: they only ever get added. */
   files?: Record<string, string>;
+  /** Names given to bodies (by body id); unnamed bodies are "Body 1", "Body 2"… in order. */
+  bodyNames?: Record<string, string>;
+}
+
+/** A separate solid of the part, and the faces that belong to it (B-rep hash codes). */
+export interface BodyInfo {
+  id: string;
+  name: string;
+  faceIds: number[];
 }
 
 // ---------- Profiles: closed regions found in a sketch ----------
@@ -372,6 +391,8 @@ export interface BuildResult {
   /** One entry per B-rep edge: its segments in `edges` (in points) and its mid-length point. */
   edgeGroups: EdgeGroup[];
   planarFaces: PlanarFace[];
+  /** The part's separate solids, in the order they were started. */
+  bodies?: BodyInfo[];
   /** Feature id → error message, for features that could not be built. */
   errors: Record<string, string>;
   /** Steps that built, but only after finding a moved face or edge again. */

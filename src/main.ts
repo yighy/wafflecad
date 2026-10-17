@@ -8,7 +8,7 @@ import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
 import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
 import { SketchView, newSketch, sampleCurve, sketchLineWorld, uid } from "./sketch/model";
-import { openKeypad, setKeypadHost, type KeypadHandle } from "./ui/keypad";
+import { openKeypad, setKeypadHost, type KeypadHandle, type Segmented } from "./ui/keypad";
 import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
 import { scrollHints } from "./ui/scrollHints";
@@ -573,7 +573,7 @@ async function extrude(existing?: ExtrudeFeature) {
   const sk = doc.features.find((x): x is SketchFeature => x.id === feat.sketchId && x.kind === "sketch");
   if (!sk) return toast("This extrusion's sketch is missing");
   const onFace = sk.plane.label === "Face";
-  const before = { distance: feat.distance, distanceExpr: feat.distanceExpr, symmetric: feat.symmetric, op: feat.op };
+  const before = { distance: feat.distance, distanceExpr: feat.distanceExpr, symmetric: feat.symmetric, op: feat.op, body: feat.body };
   selectedFeature = feat.id;
   selectedFace = null;
   vp.highlightFace(null);
@@ -622,6 +622,7 @@ async function extrude(existing?: ExtrudeFeature) {
           rebuild();
         },
       },
+      ...bodySegment(feat),
     ],
     extras: [{ label: "Flip direction", icon: "flip", run: () => setDistance(-feat.distance) }],
     onInput: (v) => {
@@ -652,6 +653,59 @@ async function extrude(existing?: ExtrudeFeature) {
   feat.distance = Math.sign(feat.distance || 1) * value;
   feat.distanceExpr = res?.expr;
   commit();
+}
+
+// ---------- Bodies ----------
+
+/** The part's bodies started before this step (the ones it can join or cut). */
+function bodiesBefore(featId: string) {
+  const at = doc.features.findIndex((x) => x.id === featId);
+  return (lastBuild?.bodies ?? []).filter((b) => {
+    const i = doc.features.findIndex((x) => x.id === b.id);
+    return i >= 0 && (at < 0 || i < at);
+  });
+}
+
+/**
+ * The keypad row choosing a step's body: joining makes a New body or joins one; cutting works on
+ * All bodies or one. None while there is no body yet (the first solid is the first body).
+ */
+function bodySegment(feat: { id: string; op: string; body?: string }): Segmented[] {
+  const earlier = bodiesBefore(feat.id);
+  if (!earlier.length) return [];
+  const each = earlier.map((b) => ({ value: b.id, label: b.name }));
+  return [
+    {
+      get options() {
+        return feat.op === "add" ? [{ value: "new", label: "New body" }, ...each] : [{ value: "all", label: "All bodies" }, ...each];
+      },
+      get: () => (feat.op === "add" ? (feat.body ?? earlier[0].id) : feat.body && feat.body !== "new" ? feat.body : "all"),
+      set: (v) => {
+        feat.body = v === "all" ? undefined : v;
+        rebuild();
+      },
+    },
+  ];
+}
+
+/** "· New body", "· into Lid", "· all bodies"… for a step's summary, when the part has several bodies. */
+function bodyNote(f: { id: string; op: string; body?: string }) {
+  const bodies = lastBuild?.bodies ?? [];
+  if (bodies.length < 2) return "";
+  if (f.op === "add") return f.body === "new" ? ` · ${bodyName(f.id)}` : f.body ? ` · into ${bodyName(f.body)}` : "";
+  return f.body && f.body !== "new" ? ` · ${bodyName(f.body)} only` : "";
+}
+
+function bodyName(id: string) {
+  return lastBuild?.bodies?.find((b) => b.id === id)?.name ?? doc.bodyNames?.[id] ?? "Body";
+}
+
+function renameBody(id: string) {
+  const name = prompt("Body name", bodyName(id))?.trim();
+  if (!name) return;
+  doc.bodyNames = { ...doc.bodyNames, [id]: name };
+  commit();
+  renderAll();
 }
 
 // ---------- Press Pull and Shell (on faces of the solid) ----------
@@ -1163,6 +1217,7 @@ async function revolveTool(existing?: RevolveFeature) {
           rebuild();
         },
       },
+      ...bodySegment(f),
     ],
     extras: [
       {
@@ -2089,6 +2144,18 @@ function renderPanel() {
       ]);
     else items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
+    if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "import") && lastBuild?.bodies?.some((b) => b.id === f.id) && (lastBuild.bodies.length > 1))
+      items.push(["rename", "Rename body", () => renameBody(f.id)]);
+    if (f.kind === "import" && f.op === "add" && bodiesBefore(f.id).length)
+      items.push([
+        "extrude",
+        f.body === "new" ? "Join it to the part" : "Make it a new body",
+        () => {
+          f.body = f.body === "new" ? undefined : "new";
+          commit();
+          renderAll();
+        },
+      ]);
     items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
     actions(items);
   }
@@ -2121,18 +2188,18 @@ function featureDetail(f: Feature) {
   if (f.kind === "revolve") {
     const sk = doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
     const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
-    return `${op} · ${fmtNum(Math.abs(f.angle))}°${f.symmetric ? " symmetric" : ""} around ${sk ? axisName(sk, f.axisLine) : "?"}`;
+    return `${op} · ${fmtNum(Math.abs(f.angle))}°${f.symmetric ? " symmetric" : ""} around ${sk ? axisName(sk, f.axisLine) : "?"}${bodyNote(f)}`;
   }
   if (f.kind === "hole") {
     const n = f.sketchId ? "at sketch points" : `× ${f.points?.length ?? 0}`;
     const head = f.head === "counterbore" ? " · counterbore" : f.head === "countersink" ? " · countersink" : "";
     return `${f.size} ${n}${head} · ${f.depth > 0 ? `${fmtNum(f.depth)} mm deep` : "through"}`;
   }
-  if (f.kind === "import") return `${f.op === "add" ? "Join" : "Cut"} · STEP file`;
+  if (f.kind === "import") return `${f.op === "add" ? "Join" : "Cut"} · STEP file${bodyNote(f)}`;
   if (f.kind === "fillet")
     return `${f.mode === "fillet" ? "Radius" : "Chamfer"} ${fmtNum(f.radius)} mm · ${f.edges.length} edge${f.edges.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
-  return `${op} · ${fmtNum(Math.abs(f.distance))} mm${f.symmetric ? " · symmetric" : ""}`;
+  return `${op} · ${fmtNum(Math.abs(f.distance))} mm${f.symmetric ? " · symmetric" : ""}${bodyNote(f)}`;
 }
 
 function featureIcon(f: Feature) {
@@ -2884,7 +2951,8 @@ async function importStep() {
   const fileId = uid();
   doc.files = { ...doc.files, [fileId]: text };
   const name = file.name.replace(/\.(step|stp)$/i, "") || "Import";
-  doc.features.push({ id: uid(), kind: "import", name, fileId, op: "add" });
+  // An imported part usually stays apart: it starts a body of its own.
+  doc.features.push({ id: uid(), kind: "import", name, fileId, op: "add", body: "new" });
   fitNext = true;
   commit();
   renderAll();

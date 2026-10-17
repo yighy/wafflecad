@@ -194,7 +194,7 @@ function holeTool(p: Vec3, dir: Vec3, f: HoleFeature, length: number): Shape3D {
   return (sketch as unknown as { revolve: (axis: Vec3, o: { origin: Vec3 }) => Shape3D }).revolve(dir, { origin: p });
 }
 
-function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeature>): { shape: Shape3D; tool: Shape3D } {
+function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeature>): Tool {
   let pts: Vec3[];
   if (f.sketchId) {
     const sk = sketches.get(f.sketchId);
@@ -209,14 +209,14 @@ function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeatu
   const through = Math.hypot(bb.width, bb.height, bb.depth) * 2 + 10;
   if (f.depth < 0) throw new Error("The depth must be positive");
   const length = f.depth > 0 ? f.depth : through;
-  const tool = fuseAll(pts.map((p) => holeTool(p, dir, f, length)));
-  return { shape: shape.cut(tool), tool };
+  return { solid: fuseAll(pts.map((p) => holeTool(p, dir, f, length))), op: "cut" };
 }
 
-/** The material a feature adds or removes, kept so patterns can repeat it. */
+/** The material a feature adds or removes, kept so patterns can repeat it (into the same body; none: every body). */
 interface Tool {
   solid: Shape3D;
   op: "add" | "cut";
+  body?: string;
 }
 
 const AXIS: Record<Axis, Vec3> = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] };
@@ -253,32 +253,71 @@ function fuseAll(parts: Shape3D[]): Shape3D {
   return parts.slice(1).reduce((acc, p) => acc.fuse(p), parts[0]);
 }
 
-function pattern(shape: Shape3D, f: PatternFeature, tools: Map<string, Tool>, names: Map<string, string>): { shape: Shape3D; tool: Tool | null } {
+/**
+ * Repeats the chosen steps' material into the bodies it went into. A mirror with no step chosen
+ * mirrors every body onto itself.
+ */
+function pattern(bodies: Bodies, f: PatternFeature, tools: Map<string, Tool>, names: Map<string, string>): Tool | null {
   if (f.type === "mirror" && !f.featureIds.length) {
-    // Whole solid: mirror it and join both halves.
-    return { shape: shape.fuse(shape.clone().mirror(MIRROR_PLANE[f.axis], scale(AXIS[f.axis], f.offset))), tool: null };
+    for (const [id, b] of bodies) bodies.set(id, b.fuse(b.clone().mirror(MIRROR_PLANE[f.axis], scale(AXIS[f.axis], f.offset))).simplify());
+    return null;
   }
   if (!f.featureIds.length) throw new Error("Choose the features to repeat");
-  let result = shape;
   const made: Record<"add" | "cut", Shape3D[]> = { add: [], cut: [] };
+  const into = new Set<string | undefined>();
   for (const id of f.featureIds) {
     const t = tools.get(id);
     if (!t) throw new Error(`${names.get(id) ?? "This feature"} cannot be repeated (only extrusions, Press Pull, holes and patterns)`);
     made[t.op].push(t.solid);
+    into.add(t.body);
     for (const c of patternCopies(t.solid, f)) {
-      result = t.op === "add" ? result.fuse(c) : result.cut(c);
+      applyTool(bodies, { ...t, solid: c });
       made[t.op].push(c);
     }
   }
-  // A pattern made of a single kind of operation can itself be repeated (e.g. mirrored).
+  // A pattern made of a single kind of operation, into one body, can itself be repeated.
   const ops = (["add", "cut"] as const).filter((o) => made[o].length);
-  const tool = ops.length === 1 ? { op: ops[0], solid: fuseAll(made[ops[0]]) } : null;
-  return { shape: result, tool };
+  return ops.length === 1 && into.size === 1 ? { op: ops[0], solid: fuseAll(made[ops[0]]), body: [...into][0] } : null;
+}
+
+/** The part's separate solids by id (the id of the step that started each), in that order. */
+type Bodies = Map<string, Shape3D>;
+
+/** Adds or removes a tool's material in its body (or, cutting with no body, in all of them). */
+function applyTool(bodies: Bodies, t: Tool) {
+  const ids = t.body ? [t.body] : [...bodies.keys()];
+  for (const id of ids) {
+    const b = bodies.get(id);
+    if (!b) throw new Error("Its body is not there any more");
+    setBody(bodies, id, t.op === "add" ? b.fuse(t.solid) : b.cut(t.solid));
+  }
+}
+
+/** Stores a body's new shape; a body cut or intersected down to nothing goes. */
+function setBody(bodies: Bodies, id: string, shape: Shape3D) {
+  const s = shape.simplify();
+  if (s.faces.length) bodies.set(id, s);
+  else bodies.delete(id);
+}
+
+/** All the bodies as one shape (for display, measures, references and exports). */
+function combined(bodies: Bodies): Shape3D | null {
+  const all = [...bodies.values()];
+  // makeCompound deletes what it is given: copies (sharing the same faces) go in.
+  return all.length === 0 ? null : all.length === 1 ? all[0] : (makeCompound(all.map((b) => b.clone())) as Shape3D);
+}
+
+/** The body a face or edge of the combined shape belongs to. */
+function bodyWith(bodies: Bodies, hashCode: number, kind: "faces" | "edges"): string {
+  for (const [id, b] of bodies) if (b[kind].some((x) => x.hashCode === hashCode)) return id;
+  throw new Error("The face is no longer there (an earlier feature changed it)");
 }
 
 /** Replays the features; a failing feature is skipped and reported. */
 /** Everything the replay carries from one step to the next. */
 interface ReplayState {
+  bodies: Bodies;
+  /** The bodies as one shape (kept, so an unchanged model is the same object and its mesh is reused). */
   shape: Shape3D | null;
   errors: Record<string, string>;
   warnings: Record<string, string>;
@@ -308,6 +347,7 @@ function hash(text: string): string {
 }
 
 const snapshot = (st: ReplayState): ReplayState => ({
+  bodies: new Map(st.bodies),
   shape: st.shape,
   errors: { ...st.errors },
   warnings: { ...st.warnings },
@@ -356,88 +396,91 @@ export function buildShape(doc: CadDocument) {
   const cached = start > 0 ? stepCache.get(keys[start - 1])! : null;
   const st: ReplayState = cached
     ? snapshot(cached)
-    : { shape: null, errors: {}, warnings: {}, sketches: new Map(), tools: new Map() };
-  const { errors, warnings, sketches, tools } = st;
+    : { bodies: new Map(), shape: null, errors: {}, warnings: {}, sketches: new Map(), tools: new Map() };
+  const { bodies, errors, warnings, sketches, tools } = st;
   let shape = st.shape;
-  const step = (f: CadDocument["features"][number]) => {
-    noteMoved = () => (warnings[f.id] = "Its face or edge moved: the closest one was used. Check it, or edit the step to pick again.");
-    if (f.kind === "pattern") {
-      try {
-        if (!shape) throw new Error("There is no solid yet");
-        const r = pattern(shape, f, tools, names);
-        shape = r.shape.simplify();
-        if (r.tool) tools.set(f.id, r.tool);
-      } catch (e) {
-        errors[f.id] = e instanceof Error ? e.message : String(e);
+  const fail = (f: { id: string }, e: unknown) => (errors[f.id] = e instanceof Error ? e.message : String(e));
+  /** Material made by a step from a sketch or a file: a new body, joined to one, or cut from them. */
+  const solidStep = (f: { id: string; op: "add" | "cut" | "intersect"; body?: string }, solid: Shape3D) => {
+    if (f.op === "add") {
+      if (f.body === "new" || !bodies.size) {
+        bodies.set(f.id, solid);
+        tools.set(f.id, { solid, op: "add", body: f.id });
+        return;
       }
+      const id = f.body ?? [...bodies.keys()][0];
+      const b = bodies.get(id);
+      if (!b) throw new Error("The body it joins is not there");
+      setBody(bodies, id, b.fuse(solid));
+      tools.set(f.id, { solid, op: "add", body: id });
       return;
     }
+    if (!bodies.size) throw new Error("Nothing to " + f.op);
+    const target = f.body && f.body !== "new" ? f.body : undefined;
+    if (target && !bodies.has(target)) throw new Error("The body it works on is not there");
+    if (f.op === "cut") {
+      tools.set(f.id, { solid, op: "cut", body: target });
+      applyTool(bodies, { solid, op: "cut", body: target });
+    } else for (const id of target ? [target] : [...bodies.keys()]) setBody(bodies, id, bodies.get(id)!.intersect(solid));
+  };
+  const step = (f: CadDocument["features"][number]) => {
+    noteMoved = () => (warnings[f.id] = "Its face or edge moved: the closest one was used. Check it, or edit the step to pick again.");
     if (f.kind === "sketch") {
       sketches.set(f.id, f);
       return;
     }
-    if (f.kind === "import") {
-      try {
+    try {
+      if (f.kind === "pattern") {
+        if (!shape) throw new Error("There is no solid yet");
+        const t = pattern(bodies, f, tools, names);
+        if (t) tools.set(f.id, t);
+      } else if (f.kind === "import") {
         const text = doc.files?.[f.fileId];
         if (!text) throw new Error("The imported file is missing");
-        const solid = readStep(text);
-        tools.set(f.id, { solid, op: f.op });
-        if (f.op === "add") shape = shape ? shape.fuse(solid) : solid;
-        else if (shape) shape = shape.cut(solid);
-        else throw new Error("Nothing to cut");
-        shape = shape.simplify();
-      } catch (e) {
-        errors[f.id] = e instanceof Error ? e.message : String(e);
-      }
-      return;
-    }
-    if (f.kind === "hole") {
-      try {
+        solidStep(f, readStep(text));
+      } else if (f.kind === "hole") {
+        // Holes go through every body in their way (a lid and its box, drilled together).
         if (!shape) throw new Error("There is no solid yet");
-        const r = holes(shape, f, sketches);
-        shape = r.shape.simplify();
-        tools.set(f.id, { op: "cut", solid: r.tool });
-      } catch (e) {
-        errors[f.id] = e instanceof Error ? e.message : String(e);
-      }
-      return;
-    }
-    if (f.kind === "pushpull" || f.kind === "shell" || f.kind === "fillet") {
-      try {
+        const t = holes(shape, f, sketches);
+        tools.set(f.id, t);
+        applyTool(bodies, t);
+      } else if (f.kind === "pushpull") {
         if (!shape) throw new Error("There is no solid yet");
-        let next: Shape3D;
-        if (f.kind === "pushpull") {
-          const t = pushPullTool(shape, f);
-          next = t.op === "add" ? shape.fuse(t.solid) : shape.cut(t.solid);
-          tools.set(f.id, t);
-        } else next = f.kind === "shell" ? shell(shape, f) : fillet(shape, f);
-        // Simplifying after a fillet would merge its faces with flat neighbours: skip it there.
-        shape = f.kind === "fillet" ? next : next.simplify();
-      } catch (e) {
-        errors[f.id] = e instanceof Error ? e.message : String(e);
+        const face = findFace(shape, f.face);
+        const id = bodyWith(bodies, face.hashCode, "faces");
+        const t = { ...pushPullTool(shape, f), body: id };
+        applyTool(bodies, t);
+        tools.set(f.id, t);
+      } else if (f.kind === "shell") {
+        if (!shape) throw new Error("There is no solid yet");
+        if (!f.faces.length) throw new Error("Choose at least one face to open");
+        const id = bodyWith(bodies, findFace(shape, f.faces[0]).hashCode, "faces");
+        setBody(bodies, id, shell(bodies.get(id)!, f));
+      } else if (f.kind === "fillet") {
+        if (!shape) throw new Error("There is no solid yet");
+        if (!f.edges.length) throw new Error("Choose at least one edge");
+        // The body holding the first edge (all of a fillet's edges are on one body).
+        const p = edgeAnchor(shape, f.edges[0].mid);
+        const id = [...bodies.keys()].find((k) => new EdgeFinder().withinDistance(EDGE_MATCH_TOL, p).find(bodies.get(k)!).length);
+        if (!id) throw new Error("An edge is no longer there (an earlier feature changed it)");
+        // Simplifying after a fillet would merge its faces with flat neighbours: kept as is.
+        const next = fillet(bodies.get(id)!, f);
+        bodies.set(id, next);
+      } else {
+        const sk = sketches.get(f.sketchId);
+        if (!sk) throw new Error("Sketch not found");
+        solidStep(f, f.kind === "revolve" ? revolveSolid(sk, f) : extrudeSolid(sk, f));
       }
-      return;
-    }
-    try {
-      const sk = sketches.get(f.sketchId);
-      if (!sk) throw new Error("Sketch not found");
-      const solid = f.kind === "revolve" ? revolveSolid(sk, f) : extrudeSolid(sk, f);
-      if (f.op !== "intersect") tools.set(f.id, { solid, op: f.op });
-      if (f.op === "add" || !shape) {
-        if (f.op !== "add") throw new Error("Nothing to " + f.op);
-        shape = shape ? shape.fuse(solid) : solid;
-      } else if (f.op === "cut") shape = shape.cut(solid);
-      else shape = shape.intersect(solid);
-      shape = shape.simplify();
     } catch (e) {
-      errors[f.id] = e instanceof Error ? e.message : String(e);
+      fail(f, e);
     }
+    shape = combined(bodies);
   };
   doc.features.forEach((f, i) => {
     if (i < start) return;
     step(f);
     stepCache.delete(keys[i]);
-    stepCache.set(keys[i], snapshot({ shape, errors, warnings, sketches, tools }));
+    stepCache.set(keys[i], snapshot({ bodies, shape, errors, warnings, sketches, tools }));
     if (stepCache.size > STEP_CACHE_MAX) stepCache.delete(stepCache.keys().next().value!);
   });
   // Keep the steps just used at the young end of the cache.
@@ -450,7 +493,7 @@ export function buildShape(doc: CadDocument) {
   }
   noteMoved = null;
   for (const id of Object.keys(errors)) delete warnings[id];
-  return { shape, errors, warnings };
+  return { shape, bodies: [...bodies].map(([id, s]) => ({ id, shape: s })), errors, warnings };
 }
 
 /** Display data of a shape: meshes at each quality, and its flat faces once asked for. */
@@ -458,6 +501,8 @@ interface Meshed {
   fine?: Pick<BuildResult, "mesh" | "edges" | "edgeGroups">;
   draft?: Pick<BuildResult, "mesh" | "edges" | "edgeGroups">;
   planar?: PlanarFace[];
+  /** Face hash codes of each body (empty with a single body). */
+  bodyFaces?: number[][];
 }
 
 /**
@@ -508,20 +553,29 @@ function meshShape(shape: Shape3D, draft: boolean): Pick<BuildResult, "mesh" | "
  * shape; the build sent once it settles has them). `planar: false` never computes them (previews).
  * The arrays returned are copies, free to be transferred.
  */
+/** Names of the bodies: the ones given, else "Body 1", "Body 2"… in order. */
+function bodyNames(doc: CadDocument, ids: string[]) {
+  return ids.map((id, i) => doc.bodyNames?.[id] ?? `Body ${i + 1}`);
+}
+
 export function buildResult(doc: CadDocument, opts: { draft?: boolean; planar?: boolean } = {}): BuildResult {
-  const { shape, errors, warnings } = buildShape(doc);
+  const { shape, bodies, errors, warnings } = buildShape(doc);
   if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings };
   const m = meshed(shape);
   // A fine mesh already made is used even for a draft.
   const view = m.fine ?? (opts.draft ? (m.draft ??= meshShape(shape, true)) : (m.fine = meshShape(shape, false)));
   if (!opts.draft && opts.planar !== false) m.planar ??= planarFaces(shape);
+  // Which faces belong to which body (to colour them apart), when there are several.
+  m.bodyFaces ??= bodies.length > 1 ? bodies.map((b) => b.shape.faces.map((f) => f.hashCode)) : [];
+  const names = bodyNames(doc, bodies.map((b) => b.id));
+  const bodyInfo = bodies.map((b, i) => ({ id: b.id, name: names[i], faceIds: m.bodyFaces![i] ?? [] }));
   const mesh = view.mesh && {
     vertices: view.mesh.vertices.slice(),
     normals: view.mesh.normals.slice(),
     triangles: view.mesh.triangles.slice(),
     faceGroups: view.mesh.faceGroups,
   };
-  return { mesh, edges: view.edges.slice(), edgeGroups: view.edgeGroups, planarFaces: m.planar ?? [], warnings, errors };
+  return { mesh, edges: view.edges.slice(), edgeGroups: view.edgeGroups, planarFaces: m.planar ?? [], bodies: bodyInfo, warnings, errors };
 }
 
 /** Planes of the flat faces, so a sketch can be started on them. */
@@ -598,11 +652,16 @@ function interiorPoint(face: Face, center: Vec3): Vec3 {
 }
 
 export function exportFile(doc: CadDocument, format: ExportFormat, name = "model"): Blob | null {
-  const { shape } = buildShape(doc);
+  const { shape, bodies } = buildShape(doc);
   if (!shape) return null;
   if (format === "3mf") {
-    const m = shape.mesh(MESH_OPTS);
-    return new Blob([make3mf(m.vertices, m.triangles, name)], { type: "model/3mf" });
+    // One object per body, so the slicer can place and set each one apart.
+    const names = bodies.length > 1 ? bodyNames(doc, bodies.map((b) => b.id)) : [name];
+    const objects = bodies.map((b, i) => {
+      const m = b.shape.mesh(MESH_OPTS);
+      return { name: names[i], vertices: m.vertices, triangles: m.triangles };
+    });
+    return new Blob([make3mf(objects, name)], { type: "model/3mf" });
   }
   return format === "stl" ? shape.blobSTL({ ...MESH_OPTS, binary: true }) : shape.blobSTEP();
 }

@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import type { BuildResult, PreviewResult, EdgeGroup, MeshData, PlaneDef, Vec3 } from "../types";
+import type { BodyInfo, BuildResult, PreviewResult, EdgeGroup, MeshData, PlaneDef, Vec3 } from "../types";
 
 export const V = (v: Vec3) => new THREE.Vector3(v[0], v[1], v[2]);
 
@@ -422,8 +422,10 @@ export class Viewport {
     g.setAttribute("position", new THREE.BufferAttribute(r.mesh.vertices, 3));
     g.setAttribute("normal", new THREE.BufferAttribute(r.mesh.normals, 3));
     g.setIndex(new THREE.BufferAttribute(r.mesh.triangles, 1));
+    const tinted = (r.bodies?.length ?? 0) > 1 && tintBodies(g, r.mesh, r.bodies!);
     const mat = new THREE.MeshStandardMaterial({
       color: this.modelColor,
+      vertexColors: tinted,
       metalness: 0.05,
       roughness: 0.6,
       polygonOffset: true,
@@ -930,4 +932,34 @@ function makeDotTexture() {
 export function cssVar(name: string, fallback: string) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback;
+}
+
+/**
+ * Tints for the bodies of a part, as factors on the model colour (the first body keeps it): warm,
+ * green, violet, teal… so separate solids read apart in every theme.
+ */
+const BODY_TINTS: [number, number, number][] = [
+  [1, 1, 1],
+  [1.32, 0.98, 0.72],
+  [0.86, 1.18, 0.82],
+  [1.12, 0.86, 1.16],
+  [0.78, 1.12, 1.08],
+  [1.22, 1.1, 0.7],
+];
+
+/** Gives each vertex its body's tint. Returns false when no face could be matched. */
+function tintBodies(g: THREE.BufferGeometry, mesh: MeshData, bodies: BodyInfo[]): boolean {
+  const bodyOf = new Map<number, number>();
+  bodies.forEach((b, i) => b.faceIds.forEach((id) => bodyOf.set(id, i)));
+  const colors = new Float32Array(mesh.vertices.length).fill(1);
+  let any = false;
+  for (const fg of mesh.faceGroups) {
+    const i = bodyOf.get(fg.faceId);
+    if (i === undefined) continue;
+    any = true;
+    const t = BODY_TINTS[i % BODY_TINTS.length];
+    for (let k = fg.start; k < fg.start + fg.count; k++) colors.set(t, mesh.triangles[k] * 3);
+  }
+  if (any) g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  return any;
 }

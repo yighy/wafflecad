@@ -69,16 +69,20 @@ export function zipStored(files: { name: string; data: Uint8Array }[]): Uint8Arr
 const xml = (s: string) => s.replace(/[<>&"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const num = (v: number) => String(Math.round(v * 1e5) / 1e5);
 
-/**
- * The 3MF of a triangle mesh (millimetres). Vertices shared by several faces are merged, so the
- * mesh is closed for the slicer; triangles left flat by the merge are dropped.
- */
-export function make3mf(vertices: ArrayLike<number>, triangles: ArrayLike<number>, name: string): Uint8Array<ArrayBuffer> {
+/** One object of a 3MF file: a named triangle mesh (millimetres). */
+export interface MeshObject {
+  name: string;
+  vertices: ArrayLike<number>;
+  triangles: ArrayLike<number>;
+}
+
+/** The `<object>` of a mesh. Shared vertices are merged, so it is closed for the slicer. */
+function objectXml(o: MeshObject, id: number) {
   const index = new Map<string, number>();
   const verts: string[] = [];
   const remap: number[] = [];
-  for (let i = 0; i < vertices.length / 3; i++) {
-    const [x, y, z] = [num(vertices[i * 3]), num(vertices[i * 3 + 1]), num(vertices[i * 3 + 2])];
+  for (let i = 0; i < o.vertices.length / 3; i++) {
+    const [x, y, z] = [num(o.vertices[i * 3]), num(o.vertices[i * 3 + 1]), num(o.vertices[i * 3 + 2])];
     const key = `${x} ${y} ${z}`;
     let k = index.get(key);
     if (k === undefined) {
@@ -89,17 +93,22 @@ export function make3mf(vertices: ArrayLike<number>, triangles: ArrayLike<number
     remap.push(k);
   }
   const tris: string[] = [];
-  for (let i = 0; i + 2 < triangles.length; i += 3) {
-    const [a, b, c] = [remap[triangles[i]], remap[triangles[i + 1]], remap[triangles[i + 2]]];
+  for (let i = 0; i + 2 < o.triangles.length; i += 3) {
+    const [a, b, c] = [remap[o.triangles[i]], remap[o.triangles[i + 1]], remap[o.triangles[i + 2]]];
+    // Triangles left flat by the merge are dropped.
     if (a !== b && b !== c && a !== c) tris.push(`<triangle v1="${a}" v2="${b}" v3="${c}"/>`);
   }
+  return `<object id="${id}" name="${xml(o.name)}" type="model"><mesh><vertices>${verts.join("")}</vertices><triangles>${tris.join("")}</triangles></mesh></object>`;
+}
+
+/** The 3MF of one or more meshes: one object each, all on the build plate where they are. */
+export function make3mf(objects: MeshObject[], title: string): Uint8Array<ArrayBuffer> {
   const model =
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
-    `<metadata name="Application">WaffleCAD</metadata><metadata name="Title">${xml(name)}</metadata>` +
-    `<resources><object id="1" name="${xml(name)}" type="model"><mesh><vertices>${verts.join("")}</vertices>` +
-    `<triangles>${tris.join("")}</triangles></mesh></object></resources>` +
-    `<build><item objectid="1"/></build></model>`;
+    `<metadata name="Application">WaffleCAD</metadata><metadata name="Title">${xml(title)}</metadata>` +
+    `<resources>${objects.map((o, i) => objectXml(o, i + 1)).join("")}</resources>` +
+    `<build>${objects.map((_, i) => `<item objectid="${i + 1}"/>`).join("")}</build></model>`;
   const types =
     `<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
     `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
