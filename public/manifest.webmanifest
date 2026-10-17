@@ -1,6 +1,6 @@
 {
-  "name": "Waffle CAD",
-  "short_name": "Waffle",
+  "name": "WaffleCAD",
+  "short_name": "WaffleCAD",
   "description": "Touch-first parametric 3D CAD for tablets",
   "start_url": "./",
   "scope": "./",

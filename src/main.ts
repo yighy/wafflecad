@@ -36,7 +36,7 @@ try {
   // Private mode: nothing saved anyway.
 }
 
-/** Documents saved by the first versions say "touch-cad"; read them as Waffle documents. */
+/** Documents saved by the first versions say "touch-cad"; read them as WaffleCAD documents. */
 function asDocument(d: unknown): CadDocument | null {
   const x = d as { format?: string; features?: unknown } | null;
   if (!x || (x.format !== "waffle" && x.format !== "touch-cad") || !Array.isArray(x.features)) return null;
@@ -2239,7 +2239,7 @@ function openFile() {
     if (!f) return;
     try {
       const d = asDocument(JSON.parse(await f.text()));
-      if (!d) throw new Error("not a Waffle file");
+      if (!d) throw new Error("not a WaffleCAD file");
       if (mode.kind === "sketch") exitSketch();
       doc = d;
       selectedFeature = null;
