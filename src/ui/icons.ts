@@ -32,7 +32,7 @@ const P: Record<string, string> = {
   intersect: '<path d="M12 6.8a6 6 0 0 1 0 10.4a6 6 0 0 1 0-10.4z" fill="currentColor" fill-opacity=".14"/><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/>',
   fit: '<path d="M4 8.5V5a1 1 0 0 1 1-1h3.5M15.5 4H19a1 1 0 0 1 1 1v3.5M20 15.5V19a1 1 0 0 1-1 1h-3.5M8.5 20H5a1 1 0 0 1-1-1v-3.5"/><rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" fill-opacity=".14"/>',
   perspective: '<path d="M9 7h6l7 13H2z" fill="currentColor" fill-opacity=".14"/><path d="M11 7 9 20M13 7l2 13M5.2 14h13.6"/>',
-  display: '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" fill-opacity=".35"/><path d="M4 12a8 3 0 0 0 16 0"/>',
+  display: '<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M12 12 20 7.5v9L12 21z" fill="currentColor" fill-opacity=".35"/><path d="M4 7.5 12 12v9"/>',
   grid: '<rect x="4" y="4" width="16" height="16" rx="1.5" fill="currentColor" fill-opacity=".14"/><path d="M4 9.3h16M4 14.7h16M9.3 4v16M14.7 4v16"/>',
   lookAt: '<path d="M6.5 5h11A1.5 1.5 0 0 1 19 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 17.5v-11A1.5 1.5 0 0 1 6.5 5zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5z" fill-rule="evenodd" fill="currentColor" fill-opacity=".14"/>',
   home: '<path d="M4 10.5 12 4l8 6.5V20H4z" fill="currentColor" fill-opacity=".14"/><path d="M10 20v-5h4v5"/>',
