@@ -1233,6 +1233,156 @@ body.busy #status-pill .dot {
   min-height: 50px;
 }
 
+/* ---------- Project gallery ---------- */
+
+#projects {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10, 12, 16, 0.45);
+  z-index: 55;
+  animation: fade 0.15s ease-out;
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+.projects-card {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 100%);
+  max-height: 100%;
+  background: var(--card);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  animation: rise 0.18s ease-out;
+  overflow: hidden;
+}
+.projects-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 14px 10px 20px;
+}
+.projects-card h2 {
+  margin: 0 auto 0 0;
+  font-size: 20px;
+}
+.projects-card header button {
+  gap: 6px;
+}
+.projects-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+}
+.projects-grid {
+  display: grid;
+  align-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 14px;
+  padding: 6px 20px 20px;
+  overflow-y: auto;
+}
+.project-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: var(--card2);
+  overflow: hidden;
+}
+.project-card.current {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.project-thumb {
+  aspect-ratio: 32 / 22;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--bg3d, var(--card2));
+  color: var(--muted);
+  overflow: hidden;
+}
+.project-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px 8px 12px;
+}
+.project-info {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.project-name {
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-date {
+  font-size: 12px;
+  color: var(--muted);
+}
+.project-rename {
+  width: 100%;
+  font: inherit;
+  font-weight: 650;
+  padding: 4px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+}
+.project-more {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  min-width: 44px;
+}
+/* Rename / Duplicate / Delete unfold under the card. */
+.project-actions {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease;
+}
+.project-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 8px;
+  overflow: hidden;
+}
+.project-card.acting .project-actions {
+  grid-template-rows: 1fr;
+}
+.project-card.acting .project-actions > div {
+  padding-bottom: 8px;
+}
+.project-actions button {
+  flex: 1 1 auto;
+  gap: 6px;
+  min-height: 40px;
+  font-size: 14px;
+  background: var(--card);
+  border: none;
+}
+.project-actions button.danger {
+  color: var(--danger);
+}
+
 /* ---------- Phones and narrow windows ---------- */
 
 @media (max-width: 760px) {

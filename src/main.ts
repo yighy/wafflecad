@@ -18,8 +18,10 @@ import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
 import { parseDxf } from "./sketch/dxf";
 import { parseSvg } from "./sketch/svg";
 import { bounds, insertShapes, type ImportOptions } from "./sketch/importShapes";
+import { deleteProject, freeName, getProject, listProjects, newProjectId, putProject, type ProjectMeta } from "./projects";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D, type EdgeDim } from "./cad/holePlace";
 
+/** Where versions before projects kept their one document (moved into a project at start). */
 const STORAGE_KEY = "waffle.document";
 const PREFS_KEY = "waffle.prefs";
 
@@ -63,8 +65,10 @@ interface Prefs {
   panelPos: { x: number; y: number } | null;
   perspective: boolean;
   display: DisplayMode;
+  /** The project open last. */
+  project: string | null;
 }
-const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges" };
+const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges", project: null };
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
 } catch {
@@ -101,7 +105,10 @@ type Mode =
 /** Modes where a feature is being edited with the keypad open. */
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
 
-let doc: CadDocument = loadDoc();
+const emptyDoc = (): CadDocument => ({ format: "waffle", version: 1, features: [] });
+let doc: CadDocument = emptyDoc();
+/** The open project; null until the saved ones are read (or when this browser cannot store them). */
+let project: ProjectMeta | null = null;
 let mode: Mode = { kind: "part" };
 let selectedFeature: string | null = null;
 let selectedFace: { faceId: number; plane: PlaneDef | null; center: Vec3 | null; hit: Vec3 | null } | null = null;
@@ -174,6 +181,7 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     renderTimeline();
     renderPanel();
     renderPartOverlays();
+    if (thumbStale) scheduleThumb();
   } else if (m.type === "file") {
     pendingFiles.get(m.reqId)?.(m.blob, m.error);
     pendingFiles.delete(m.reqId);
@@ -246,31 +254,128 @@ function exportFile(format: "step" | "stl") {
   const reqId = ++reqCounter;
   pendingFiles.set(reqId, (blob, err) => {
     if (!blob) return toast(err ? "Export failed: " + err : "Nothing to export");
-    download(blob, `model.${format}`);
+    download(blob, `${fileName()}.${format}`);
   });
   worker.postMessage({ type: "export", reqId, doc, format } satisfies WorkerRequest);
 }
 
 // ---------- Document, history, persistence ----------
 
-function loadDoc(): CadDocument {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const d = asDocument(JSON.parse(raw));
-      if (d) return d;
-    }
-  } catch {
-    // Private mode or corrupt data: start empty.
-  }
-  return { format: "waffle", version: 1, features: [] };
+let saveTimer = 0;
+let thumbTimer = 0;
+/** The model changed since its picture was taken. */
+let thumbStale = false;
+
+/** Saves the open project shortly after a change (changes in a row are written once). */
+function save() {
+  if (!project) return;
+  thumbStale = true;
+  clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(flushSave, 400);
 }
 
-function save() {
+async function flushSave() {
+  clearTimeout(saveTimer);
+  if (!saveTimer || !project) return;
+  saveTimer = 0;
+  project.updated = Date.now();
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+    await putProject({ ...project }, doc);
   } catch {
-    // Storage full or blocked: the document still lives in memory.
+    toast("Could not save in this browser");
+  }
+}
+
+/** Takes the project's picture from the view, when the model shows as a part (not a sketch). */
+function captureThumb() {
+  clearTimeout(thumbTimer);
+  thumbTimer = 0;
+  if (!project || !thumbStale || mode.kind !== "part" || !lastBuild) return;
+  const thumb = lastBuild.mesh ? vp.thumbnail(320, 220) : undefined;
+  if (thumb === null) return; // no view to take it from (app in the background): later
+  thumbStale = false;
+  project.thumb = thumb;
+  putProject({ ...project }).catch(() => {});
+}
+function scheduleThumb() {
+  clearTimeout(thumbTimer);
+  thumbTimer = window.setTimeout(captureThumb, 1500);
+}
+
+function resetHistory() {
+  undoStack.length = 0;
+  undoStack.push(JSON.stringify(doc));
+  undoPos = 0;
+}
+
+/** Leaves sketches and operations, keeping what they did, before another project opens. */
+function leaveModes() {
+  for (let i = 0; i < 20 && escape(); i++);
+  pendingFaceTool = null;
+}
+
+async function openProject(id: string) {
+  await flushSave();
+  captureThumb();
+  const p = await getProject(id).catch(() => null);
+  if (!p) return toast("This project could not be opened");
+  leaveModes();
+  project = p.meta;
+  doc = asDocument(p.doc) ?? emptyDoc();
+  prefs.project = id;
+  savePrefs();
+  selectedFeature = null;
+  selectedFace = null;
+  lastBuild = null; // the first build of the project frames it
+  thumbStale = !p.meta.thumb && p.doc.features.length > 0;
+  resetHistory();
+  vp.setModel(null);
+  rebuild(true);
+  renderAll();
+}
+
+/** Saves `d` as a new project and opens it. */
+async function createProject(name: string, d: CadDocument = emptyDoc()) {
+  const now = Date.now();
+  const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now };
+  try {
+    await putProject(meta, d);
+  } catch {
+    return toast("Could not save in this browser");
+  }
+  await openProject(meta.id);
+}
+
+async function newProject() {
+  const names = (await listProjects().catch(() => [])).map((p) => p.name);
+  await createProject(freeName("Model", names));
+  closeProjects();
+}
+
+/**
+ * Opens the project used last. The first time, the one document that earlier versions kept
+ * becomes a project; with nothing saved yet, an empty project is made.
+ */
+async function openInitialProject() {
+  try {
+    let legacy: CadDocument | null = null;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      legacy = raw ? asDocument(JSON.parse(raw)) : null;
+    } catch {
+      // Unreadable: nothing to move.
+    }
+    if (legacy?.features.length) {
+      const now = Date.now();
+      await putProject({ id: newProjectId(), name: "Model 1", created: now, updated: now }, legacy);
+    }
+    localStorage.removeItem(STORAGE_KEY);
+    const list = await listProjects();
+    const id = list.find((p) => p.id === prefs.project)?.id ?? list[0]?.id;
+    if (id) await openProject(id);
+    else await createProject("Model 1");
+  } catch {
+    toast("This browser cannot keep projects: the model is not saved");
   }
 }
 
@@ -387,6 +492,10 @@ function exitSketch() {
 }
 
 function escape(): boolean {
+  if (document.getElementById("projects")) {
+    closeProjects();
+    return true;
+  }
   if (isOperation(mode)) {
     mode.keypad.close();
     return true;
@@ -2456,6 +2565,7 @@ async function importDrawing() {
   renderAll();
 }
 
+/** A file opened from the device becomes a new project, named after the file. */
 function openFile() {
   const input = document.createElement("input");
   input.type = "file";
@@ -2466,11 +2576,8 @@ function openFile() {
     try {
       const d = asDocument(JSON.parse(await f.text()));
       if (!d) throw new Error("not a WaffleCAD file");
-      if (mode.kind === "sketch") exitSketch();
-      doc = d;
-      selectedFeature = null;
-      commit();
-      vp.fit();
+      await createProject(f.name.replace(/(\.waffle)?\.(json|waffle|tcad)$/i, "") || "Model", d);
+      closeProjects();
     } catch (e) {
       toast("Cannot open this file: " + (e instanceof Error ? e.message : e));
     }
@@ -2478,12 +2585,130 @@ function openFile() {
   input.click();
 }
 
-function newDocument() {
-  if (doc.features.length && !confirm("Start a new document? (Undo can bring the current one back.)")) return;
-  if (mode.kind === "sketch") exitSketch();
-  doc = { format: "waffle", version: 1, features: [] };
-  selectedFeature = null;
-  commit();
+/** The project's name, made safe for a file name. */
+const fileName = () => (project?.name ?? "model").replace(/[\\/:*?"<>|]+/g, "-").trim() || "model";
+
+// ---------- Project gallery ----------
+
+function closeProjects() {
+  document.getElementById("projects")?.remove();
+}
+
+function ago(t: number) {
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return new Date(t).toLocaleDateString();
+}
+
+async function showProjects() {
+  await flushSave();
+  captureThumb();
+  let list: ProjectMeta[];
+  try {
+    list = await listProjects();
+  } catch {
+    return toast("This browser cannot keep projects");
+  }
+  let el = document.getElementById("projects");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "projects";
+    el.addEventListener("pointerdown", (e) => {
+      if (e.target === el) closeProjects();
+    });
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `<div class="projects-card">
+    <header><h2>Projects</h2><button class="projects-open">${icon("folder", 20)}<span>Open file</span></button><button class="primary projects-new">${icon("plus", 20)}<span>New project</span></button><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
+    <div class="projects-grid"></div></div>`;
+  el.querySelector<HTMLElement>(".projects-new")!.onclick = () => void newProject();
+  el.querySelector<HTMLElement>(".projects-open")!.onclick = openFile;
+  el.querySelector<HTMLElement>(".projects-close")!.onclick = closeProjects;
+  const grid = el.querySelector(".projects-grid")!;
+  for (const p of list) grid.appendChild(projectCard(p, list));
+}
+
+function projectCard(p: ProjectMeta, list: ProjectMeta[]) {
+  const current = p.id === project?.id;
+  const card = document.createElement("div");
+  card.className = "project-card" + (current ? " current" : "");
+  card.innerHTML = `<button class="project-thumb"></button>
+    <div class="project-row"><div class="project-info"><div class="project-name"></div><div class="project-date"></div></div>
+    <button class="project-more" aria-label="More">${icon("more", 22)}</button></div>
+    <div class="project-actions"><div>
+      <button data-act="rename">${icon("rename", 20)}<span>Rename</span></button>
+      <button data-act="copy">${icon("copy", 20)}<span>Duplicate</span></button>
+      <button data-act="delete" class="danger">${icon("trash", 20)}<span>Delete</span></button>
+    </div></div>`;
+  const thumb = card.querySelector<HTMLElement>(".project-thumb")!;
+  if (p.thumb) {
+    const img = document.createElement("img");
+    img.src = p.thumb;
+    img.alt = "";
+    thumb.appendChild(img);
+  } else thumb.innerHTML = icon("extrude", 40);
+  const name = card.querySelector<HTMLElement>(".project-name")!;
+  name.textContent = p.name;
+  card.querySelector(".project-date")!.textContent = current ? "Open now" : ago(p.updated);
+  const open = async () => {
+    if (p.id !== project?.id) await openProject(p.id);
+    closeProjects();
+  };
+  thumb.onclick = open;
+  card.querySelector<HTMLElement>(".project-info")!.onclick = open;
+  card.querySelector<HTMLElement>(".project-more")!.onclick = () => card.classList.toggle("acting");
+  card.querySelector<HTMLElement>('[data-act="rename"]')!.onclick = () => {
+    card.classList.remove("acting");
+    const input = document.createElement("input");
+    input.className = "project-rename";
+    input.value = p.name;
+    name.replaceWith(input);
+    input.focus();
+    input.select();
+    let finished = false;
+    const finish = async (keep: boolean) => {
+      if (finished) return;
+      finished = true;
+      const v = input.value.trim();
+      if (keep && v && v !== p.name) {
+        p.name = v;
+        if (project && p.id === project.id) project.name = v;
+        await putProject({ ...(project && p.id === project.id ? project : p) }).catch(() => toast("Could not rename"));
+      }
+      name.textContent = p.name;
+      input.replaceWith(name);
+    };
+    input.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") void finish(true);
+      if (e.key === "Escape") void finish(false);
+    };
+    input.onblur = () => void finish(true);
+  };
+  card.querySelector<HTMLElement>('[data-act="copy"]')!.onclick = async () => {
+    await flushSave();
+    const src = await getProject(p.id).catch(() => null);
+    if (!src) return toast("Could not duplicate");
+    const now = Date.now();
+    const base = p.name.replace(/ \d+$/, "");
+    const copy: ProjectMeta = { ...src.meta, id: newProjectId(), name: freeName(base, list.map((x) => x.name)), created: now, updated: now };
+    await putProject(copy, src.doc).catch(() => toast("Could not duplicate"));
+    void showProjects();
+  };
+  card.querySelector<HTMLElement>('[data-act="delete"]')!.onclick = async () => {
+    if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return;
+    await deleteProject(p.id).catch(() => toast("Could not delete"));
+    if (p.id === project?.id) {
+      project = null; // nothing left to save there
+      const rest = await listProjects().catch(() => []);
+      if (rest.length) await openProject(rest[0].id);
+      else await createProject("Model 1");
+    }
+    void showProjects();
+  };
+  return card;
 }
 
 function setTheme(theme: Prefs["theme"]) {
@@ -2498,9 +2723,10 @@ function setTheme(theme: Prefs["theme"]) {
 function setupMenu() {
   const menu = $("#menu-panel");
   const items: [string, () => void][] = [
-    ["New document", newDocument],
-    ["Open…", openFile],
-    ["Save (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), "model.waffle.json")],
+    ["Projects", () => void showProjects()],
+    ["New project", () => void newProject()],
+    ["Open file…", openFile],
+    ["Save file (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`)],
     ["Export STEP", () => exportFile("step")],
     ["Export STL", () => exportFile("stl")],
     ["Light / dark theme", () => setTheme(prefs.theme === "light" ? "dark" : "light")],
@@ -2704,6 +2930,13 @@ async function boot() {
   setupScrollAreas();
   $("#help-close").onclick = () => $("#help").classList.remove("open");
   renderAll();
+  await openInitialProject();
+  // A tablet can close the app any time it is in the background: write what is pending then.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "hidden") return;
+    captureThumb();
+    void flushSave();
+  });
   solver = await Solver.create(planegcsWasm);
   new InputRouter(vp, $("#view"), {
     is2D: () => mode.kind === "sketch",

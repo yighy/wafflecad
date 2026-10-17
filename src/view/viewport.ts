@@ -323,6 +323,43 @@ export class Viewport {
     this.render();
   }
 
+  /**
+   * A picture of the model as it is seen now, for the project gallery: the part of the view
+   * around the model (with a margin), at the w × h shape.
+   */
+  thumbnail(w: number, h: number): string | null {
+    this.render();
+    const src = this.renderer.domElement;
+    if (!src.width || !src.height || !this.width) return null;
+    const k = src.width / this.width; // canvas pixels per CSS pixel
+    // Screen box of the model's bounding box corners; the whole view without a model.
+    let [x0, y0, x1, y1] = [0, 0, this.width, this.height];
+    const box = this.shownMesh && new THREE.Box3().setFromObject(this.shownMesh);
+    if (box && !box.isEmpty()) {
+      [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < 8; i++) {
+        const p = new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z);
+        const [x, y] = this.toScreen(p);
+        [x0, y0, x1, y1] = [Math.min(x0, x), Math.min(y0, y), Math.max(x1, x), Math.max(y1, y)];
+      }
+    }
+    // Margin, then widen the short side to the picture's shape.
+    let cw = (x1 - x0) * 1.2 + 16;
+    let ch = (y1 - y0) * 1.2 + 16;
+    if (cw / ch > w / h) ch = (cw * h) / w;
+    else cw = (ch * w) / h;
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const g = c.getContext("2d")!;
+    g.fillStyle = `#${(this.scene.background as THREE.Color).getHexString()}`;
+    g.fillRect(0, 0, w, h);
+    g.drawImage(src, (cx - cw / 2) * k, (cy - ch / 2) * k, cw * k, ch * k, 0, 0, w, h);
+    return c.toDataURL("image/webp", 0.8);
+  }
+
   private render() {
     this.updateCamera();
     this.updateGrid();
