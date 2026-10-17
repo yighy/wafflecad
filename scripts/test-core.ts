@@ -118,7 +118,7 @@ check("slot → 1 region", regions.length === 1, String(regions.length));
 
 // --- Build.
 const doc: CadDocument = {
-  format: "touch-cad",
+  format: "waffle",
   version: 1,
   features: [sk, { id: "e1", kind: "extrude", name: "E1", sketchId: sk.id, distance: 5, symmetric: false, op: "add" }],
 };
@@ -134,7 +134,7 @@ check("slot cut ok", Object.keys(built.errors).length === 0, JSON.stringify(buil
 const sk4 = newSketch("S4", XZ);
 rect(sk4, 0, 0, 4, 7);
 const d4: CadDocument = {
-  format: "touch-cad",
+  format: "waffle",
   version: 1,
   features: [sk4, { id: "e4", kind: "extrude", name: "E4", sketchId: sk4.id, distance: 2, symmetric: false, op: "add" }],
 };
@@ -165,7 +165,7 @@ check("STL export", !!stl && stl.size > 84, String(stl?.size));
 const blockSk = newSketch("B", XY);
 rect(blockSk, 0, 0, 20, 10);
 const block = (...more: CadDocument["features"]): CadDocument => ({
-  format: "touch-cad",
+  format: "waffle",
   version: 1,
   features: [blockSk, { id: "eb", kind: "extrude", name: "EB", sketchId: blockSk.id, distance: 5, symmetric: false, op: "add" }, ...more],
 });
@@ -256,7 +256,7 @@ const rvSk = newSketch("RV", XZ);
 const rvRect = rect(rvSk, 5, 0, 10, 20);
 const rv = (p: object) =>
   buildShape({
-    format: "touch-cad",
+    format: "waffle",
     version: 1,
     features: [rvSk, { id: "rv", kind: "revolve", name: "RV", sketchId: rvSk.id, axisLine: "AY", angle: 360, symmetric: false, op: "add", ...p } as never],
   });
@@ -299,7 +299,7 @@ pSk.constraints.push(
 );
 solver.solve(pSk);
 const pDoc: CadDocument = {
-  format: "touch-cad",
+  format: "waffle",
   version: 1,
   parameters: [
     { id: "q1", name: "width", expr: "50" },
@@ -325,7 +325,7 @@ const blob = splineSketch([[0, 0], [20, -2], [24, 12], [4, 14]], true);
 let spRegions = findRegions(blob.s);
 check("closed spline → 1 region", spRegions.length === 1 && spRegions[0].outer.kind === "path", String(spRegions.length));
 const spArea = spRegions[0].outer.kind === "path" ? signedArea(sampleSegments(spRegions[0].outer.segments)) : 0;
-const spDoc: CadDocument = { format: "touch-cad", version: 1, features: [blob.s, { id: "se", kind: "extrude", name: "SE", sketchId: blob.s.id, distance: 5, symmetric: false, op: "add" }] };
+const spDoc: CadDocument = { format: "waffle", version: 1, features: [blob.s, { id: "se", kind: "extrude", name: "SE", sketchId: blob.s.id, distance: 5, symmetric: false, op: "add" }] };
 const spBuilt = buildShape(spDoc);
 check("spline extrusion matches the drawn area", !spBuilt.errors.se && near(measureVolume(spBuilt.shape!), spArea * 5, spArea * 5 * 0.005), `${JSON.stringify(spBuilt.errors)} vol=${spBuilt.shape && measureVolume(spBuilt.shape)} area=${spArea}`);
 const spStep = await exportFile(spDoc, "step");
@@ -423,7 +423,7 @@ filletCorner(fixedCorner, "q1", 8);
 const fcr = solver.solve(fixedCorner);
 check("fillet of a fully constrained corner stays fully constrained", fcr.ok && fcr.dof === 0 && !fcr.redundant.length, `dof=${fcr.dof} ${JSON.stringify(fcr.redundant)}`);
 check("fillet too large refused", filletCorner(fsk, fr.pts[0], 50) !== null);
-const fDoc: CadDocument = { format: "touch-cad", version: 1, features: [fsk, { id: "fe", kind: "extrude", name: "FE", sketchId: fsk.id, distance: 2, symmetric: false, op: "add" }] };
+const fDoc: CadDocument = { format: "waffle", version: 1, features: [fsk, { id: "fe", kind: "extrude", name: "FE", sketchId: fsk.id, distance: 2, symmetric: false, op: "add" }] };
 const fBuilt = buildShape(fDoc);
 check("filleted sketch extrudes", !fBuilt.errors.fe && near(measureVolume(fBuilt.shape!), 2 * (200 - (9 - (Math.PI * 9) / 4)), 0.05), `${JSON.stringify(fBuilt.errors)}`);
 
@@ -454,7 +454,7 @@ check("spline tangent to a line leaves along it", near(after0.c1[1], 0) && after
 check("solver ignores the spline tangency", solver.solve(tsk).ok);
 
 // --- Use edges: project the edges of a block's top face onto a sketch on it.
-const blockDoc: CadDocument = { format: "touch-cad", version: 1, features: [sk, { id: "e1", kind: "extrude", name: "E1", sketchId: sk.id, distance: 5, symmetric: false, op: "add" }] };
+const blockDoc: CadDocument = { format: "waffle", version: 1, features: [sk, { id: "e1", kind: "extrude", name: "E1", sketchId: sk.id, distance: 5, symmetric: false, op: "add" }] };
 const blockRes = buildResult(blockDoc);
 const useFace = blockRes.planarFaces.find((f) => near(f.plane.normal[2], 1))!;
 const usk = newSketch("U", useFace.plane);
@@ -547,7 +547,7 @@ const dsolve = solver.solve(dsk);
 const dRegions = findRegions(dsk);
 const dArea = dRegions.length === 1 && dRegions[0].outer.kind === "path" ? signedArea(sampleSegments(dRegions[0].outer.segments)) : 0;
 check("DXF: outline closes, hole found, fully fixed", dsolve.ok && dsolve.dof === 0 && dRegions.length === 1 && dRegions[0].holes.length === 1 && near(dArea, 200 + Math.PI * 25, 0.3), `dof=${dsolve.dof} regions=${dRegions.length} area=${dArea}`);
-const dDoc: CadDocument = { format: "touch-cad", version: 1, features: [dsk, { id: "de", kind: "extrude", name: "DE", sketchId: dsk.id, distance: 2, symmetric: false, op: "add" }] };
+const dDoc: CadDocument = { format: "waffle", version: 1, features: [dsk, { id: "de", kind: "extrude", name: "DE", sketchId: dsk.id, distance: 2, symmetric: false, op: "add" }] };
 const dBuilt = buildShape(dDoc);
 check("DXF: extrudes with exact arcs", !dBuilt.errors.de && near(measureVolume(dBuilt.shape!), 2 * (200 + Math.PI * 25 - Math.PI * 4), 1e-3), `vol=${dBuilt.shape && measureVolume(dBuilt.shape)}`);
 const inch = parseDxf(dxf(1, [], [["0", "LINE", "8", "0", "10", "0", "20", "0", "11", "1", "21", "0"]]));
@@ -584,7 +584,7 @@ const roundRect = 40 * 30 - (4 - Math.PI) * 25;
 check("SVG: two closed regions, the rectangle with its hole", sSolve.ok && sRegions.length === 2 && sRegions.some((r) => r.holes.length === 1 && near(area(r), roundRect, 0.5)), `regions=${sRegions.length} areas=${sRegions.map(area).join(",")}`);
 const ymax = Math.max(...ssk.entities.filter((e): e is SkPoint => e.type === "point" && !e.fixed).map((q) => q.y));
 check("SVG: Y flipped up (the top of the page is the top of the sketch)", near(ymax, -5, 1e-6) || ymax <= 0, String(ymax));
-const sDoc: CadDocument = { format: "touch-cad", version: 1, features: [ssk, { id: "se2", kind: "extrude", name: "SE", sketchId: ssk.id, distance: 1, symmetric: false, op: "add" }] };
+const sDoc: CadDocument = { format: "waffle", version: 1, features: [ssk, { id: "se2", kind: "extrude", name: "SE", sketchId: ssk.id, distance: 1, symmetric: false, op: "add" }] };
 const sBuilt = buildShape(sDoc);
 check("SVG: extrudes (Béziers exact in the kernel)", !sBuilt.errors.se2 && measureVolume(sBuilt.shape!) > roundRect - Math.PI * 16, JSON.stringify(sBuilt.errors));
 const sStep = exportFile(sDoc, "step");

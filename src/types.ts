@@ -272,7 +272,8 @@ export interface Parameter {
 }
 
 export interface CadDocument {
-  format: "touch-cad";
+  /** "touch-cad" (the app's first name) is still read, and saved again as "waffle". */
+  format: "waffle";
   version: 1;
   features: Feature[];
   parameters?: Parameter[];

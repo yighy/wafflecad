@@ -1,7 +1,7 @@
 {
-  "name": "Touch CAD",
-  "short_name": "Touch CAD",
-  "description": "Touch-first parametric 3D CAD",
+  "name": "Waffle CAD",
+  "short_name": "Waffle",
+  "description": "Touch-first parametric 3D CAD for tablets",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

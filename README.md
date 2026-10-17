@@ -1,4 +1,4 @@
-# Touch CAD
+# Waffle
 
 A parametric 3D CAD that runs in the browser and is designed first for **fingers and styluses**
 (Android phones and tablets). A keyboard and a mouse work too, but are never required.

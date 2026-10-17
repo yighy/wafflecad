@@ -1,6 +1,6 @@
 // Offline support. Hashed build assets never change: cache first.
 // The page itself: network first, so a new version is picked up when online.
-const CACHE = "touch-cad-v1";
+const CACHE = "waffle-v1";
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => {

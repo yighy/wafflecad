@@ -19,8 +19,29 @@ import { parseSvg } from "./sketch/svg";
 import { bounds, insertShapes, type ImportOptions } from "./sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D, type EdgeDim } from "./cad/holePlace";
 
-const STORAGE_KEY = "touch-cad.document";
-const PREFS_KEY = "touch-cad.prefs";
+const STORAGE_KEY = "waffle.document";
+const PREFS_KEY = "waffle.prefs";
+
+// The app was called "Touch CAD" first: move what that version saved in this browser.
+try {
+  for (const [from, to] of [
+    ["touch-cad.document", STORAGE_KEY],
+    ["touch-cad.prefs", PREFS_KEY],
+  ]) {
+    const v = localStorage.getItem(from);
+    if (v !== null && localStorage.getItem(to) === null) localStorage.setItem(to, v);
+    localStorage.removeItem(from);
+  }
+} catch {
+  // Private mode: nothing saved anyway.
+}
+
+/** Documents saved by the first versions say "touch-cad"; read them as Waffle documents. */
+function asDocument(d: unknown): CadDocument | null {
+  const x = d as { format?: string; features?: unknown } | null;
+  if (!x || (x.format !== "waffle" && x.format !== "touch-cad") || !Array.isArray(x.features)) return null;
+  return { ...(x as CadDocument), format: "waffle" };
+}
 const STD_PLANES: PlaneDef[] = [
   { origin: [0, 0, 0], xDir: [1, 0, 0], normal: [0, 0, 1], label: "XY" },
   { origin: [0, 0, 0], xDir: [1, 0, 0], normal: [0, -1, 0], label: "XZ" },
@@ -207,13 +228,13 @@ function loadDoc(): CadDocument {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const d = JSON.parse(raw) as CadDocument;
-      if (d.format === "touch-cad" && Array.isArray(d.features)) return d;
+      const d = asDocument(JSON.parse(raw));
+      if (d) return d;
     }
   } catch {
     // Private mode or corrupt data: start empty.
   }
-  return { format: "touch-cad", version: 1, features: [] };
+  return { format: "waffle", version: 1, features: [] };
 }
 
 function save() {
@@ -2205,13 +2226,13 @@ async function importDrawing() {
 function openFile() {
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = ".json,.tcad,application/json";
+  input.accept = ".json,.waffle,.tcad,application/json";
   input.onchange = async () => {
     const f = input.files?.[0];
     if (!f) return;
     try {
-      const d = JSON.parse(await f.text()) as CadDocument;
-      if (d.format !== "touch-cad") throw new Error("not a touch-cad file");
+      const d = asDocument(JSON.parse(await f.text()));
+      if (!d) throw new Error("not a Waffle file");
       if (mode.kind === "sketch") exitSketch();
       doc = d;
       selectedFeature = null;
@@ -2227,7 +2248,7 @@ function openFile() {
 function newDocument() {
   if (doc.features.length && !confirm("Start a new document? (Undo can bring the current one back.)")) return;
   if (mode.kind === "sketch") exitSketch();
-  doc = { format: "touch-cad", version: 1, features: [] };
+  doc = { format: "waffle", version: 1, features: [] };
   selectedFeature = null;
   commit();
 }
@@ -2246,7 +2267,7 @@ function setupMenu() {
   const items: [string, () => void][] = [
     ["New document", newDocument],
     ["Open…", openFile],
-    ["Save (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), "model.tcad.json")],
+    ["Save (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), "model.waffle.json")],
     ["Export STEP", () => exportFile("step")],
     ["Export STL", () => exportFile("stl")],
     ["Light / dark theme", () => setTheme(prefs.theme === "light" ? "dark" : "light")],
