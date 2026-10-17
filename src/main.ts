@@ -123,14 +123,18 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     renderStatus();
   } else if (m.type === "built") {
     buildRunning = false;
-    clearTimeout(buildSlowTimer);
-    if (buildSlow) {
-      buildSlow = false;
-      renderStatus();
-    }
     if (buildAgain) {
+      // More changes waited: the indicator stays on through the next build.
       buildAgain = false;
       sendBuild();
+    } else {
+      clearTimeout(buildSlowTimer);
+      buildSlowTimer = 0;
+      if (buildSlow) {
+        buildSlow = false;
+        document.body.classList.remove("building");
+        renderStatus();
+      }
     }
     if (m.reqId !== latestBuild) return;
     const first = lastBuild === null;
@@ -157,12 +161,15 @@ function sendBuild() {
     return;
   }
   buildRunning = true;
-  // A build that takes a while says so in the status line.
-  clearTimeout(buildSlowTimer);
-  buildSlowTimer = window.setTimeout(() => {
-    buildSlow = true;
-    renderStatus();
-  }, 600);
+  // A build that takes a while shows a running bar at the top, and says so in the status line.
+  if (!buildSlowTimer && !buildSlow)
+    buildSlowTimer = window.setTimeout(() => {
+      buildSlowTimer = 0;
+      if (!buildRunning) return;
+      buildSlow = true;
+      document.body.classList.add("building");
+      renderStatus();
+    }, 250);
   latestBuild = ++reqCounter;
   worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined } satisfies WorkerRequest);
 }
@@ -1906,7 +1913,7 @@ function renderStatus() {
     s = `${mode.feat.mode === "fillet" ? "Fillet" : "Chamfer"} · ${n ? `${n} edge${n > 1 ? "s" : ""} chosen` : "tap the edges"}, type the size`;
   }
   else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
-  if (buildSlow) s = s ? `${s} · building the model…` : "Building the model…";
+  if (buildSlow) s = s ? `Building… · ${s}` : "Building the model…";
   $("#status").textContent = s;
 }
 

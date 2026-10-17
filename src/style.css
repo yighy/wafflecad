@@ -1128,6 +1128,62 @@ body.busy #status-pill .dot {
   }
 }
 
+/* ---------- Building indicator ---------- */
+
+/* A thin bar running along the top of the screen while the kernel works. */
+#build-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 40;
+}
+body.building #build-bar {
+  opacity: 1;
+}
+#build-bar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  border-radius: 3px;
+  background: var(--accent);
+  animation: build-run 1.1s ease-in-out infinite;
+}
+@keyframes build-run {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(290%);
+  }
+}
+/* The status dot pulses too, and the status line shows even with nothing else to say. */
+body.building #status-pill .dot {
+  background: var(--accent);
+  animation: build-pulse 0.7s ease-in-out infinite alternate;
+}
+@keyframes build-pulse {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.building #build-bar::before {
+    width: 100%;
+  }
+}
+
 /* ---------- Motion ---------- */
 
 /* Pressing a control gives way a little; state colours fade instead of jumping. */
