@@ -64,11 +64,20 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
    **Trim** removes a piece of a line, arc or circle up to the nearest crossings on each side: press the piece
    (it turns red, slide to pick another) and lift. A piece with no crossing removes the whole curve; a circle
    becomes an arc; cutting the middle of a line leaves two collinear lines. Reference axes do not cut.
+   **Fillet** rounds a corner: tap the point where two lines meet and type the radius; an arc tangent to
+   both lines replaces the corner (a length dimension on those lines is dropped, as the corner is gone).
+   **Use edges** adds edges of the model to the sketch: tap them in the 3D view; each becomes a line, circle,
+   arc or spline flattened onto the sketch plane, with fixed points (shared where edges meet).
+   It is a copy: it does not follow later changes of the model.
    Points snap to existing points and curves; nearly horizontal/vertical lines get the constraint automatically.
 3. Tap geometry to select it (tap empty space to clear, drag on empty space for a box selection).
    The bar above the tools offers the constraints that fit the selection:
    horizontal, vertical, parallel, perpendicular, equal, tangent, coincident, concentric, point on curve,
    midpoint, symmetric, fix, and dimensions (length, distance, horizontal/vertical distance, radius, diameter, angle).
+   **Mirror** appears when the selection holds geometry and a line: the copy is mirrored about a selected axis,
+   else a construction line, else the last line picked, and stays tied to the original by symmetry constraints.
+   **Tangent** on an open spline and a line or arc ending at its first or last point makes the spline carry on
+   smoothly from that curve.
 4. Dimensions open an on-screen keypad that accepts expressions (`20*2+3`). Tap a dimension to edit it.
 5. The status bar shows the remaining degrees of freedom; geometry turns green when fully constrained.
    Closed regions are shaded: that is what an extrusion uses (nested loops become holes).
@@ -101,7 +110,7 @@ Tap a flat face of the solid: the right panel offers **Sketch on this face**, **
 
 - **Press Pull**: pull the handle or type a distance. Positive pulls the face out and adds material,
   negative pushes it in and removes material.
-- **Shell**: hollows the solid with walls of the given thickness, leaving the chosen faces open.
+- **Shell**: hollows the solid with walls of the given thickness, leaving the chosen faces open. The hollow is shown live while you choose faces and type the thickness.
   While the keypad is open, tap more faces to open or close them.
 
 ## Holes
@@ -142,13 +151,16 @@ Shells and fillets cannot be repeated; repeat what they apply to instead.
 
 **Fillet / Chamfer** (or `R`): tap the edges to round or bevel (tap again to drop one), type the size,
 choose Fillet or Chamfer, then Confirm. Edges hidden behind the model cannot be picked: rotate the view
-with two fingers to reach them. Like Shell, the edges are chosen on the solid as it is before the feature,
-so the rounding appears after Confirm. A radius too large for the chosen edges is reported in red in the timeline.
+with two fingers to reach them. The rounding is shown live while you edit; edges are still picked on the
+solid as it was before, so a rounded edge can be tapped again to drop it. A radius too large for the chosen
+edges is explained under the keypad title.
 
-Faces are found again by a point on them and their normal, edges by the point at the middle of their length. If an earlier change moves the face,
-the feature turns red in the timeline instead of applying somewhere else.
+Faces are found again by a point on them and their normal, edges by the point at the middle of their length.
+If an earlier change moves the face or edge, the closest flat face facing the same way (or the closest edge)
+within 30 % of the model size is used, and the step gets an orange outline in the timeline: check it, or edit
+the step to pick again. Further away, the step turns red instead of applying somewhere else.
 
-Optional keyboard shortcuts: `L` line, `R` rectangle, `C` circle, `A` arc, `S` spline, `P` point, `T` trim, `G` construction,
+Optional keyboard shortcuts: `L` line, `R` rectangle, `C` circle, `A` arc, `S` spline, `P` point, `T` trim, `F` fillet, `U` use edges, `G` construction,
 `Esc` cancel, `Enter` end a line or spline / finish, `Del` delete, `Ctrl+Z` / `Ctrl+Y`;
 with a selection: `H`, `V`, `E`, `T`, `D`, `X`, `Y`, `O`, `M`, `S`, `F`.
 In the part view: `S` sketch, `E` extrude, `F` fit, `V` cycle views.
@@ -178,5 +190,5 @@ It is saved automatically in the browser; **Save** / **Open** use `.json` files.
 - A sketch on a face stores a copy of the face's plane: it does not follow the face if earlier features change.
 - Patterns rotate around axes through the origin only, and their counts and spacings
   cannot use parameters yet.
-- Shell faces are chosen on the solid as it is before the shell, so the preview shows the shell only after Confirm.
+- Splines cannot be trimmed, and sketch fillets work between two lines only.
 - One body: every extrusion adds to, cuts or intersects the same solid.
