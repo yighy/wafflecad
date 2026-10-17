@@ -1082,3 +1082,78 @@ body.busy #status-pill .dot {
     padding: 0 10px;
   }
 }
+
+/* ---------- Motion ---------- */
+
+/* Pressing a control gives way a little; state colours fade instead of jumping. */
+.tool .tile,
+.tool .label,
+.chip,
+#view-buttons button,
+#timeline .history button,
+#menu,
+#panel button {
+  transition:
+    transform 0.12s ease-out,
+    background-color 0.18s,
+    color 0.18s,
+    box-shadow 0.18s,
+    opacity 0.18s;
+}
+.tool:active .tile,
+.tool:active .label,
+.chip:active,
+#view-buttons button:active,
+#timeline .history button:active,
+#menu:active,
+#panel button:active {
+  transform: scale(0.95);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+
+/* Set from script, only when what is shown really changes (not on every refresh). */
+#panel-content.enter {
+  animation: rise 0.22s ease-out;
+}
+#tools.enter > * {
+  animation: slide-in 0.24s ease-out backwards;
+  animation-delay: calc(var(--i, 0) * 22ms);
+}
+.chip.pop {
+  animation: pop 0.26s cubic-bezier(0.3, 1.5, 0.6, 1);
+}
+.menu.open {
+  animation: rise 0.16s ease-out;
+}
+#toast {
+  transition:
+    opacity 0.2s,
+    transform 0.25s cubic-bezier(0.3, 1.4, 0.6, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

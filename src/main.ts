@@ -1441,6 +1441,16 @@ function deleteFeature(f: Feature) {
 
 // ---------- Rendering ----------
 
+/** What each area last showed: enter animations play only when it changes, not on every refresh. */
+const shownKey = new Map<string, string>();
+function playEnter(slot: string, key: string, el: HTMLElement) {
+  if (shownKey.get(slot) === key) return;
+  shownKey.set(slot, key);
+  el.classList.remove("enter");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("enter");
+}
+
 function renderAll() {
   document.body.dataset.mode = mode.kind;
   vp.forceOrtho = mode.kind === "sketch";
@@ -1575,12 +1585,22 @@ function renderTools() {
     }
     group.appendChild(child);
   }
+  // Staggered entrance when the set of tools changes (sketch, plane choice, model).
+  [...el.children].forEach((c, i) => (c as HTMLElement).style.setProperty("--i", String(i)));
+  playEnter("tools", mode.kind === "sketch" ? "sketch" : mode.kind === "pickPlane" ? "plane" : "part", el);
 }
 
 /** Right panel: what can be done with the current selection. */
 function renderPanel() {
   const el = $("#panel-content");
   el.replaceChildren();
+  const what =
+    mode.kind === "sketch"
+      ? `sketch:${mode.editor.sk.id}`
+      : isOperation(mode)
+        ? `op:${mode.feat.id}`
+        : `${mode.kind}:${showParams}:${selectedFeature}:${selectedFace?.faceId ?? ""}`;
+  playEnter("panel", what, el);
   const head = (title: string, sub = "", err = false, closable = false) => {
     const h = document.createElement("div");
     h.className = "p-head";
@@ -1735,6 +1755,9 @@ function featureIcon(f: Feature) {
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
 }
 
+/** Steps shown at the last refresh (null before the first one: nothing pops in on load). */
+let chipsShown: Set<string> | null = null;
+
 function renderTimeline() {
   const el = $("#chips");
   el.replaceChildren();
@@ -1754,6 +1777,8 @@ function renderTimeline() {
     }
     const b = document.createElement("button");
     b.className = "chip";
+    // A step that was not there at the last refresh pops in.
+    if (chipsShown && !chipsShown.has(f.id)) b.classList.add("pop");
     if (f.id === current) b.classList.add("sel");
     if (mode.kind === "pattern" && mode.feat.featureIds.includes(f.id)) b.classList.add("picked");
     if (lastBuild?.errors[f.id]) b.classList.add("error");
@@ -1772,6 +1797,7 @@ function renderTimeline() {
     el.appendChild(b);
     if (f.id === current) requestAnimationFrame(() => b.scrollIntoView({ inline: "nearest", block: "nearest" }));
   });
+  chipsShown = new Set(doc.features.map((f) => f.id));
   for (const b of buttons(".undo-btn")) b.disabled = undoPos === 0;
   for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
 }
