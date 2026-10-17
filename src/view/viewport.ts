@@ -64,6 +64,10 @@ export class Viewport {
   private faceGroups: MeshData["faceGroups"] = [];
   private edgeLines: Float32Array<ArrayBufferLike> = new Float32Array();
   private edgeGroups: EdgeGroup[] = [];
+  /** Bodies not drawn (and not picked), and the edges of the build they hide. */
+  private hiddenBodies = new Set<string>();
+  private hiddenEdges = new Set<number>();
+  private shown: { r: BuildResult | null; preview?: PreviewResult } = { r: null };
   private edgeHighlight: THREE.Object3D | null = null;
   private highlight: THREE.Mesh | null = null;
   private lineMaterials: LineMaterial[] = [];
@@ -405,6 +409,7 @@ export class Viewport {
    * invisible underneath: faces and edges are still picked (and highlighted) on it.
    */
   setModel(r: BuildResult | null, preview?: PreviewResult) {
+    this.shown = { r, preview };
     disposeChildren(this.modelGroup);
     this.mesh = null;
     this.shownMesh = null;
@@ -418,11 +423,9 @@ export class Viewport {
       this.requestRender();
       return;
     }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(r.mesh.vertices, 3));
-    g.setAttribute("normal", new THREE.BufferAttribute(r.mesh.normals, 3));
-    g.setIndex(new THREE.BufferAttribute(r.mesh.triangles, 1));
-    const tinted = (r.bodies?.length ?? 0) > 1 && tintBodies(g, r.mesh, r.bodies!);
+    const g = this.bodyGeometry(r.mesh, r.bodies);
+    const tinted = !!g.getAttribute("color");
+    this.hiddenEdges = this.hiddenOf(r.bodies, "edgeIds");
     const mat = new THREE.MeshStandardMaterial({
       color: this.modelColor,
       vertexColors: tinted,
@@ -438,7 +441,9 @@ export class Viewport {
     this.edgeGroups = r.edgeGroups;
     this.modelGroup.add(this.mesh);
     this.shownEdges = null;
-    const drawEdges = (edges: Float32Array) => {
+    const drawEdges = (all: Float32Array, groups: EdgeGroup[], bodies?: BodyInfo[]) => {
+      const hidden = this.hiddenOf(bodies, "edgeIds");
+      const edges = hidden.size ? visibleEdges(all, groups, hidden) : all;
       if (!edges.length) return;
       const edge = new THREE.Color(cssVar("--edge", "#141414"));
       const colors: number[] = [];
@@ -450,19 +455,43 @@ export class Viewport {
     if (preview?.mesh) {
       // Raycasting ignores visibility: the hidden build is still what gets picked.
       this.mesh.visible = false;
-      const pg = new THREE.BufferGeometry();
-      pg.setAttribute("position", new THREE.BufferAttribute(preview.mesh.vertices, 3));
-      pg.setAttribute("normal", new THREE.BufferAttribute(preview.mesh.normals, 3));
-      pg.setIndex(new THREE.BufferAttribute(preview.mesh.triangles, 1));
-      this.shownMesh = new THREE.Mesh(pg, mat);
+      const pg = this.bodyGeometry(preview.mesh, preview.bodies);
+      // The preview's bodies are tinted like the build's (none untinted: they would turn black).
+      this.shownMesh = new THREE.Mesh(pg, pg.getAttribute("color") || !tinted ? mat : Object.assign(mat.clone(), { vertexColors: false }));
       this.modelGroup.add(this.shownMesh);
-      drawEdges(preview.edges);
-    } else drawEdges(r.edges);
+      drawEdges(preview.edges, preview.edgeGroups, preview.bodies);
+    } else drawEdges(r.edges, r.edgeGroups, r.bodies);
     // Inside faces seen through a section: drawn as a solid "cap" colour.
     this.capMesh = new THREE.Mesh(this.shownMesh.geometry, new THREE.MeshBasicMaterial({ side: THREE.BackSide }));
     this.modelGroup.add(this.capMesh);
     this.applyDisplay();
     this.requestRender();
+  }
+
+  /** The geometry of a mesh, its bodies tinted apart and the hidden ones left out. */
+  private bodyGeometry(mesh: MeshData, bodies?: BodyInfo[]) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(mesh.vertices, 3));
+    g.setAttribute("normal", new THREE.BufferAttribute(mesh.normals, 3));
+    const hidden = this.hiddenOf(bodies, "faceIds");
+    // Hidden faces become empty triangles: the face groups keep their place in the index (picking
+    // relies on it), and an empty triangle is neither drawn nor hit.
+    g.setIndex(new THREE.BufferAttribute(hidden.size ? withoutFaces(mesh, hidden) : mesh.triangles, 1));
+    if ((bodies?.length ?? 0) > 1) tintBodies(g, mesh, bodies!);
+    return g;
+  }
+
+  /** Face or edge ids of the hidden bodies. */
+  private hiddenOf(bodies: BodyInfo[] | undefined, key: "faceIds" | "edgeIds") {
+    const out = new Set<number>();
+    for (const b of bodies ?? []) if (this.hiddenBodies.has(b.id)) for (const id of b[key]) out.add(id);
+    return out;
+  }
+
+  /** Bodies to leave out of the view (by id). Their faces and edges cannot be picked either. */
+  setHiddenBodies(ids: Iterable<string>) {
+    this.hiddenBodies = new Set(ids);
+    this.setModel(this.shown.r, this.shown.preview);
   }
 
   get displayMode() {
@@ -620,6 +649,7 @@ export class Viewport {
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     this.edgeGroups.forEach((g, i) => {
+      if (this.hiddenEdges.has(g.id)) return;
       for (let k = g.start; k < g.start + g.count; k += 2) {
         a.fromArray(L, k * 3);
         b.fromArray(L, (k + 1) * 3);
@@ -946,6 +976,20 @@ const BODY_TINTS: [number, number, number][] = [
   [0.78, 1.12, 1.08],
   [1.22, 1.1, 0.7],
 ];
+
+/** The triangles of a mesh with those of some faces emptied (same length, same face groups). */
+function withoutFaces(mesh: MeshData, faceIds: Set<number>) {
+  const t = mesh.triangles.slice();
+  for (const fg of mesh.faceGroups) if (faceIds.has(fg.faceId)) t.fill(0, fg.start, fg.start + fg.count);
+  return t;
+}
+
+/** Edge line segments, without those of some edges. */
+function visibleEdges(lines: Float32Array, groups: EdgeGroup[], edgeIds: Set<number>) {
+  const out: number[] = [];
+  for (const g of groups) if (!edgeIds.has(g.id)) for (let k = g.start * 3; k < (g.start + g.count) * 3; k++) out.push(lines[k]);
+  return new Float32Array(out);
+}
 
 /** Gives each vertex its body's tint. Returns false when no face could be matched. */
 function tintBodies(g: THREE.BufferGeometry, mesh: MeshData, bodies: BodyInfo[]): boolean {

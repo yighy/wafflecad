@@ -501,8 +501,9 @@ interface Meshed {
   fine?: Pick<BuildResult, "mesh" | "edges" | "edgeGroups">;
   draft?: Pick<BuildResult, "mesh" | "edges" | "edgeGroups">;
   planar?: PlanarFace[];
-  /** Face hash codes of each body (empty with a single body). */
+  /** Face and edge hash codes of each body (empty with a single body). */
   bodyFaces?: number[][];
+  bodyEdges?: number[][];
 }
 
 /**
@@ -565,10 +566,11 @@ export function buildResult(doc: CadDocument, opts: { draft?: boolean; planar?: 
   // A fine mesh already made is used even for a draft.
   const view = m.fine ?? (opts.draft ? (m.draft ??= meshShape(shape, true)) : (m.fine = meshShape(shape, false)));
   if (!opts.draft && opts.planar !== false) m.planar ??= planarFaces(shape);
-  // Which faces belong to which body (to colour them apart), when there are several.
+  // Which faces and edges belong to which body (to colour or hide them apart), when there are several.
   m.bodyFaces ??= bodies.length > 1 ? bodies.map((b) => b.shape.faces.map((f) => f.hashCode)) : [];
+  m.bodyEdges ??= bodies.length > 1 ? bodies.map((b) => b.shape.edges.map((e) => e.hashCode)) : [];
   const names = bodyNames(doc, bodies.map((b) => b.id));
-  const bodyInfo = bodies.map((b, i) => ({ id: b.id, name: names[i], faceIds: m.bodyFaces![i] ?? [] }));
+  const bodyInfo = bodies.map((b, i) => ({ id: b.id, name: names[i], faceIds: m.bodyFaces![i] ?? [], edgeIds: m.bodyEdges![i] ?? [] }));
   const mesh = view.mesh && {
     vertices: view.mesh.vertices.slice(),
     normals: view.mesh.normals.slice(),

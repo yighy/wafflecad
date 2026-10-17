@@ -52,6 +52,8 @@ const P: Record<string, string> = {
   folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z" fill="currentColor" fill-opacity=".14"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2" fill="currentColor" fill-opacity=".14"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>',
   more: '<circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" fill="currentColor" fill-opacity=".14"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" opacity=".45"/><path d="M4 20 20 4"/>',
   rename: '<rect x="2.5" y="7" width="19" height="10" rx="2" fill="currentColor" fill-opacity=".14"/><path d="M6.5 12h6M16 9.5v5"/>',
   menu: '<circle cx="12" cy="5" r="2" fill="currentColor" fill-opacity=".14"/><circle cx="12" cy="12" r="2" fill="currentColor" fill-opacity=".14"/><circle cx="12" cy="19" r="2" fill="currentColor" fill-opacity=".14"/>',
   collapse: '<path d="M9 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4z" fill="currentColor" fill-opacity=".14"/><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M16 9l-3 3 3 3"/>',

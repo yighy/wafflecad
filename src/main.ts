@@ -344,6 +344,8 @@ async function openProject(id: string) {
   selectedFeature = null;
   selectedFace = null;
   lastBuild = null; // the first build of the project frames it
+  hiddenBodies = new Set();
+  vp.setHiddenBodies(hiddenBodies);
   thumbStale = !p.meta.thumb && p.doc.features.length > 0;
   resetHistory();
   vp.setModel(null);
@@ -656,6 +658,37 @@ async function extrude(existing?: ExtrudeFeature) {
 }
 
 // ---------- Bodies ----------
+
+/** Bodies hidden from view (for this session only: hiding is a way of looking, not a change). */
+let hiddenBodies = new Set<string>();
+
+function setHiddenBodies(ids: Iterable<string>) {
+  hiddenBodies = new Set(ids);
+  vp.setHiddenBodies(hiddenBodies);
+  renderPanel();
+  renderViewButtons();
+  if (displayMenuOpen) renderDisplayMenu();
+}
+
+function toggleBody(id: string) {
+  const next = new Set(hiddenBodies);
+  if (!next.delete(id)) next.add(id);
+  // Hiding every body would leave nothing to look at: hiding the last one shows the others.
+  const all = lastBuild?.bodies ?? [];
+  if (all.length && all.every((b) => next.has(b.id))) setHiddenBodies(all.filter((b) => b.id !== id).map((b) => b.id));
+  else setHiddenBodies(next);
+}
+
+/** Shows only that body; again on the same body, shows them all. */
+function isolateBody(id: string) {
+  const others = (lastBuild?.bodies ?? []).filter((b) => b.id !== id).map((b) => b.id);
+  const isolated = !hiddenBodies.has(id) && others.every((o) => hiddenBodies.has(o));
+  setHiddenBodies(isolated ? [] : others);
+}
+
+function anyBodyHidden() {
+  return (lastBuild?.bodies ?? []).some((b) => hiddenBodies.has(b.id));
+}
 
 /** The part's bodies started before this step (the ones it can join or cut). */
 function bodiesBefore(featId: string) {
@@ -2144,8 +2177,13 @@ function renderPanel() {
       ]);
     else items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
-    if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "import") && lastBuild?.bodies?.some((b) => b.id === f.id) && (lastBuild.bodies.length > 1))
+    if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "import") && lastBuild?.bodies?.some((b) => b.id === f.id) && lastBuild.bodies.length > 1) {
       items.push(["rename", "Rename body", () => renameBody(f.id)]);
+      items.push([hiddenBodies.has(f.id) ? "eye" : "eyeOff", hiddenBodies.has(f.id) ? "Show body" : "Hide body", () => toggleBody(f.id)]);
+      const others = lastBuild.bodies.filter((b) => b.id !== f.id);
+      const isolated = !hiddenBodies.has(f.id) && others.every((b) => hiddenBodies.has(b.id));
+      items.push(["eye", isolated ? "Show all bodies" : "Show only this body", () => isolateBody(f.id)]);
+    }
     if (f.kind === "import" && f.op === "add" && bodiesBefore(f.id).length)
       items.push([
         "extrude",
@@ -2388,8 +2426,32 @@ function buildDisplayMenu() {
   inner.appendChild(range);
   wrap.appendChild(inner);
   el.appendChild(wrap);
+  // The part's bodies, each shown or hidden with a tap (filled in by syncDisplayMenu).
+  const bodies = document.createElement("div");
+  bodies.className = "dm-bodies";
+  el.appendChild(bodies);
   document.body.appendChild(el);
   return el;
+}
+
+function syncBodyList(el: HTMLElement) {
+  const list = lastBuild?.bodies ?? [];
+  el.replaceChildren();
+  if (list.length < 2) return;
+  const t = document.createElement("div");
+  t.className = "dm-title";
+  t.textContent = "Bodies";
+  el.appendChild(t);
+  for (const b of list) {
+    const btn = document.createElement("button");
+    const shown = !hiddenBodies.has(b.id);
+    btn.className = "dm-mode dm-body" + (shown ? " on" : "");
+    btn.innerHTML = icon(shown ? "eye" : "eyeOff", 20);
+    btn.append(b.name);
+    btn.title = shown ? "Hide this body" : "Show this body";
+    btn.onclick = () => toggleBody(b.id);
+    el.appendChild(btn);
+  }
 }
 
 function syncDisplayMenu(el: HTMLElement) {
@@ -2409,6 +2471,7 @@ function syncDisplayMenu(el: HTMLElement) {
   el.querySelector(".dm-range-wrap")!.classList.toggle("shown", !!cur);
   const range = el.querySelector<HTMLInputElement>(".dm-range")!;
   if (cur) range.value = String(Math.round(cur.at * 100));
+  syncBodyList(el.querySelector(".dm-bodies")!);
 }
 
 // A tap elsewhere closes the display menu.
@@ -2443,7 +2506,7 @@ function renderViewButtons() {
   add("display", "Display: shading, wireframe, X-ray, section", () => {
     displayMenuOpen = !displayMenuOpen;
     renderDisplayMenu();
-  }, displayMenuOpen || vp.displayMode !== "shaded-edges" || !!vp.section);
+  }, displayMenuOpen || vp.displayMode !== "shaded-edges" || !!vp.section || anyBodyHidden());
   add("grid", "Grid", () => {
     vp.setGridVisible(!vp.isGridVisible);
     renderViewButtons();

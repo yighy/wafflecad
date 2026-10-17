@@ -595,6 +595,13 @@ body.busy #status-pill .dot {
 .dm-mode.on {
   color: var(--accent);
 }
+.dm-body {
+  gap: 10px;
+  color: var(--muted);
+}
+.dm-body.on {
+  color: var(--text);
+}
 .dm-range {
   width: 100%;
   margin: 8px 0 4px;

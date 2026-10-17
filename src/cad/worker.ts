@@ -36,7 +36,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
       let preview: PreviewResult | undefined;
       if (ex) {
         const full = buildResult(req.doc, { draft: req.draft, planar: false });
-        preview = { mesh: full.mesh, edges: full.edges, error: full.errors[ex] };
+        preview = { mesh: full.mesh, edges: full.edges, edgeGroups: full.edgeGroups, bodies: full.bodies, error: full.errors[ex] };
         transfer.push(full.edges.buffer);
         if (full.mesh) transfer.push(full.mesh.vertices.buffer, full.mesh.normals.buffer, full.mesh.triangles.buffer);
       }

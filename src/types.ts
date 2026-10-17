@@ -322,6 +322,7 @@ export interface BodyInfo {
   id: string;
   name: string;
   faceIds: number[];
+  edgeIds: number[];
 }
 
 // ---------- Profiles: closed regions found in a sketch ----------
@@ -403,6 +404,8 @@ export interface BuildResult {
 export interface PreviewResult {
   mesh: MeshData | null;
   edges: Float32Array;
+  edgeGroups: EdgeGroup[];
+  bodies?: BodyInfo[];
   /** Why the operation fails with the current values, if it does. */
   error?: string;
 }
