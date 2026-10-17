@@ -134,6 +134,8 @@ let buildRunning = false;
 let buildSlow = false;
 let buildSlowTimer = 0;
 let buildAgain = false;
+/** Quality of the build waiting behind the running one: fine if any request wanted fine. */
+let againDraft = true;
 
 worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
   const m = ev.data;
@@ -150,7 +152,7 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     if (buildAgain) {
       // More changes waited: the indicator stays on through the next build.
       buildAgain = false;
-      sendBuild();
+      sendBuild(againDraft);
     } else {
       clearTimeout(buildSlowTimer);
       buildSlowTimer = 0;
@@ -178,9 +180,10 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
   }
 };
 
-function sendBuild() {
+function sendBuild(draft = false) {
   if (!kernelReady) return;
   if (buildRunning) {
+    againDraft = buildAgain ? againDraft && draft : draft;
     buildAgain = true;
     return;
   }
@@ -195,23 +198,46 @@ function sendBuild() {
       renderStatus();
     }, 250);
   latestBuild = ++reqCounter;
-  worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined } satisfies WorkerRequest);
+  worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined, draft } satisfies WorkerRequest);
 }
 
 /**
  * Rebuilds the model. Continuous edits (dragging a handle, typing) are throttled, not debounced:
- * the model keeps up while the finger moves, as fast as the kernel allows.
+ * the model keeps up while the finger moves, as fast as the kernel allows. The first change of a
+ * burst builds fine; the ones that follow quickly are drafts (coarser mesh, no flat faces), and
+ * once the changes stop a fine build follows.
  */
+let lastChange = 0;
+let settleTimer = 0;
+let draftSent = false;
+const SETTLE_MS = 300;
 function rebuild(now = false) {
+  const t = performance.now();
+  const burst = t - lastChange < SETTLE_MS;
+  lastChange = t;
+  clearTimeout(settleTimer);
+  settleTimer = 0;
   if (now) {
     clearTimeout(buildTimer);
     buildTimer = 0;
+    draftSent = false;
     return sendBuild();
+  }
+  if (burst) {
+    settleTimer = window.setTimeout(() => {
+      settleTimer = 0;
+      if (!draftSent) return;
+      draftSent = false;
+      sendBuild();
+    }, SETTLE_MS);
   }
   if (buildTimer) return;
   buildTimer = window.setTimeout(() => {
     buildTimer = 0;
-    sendBuild();
+    // Whether this change came in a burst is decided now, not when it was scheduled.
+    const draft = settleTimer !== 0;
+    if (draft) draftSent = true;
+    sendBuild(draft);
   }, 50);
 }
 

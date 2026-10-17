@@ -404,16 +404,44 @@ export function buildShape(doc: CadDocument) {
   return { shape, errors, warnings };
 }
 
-export function buildResult(doc: CadDocument): BuildResult {
-  const { shape, errors, warnings } = buildShape(doc);
-  if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings };
-  // Faces are meshed for display with a deflection relative to the model's size: a fixed 0.01 mm
-  // took seconds on drawings with many curved walls. Edges keep the fine setting (they are cheap,
-  // and their midpoints are what fillets and chamfers refer to).
+/** Display data of a shape: meshes at each quality, and its flat faces once asked for. */
+interface Meshed {
+  fine?: Pick<BuildResult, "mesh" | "edges" | "edgeGroups">;
+  draft?: Pick<BuildResult, "mesh" | "edges" | "edgeGroups">;
+  planar?: PlanarFace[];
+}
+
+/**
+ * Meshing is most of the time of a build once the steps come from the cache, and the same shape
+ * often comes back: the model under an operation being edited is rebuilt on every drag tick, and
+ * a build that settles remeshes what a draft already replayed. Shapes are never changed in place,
+ * so the shape object itself is the key. Only the last few are kept.
+ */
+const meshCache = new Map<Shape3D, Meshed>();
+const MESH_CACHE_MAX = 6;
+
+function meshed(shape: Shape3D): Meshed {
+  let m = meshCache.get(shape);
+  if (m) meshCache.delete(shape);
+  else m = {};
+  meshCache.set(shape, m);
+  if (meshCache.size > MESH_CACHE_MAX) meshCache.delete(meshCache.keys().next().value!);
+  return m;
+}
+
+/**
+ * Faces are meshed for display with a deflection relative to the model's size: a fixed 0.01 mm
+ * took seconds on drawings with many curved walls. Edges are meshed finer (their midpoints are
+ * what fillets and chamfers refer to), which is cheap once the faces are. A draft (while a value
+ * is being dragged) is about three times faster: coarser faces, and edges at the same setting —
+ * finer edges would make OpenCascade mesh the whole shape again.
+ */
+function meshShape(shape: Shape3D, draft: boolean): Pick<BuildResult, "mesh" | "edges" | "edgeGroups"> {
   const [lo, hi] = shape.boundingBox.bounds;
   const diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
-  const m = shape.mesh({ tolerance: Math.max(MESH_OPTS.tolerance, diag * 4e-4), angularTolerance: 0.2 });
-  const e = shape.meshEdges(MESH_OPTS);
+  const draftOpts = { tolerance: Math.max(0.05, diag * 2e-3), angularTolerance: 0.5 };
+  const m = shape.mesh(draft ? draftOpts : { tolerance: Math.max(MESH_OPTS.tolerance, diag * 4e-4), angularTolerance: 0.2 });
+  const e = shape.meshEdges(draft ? draftOpts : MESH_OPTS);
   return {
     mesh: {
       vertices: new Float32Array(m.vertices),
@@ -423,10 +451,28 @@ export function buildResult(doc: CadDocument): BuildResult {
     },
     edges: new Float32Array(e.lines),
     edgeGroups: e.edgeGroups.map((g): EdgeGroup => ({ start: g.start, count: g.count, mid: polylineMid(e.lines, g.start, g.count) })),
-    planarFaces: planarFaces(shape),
-    warnings,
-    errors,
   };
+}
+
+/**
+ * `draft`: a coarser mesh, and no flat faces unless already known (a drag only needs to see the
+ * shape; the build sent once it settles has them). `planar: false` never computes them (previews).
+ * The arrays returned are copies, free to be transferred.
+ */
+export function buildResult(doc: CadDocument, opts: { draft?: boolean; planar?: boolean } = {}): BuildResult {
+  const { shape, errors, warnings } = buildShape(doc);
+  if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings };
+  const m = meshed(shape);
+  // A fine mesh already made is used even for a draft.
+  const view = m.fine ?? (opts.draft ? (m.draft ??= meshShape(shape, true)) : (m.fine = meshShape(shape, false)));
+  if (!opts.draft && opts.planar !== false) m.planar ??= planarFaces(shape);
+  const mesh = view.mesh && {
+    vertices: view.mesh.vertices.slice(),
+    normals: view.mesh.normals.slice(),
+    triangles: view.mesh.triangles.slice(),
+    faceGroups: view.mesh.faceGroups,
+  };
+  return { mesh, edges: view.edges.slice(), edgeGroups: view.edgeGroups, planarFaces: m.planar ?? [], warnings, errors };
 }
 
 /** Planes of the flat faces, so a sketch can be started on them. */

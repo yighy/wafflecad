@@ -24,12 +24,17 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   if (req.type === "build") {
     try {
       const ex = req.pickExclude;
-      const r = buildResult(ex ? { ...req.doc, features: req.doc.features.filter((f) => f.id !== ex) } : req.doc);
+      // Under an operation being edited, the model without it does not change while its values
+      // are dragged: it is always built fine (from the cache after the first time), and only the
+      // preview follows the draft quality.
+      const r = ex
+        ? buildResult({ ...req.doc, features: req.doc.features.filter((f) => f.id !== ex) })
+        : buildResult(req.doc, { draft: req.draft });
       const transfer: Transferable[] = [r.edges.buffer];
       if (r.mesh) transfer.push(r.mesh.vertices.buffer, r.mesh.normals.buffer, r.mesh.triangles.buffer);
       let preview: PreviewResult | undefined;
       if (ex) {
-        const full = buildResult(req.doc);
+        const full = buildResult(req.doc, { draft: req.draft, planar: false });
         preview = { mesh: full.mesh, edges: full.edges, error: full.errors[ex] };
         transfer.push(full.edges.buffer);
         if (full.mesh) transfer.push(full.mesh.vertices.buffer, full.mesh.normals.buffer, full.mesh.triangles.buffer);

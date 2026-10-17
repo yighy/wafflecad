@@ -342,8 +342,9 @@ export interface PreviewResult {
 
 export type WorkerRequest =
   /** With pickExclude: the main result leaves that feature out (to pick faces and edges on), and
-   * `preview` shows the whole document, so an operation being edited is seen live. */
-  | { type: "build"; reqId: number; doc: CadDocument; pickExclude?: string }
+   * `preview` shows the whole document, so an operation being edited is seen live. `draft`: a
+   * coarser mesh and no flat faces, for builds made while a value is being dragged. */
+  | { type: "build"; reqId: number; doc: CadDocument; pickExclude?: string; draft?: boolean }
   | { type: "export"; reqId: number; doc: CadDocument; format: "step" | "stl" };
 
 export type WorkerResponse =
