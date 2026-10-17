@@ -42,6 +42,8 @@ export interface KeypadHandle {
   /** Changes the label in the display (when the keypad edits another field). */
   setLabel(text: string, unit?: string): void;
   setSubtitle(text: string): void;
+  /** A warning under the title (null clears it). */
+  setNote(text: string | null): void;
   close(): void;
 }
 
@@ -68,7 +70,7 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
   root.className = "keypad";
   root.innerHTML = `
     <div class="kp-head">
-      <div><div class="kp-title"></div><div class="kp-sub"></div></div>
+      <div><div class="kp-title"></div><div class="kp-sub"></div><div class="kp-note"></div></div>
     </div>
     <div class="kp-display">
       <span class="kp-label"></span>
@@ -212,6 +214,9 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
     setLabel(text, unit) {
       root.querySelector(".kp-label")!.textContent = text;
       if (unit !== undefined) root.querySelector(".kp-unit")!.textContent = unit;
+    },
+    setNote(text) {
+      root.querySelector(".kp-note")!.textContent = text ?? "";
     },
     setSubtitle(text) {
       root.querySelector(".kp-sub")!.textContent = text;

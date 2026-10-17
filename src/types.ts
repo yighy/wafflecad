@@ -313,12 +313,22 @@ export interface BuildResult {
   warnings?: Record<string, string>;
 }
 
+/** The model with the operation being edited, shown while picking happens on the model without it. */
+export interface PreviewResult {
+  mesh: MeshData | null;
+  edges: Float32Array;
+  /** Why the operation fails with the current values, if it does. */
+  error?: string;
+}
+
 export type WorkerRequest =
-  | { type: "build"; reqId: number; doc: CadDocument }
+  /** With pickExclude: the main result leaves that feature out (to pick faces and edges on), and
+   * `preview` shows the whole document, so an operation being edited is seen live. */
+  | { type: "build"; reqId: number; doc: CadDocument; pickExclude?: string }
   | { type: "export"; reqId: number; doc: CadDocument; format: "step" | "stl" };
 
 export type WorkerResponse =
   | { type: "ready" }
   | { type: "fatal"; message: string }
-  | ({ type: "built"; reqId: number } & BuildResult)
+  | ({ type: "built"; reqId: number; preview?: PreviewResult } & BuildResult)
   | { type: "file"; reqId: number; blob: Blob | null; error?: string };

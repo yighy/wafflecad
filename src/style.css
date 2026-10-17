@@ -581,6 +581,13 @@ body.busy #status-pill .dot {
   font-size: 12px;
   color: var(--muted);
 }
+.kp-note {
+  font-size: 12px;
+  color: var(--danger);
+}
+.kp-note:empty {
+  display: none;
+}
 .kp-display {
   display: flex;
   justify-content: space-between;

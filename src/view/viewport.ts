@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import type { BuildResult, EdgeGroup, MeshData, PlaneDef, Vec3 } from "../types";
+import type { BuildResult, PreviewResult, EdgeGroup, MeshData, PlaneDef, Vec3 } from "../types";
 
 export const V = (v: Vec3) => new THREE.Vector3(v[0], v[1], v[2]);
 
@@ -388,7 +388,11 @@ export class Viewport {
 
   // ---------- Model ----------
 
-  setModel(r: BuildResult | null) {
+  /**
+   * Shows a build. With a preview, the preview is what is drawn, while the build itself stays
+   * invisible underneath: faces and edges are still picked (and highlighted) on it.
+   */
+  setModel(r: BuildResult | null, preview?: PreviewResult) {
     disposeChildren(this.modelGroup);
     this.mesh = null;
     this.edgeHighlight = null;
@@ -416,12 +420,23 @@ export class Viewport {
     this.edgeLines = r.edges;
     this.edgeGroups = r.edgeGroups;
     this.modelGroup.add(this.mesh);
-    if (r.edges.length) {
+    const drawEdges = (edges: Float32Array) => {
+      if (!edges.length) return;
       const edge = new THREE.Color(cssVar("--edge", "#141414"));
       const colors: number[] = [];
-      for (let i = 0; i < r.edges.length / 3; i++) colors.push(edge.r, edge.g, edge.b);
-      this.modelGroup.add(this.makeLines({ positions: Array.from(r.edges), colors, width: 1.5 }));
-    }
+      for (let i = 0; i < edges.length / 3; i++) colors.push(edge.r, edge.g, edge.b);
+      this.modelGroup.add(this.makeLines({ positions: Array.from(edges), colors, width: 1.5 }));
+    };
+    if (preview?.mesh) {
+      // Raycasting ignores visibility: the hidden build is still what gets picked.
+      this.mesh.visible = false;
+      const pg = new THREE.BufferGeometry();
+      pg.setAttribute("position", new THREE.BufferAttribute(preview.mesh.vertices, 3));
+      pg.setAttribute("normal", new THREE.BufferAttribute(preview.mesh.normals, 3));
+      pg.setIndex(new THREE.BufferAttribute(preview.mesh.triangles, 1));
+      this.modelGroup.add(new THREE.Mesh(pg, mat));
+      drawEdges(preview.edges);
+    } else drawEdges(r.edges);
     this.requestRender();
   }
 

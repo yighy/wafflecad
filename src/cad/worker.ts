@@ -3,7 +3,7 @@ import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
 import { buildResult, exportFile } from "./build";
-import type { WorkerRequest, WorkerResponse } from "../types";
+import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
 const post = (msg: WorkerResponse, transfer: Transferable[] = []) =>
   (self as unknown as Worker).postMessage(msg, transfer);
@@ -23,10 +23,18 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   const req = ev.data;
   if (req.type === "build") {
     try {
-      const r = buildResult(req.doc);
+      const ex = req.pickExclude;
+      const r = buildResult(ex ? { ...req.doc, features: req.doc.features.filter((f) => f.id !== ex) } : req.doc);
       const transfer: Transferable[] = [r.edges.buffer];
       if (r.mesh) transfer.push(r.mesh.vertices.buffer, r.mesh.normals.buffer, r.mesh.triangles.buffer);
-      post({ type: "built", reqId: req.reqId, ...r }, transfer);
+      let preview: PreviewResult | undefined;
+      if (ex) {
+        const full = buildResult(req.doc);
+        preview = { mesh: full.mesh, edges: full.edges, error: full.errors[ex] };
+        transfer.push(full.edges.buffer);
+        if (full.mesh) transfer.push(full.mesh.vertices.buffer, full.mesh.normals.buffer, full.mesh.triangles.buffer);
+      }
+      post({ type: "built", reqId: req.reqId, ...r, preview }, transfer);
     } catch (e) {
       post({
         type: "built",

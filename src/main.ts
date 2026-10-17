@@ -116,7 +116,8 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     if (m.reqId !== latestBuild) return;
     const first = lastBuild === null;
     lastBuild = m;
-    vp.setModel(m);
+    vp.setModel(m, m.preview);
+    if (isOperation(mode)) mode.keypad.setNote(m.preview?.error ?? null);
     if (first && m.mesh) vp.fit();
     if (mode.kind === "sketch") vp.setModelOpacity(0.45);
     if (mode.kind === "shell") highlightShellFaces(mode.feat);
@@ -135,8 +136,7 @@ function rebuild(now = false) {
   const go = () => {
     if (!kernelReady) return;
     latestBuild = ++reqCounter;
-    const built = previewExclude ? { ...doc, features: doc.features.filter((f) => f.id !== previewExclude) } : doc;
-    worker.postMessage({ type: "build", reqId: latestBuild, doc: built } satisfies WorkerRequest);
+    worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined } satisfies WorkerRequest);
   };
   if (now) go();
   else buildTimer = window.setTimeout(go, 120);
@@ -538,6 +538,7 @@ async function shell(existing?: ShellFeature, ref?: FaceRef) {
     confirmLabel: "Confirm",
     onInput: (v) => {
       if (v > 0) feat.thickness = v;
+      rebuild();
     },
   });
   mode = { kind: "shell", feat, keypad: kp };
@@ -605,7 +606,10 @@ async function holeTool(existing?: HoleFeature, from?: { sketch: SketchFeature }
       {
         options: HOLE_SIZES.map((s) => ({ value: s, label: s })),
         get: () => feat.size,
-        set: (v) => (feat.size = v as HoleFeature["size"]),
+        set: (v) => {
+          feat.size = v as HoleFeature["size"];
+          rebuild();
+        },
       },
       {
         options: [
@@ -614,7 +618,10 @@ async function holeTool(existing?: HoleFeature, from?: { sketch: SketchFeature }
           { value: "countersink", label: "Countersink" },
         ],
         get: () => feat.head,
-        set: (v) => (feat.head = v as HoleFeature["head"]),
+        set: (v) => {
+          feat.head = v as HoleFeature["head"];
+          rebuild();
+        },
       },
       {
         options: [
@@ -622,7 +629,10 @@ async function holeTool(existing?: HoleFeature, from?: { sketch: SketchFeature }
           { value: "plastic", label: "Screw into plastic" },
         ],
         get: () => feat.fit,
-        set: (v) => (feat.fit = v as HoleFeature["fit"]),
+        set: (v) => {
+          feat.fit = v as HoleFeature["fit"];
+          rebuild();
+        },
       },
     ],
     extras: feat.sketchId
@@ -632,6 +642,7 @@ async function holeTool(existing?: HoleFeature, from?: { sketch: SketchFeature }
             icon: "flip",
             run: () => {
               feat.flip = !feat.flip;
+              rebuild();
               toast(feat.flip ? "Drilling along the sketch normal" : "Drilling against the sketch normal");
             },
           },
@@ -639,6 +650,7 @@ async function holeTool(existing?: HoleFeature, from?: { sketch: SketchFeature }
       : [],
     onInput: (v) => {
       if (v >= 0) feat.depth = v;
+      rebuild();
     },
   });
   mode = { kind: "hole", feat, keypad: kp };
@@ -682,6 +694,7 @@ function toggleHolePoint(feat: HoleFeature, p: Ptr) {
   const near = pts.findIndex((q) => Math.hypot(q[0] - hit.point[0], q[1] - hit.point[1], q[2] - hit.point[2]) < Math.max(vp.wpp * 20, 1));
   if (near >= 0) pts.splice(near, 1);
   else pts.push(hit.point.map((c) => Math.round(c * 100) / 100) as Vec3);
+  rebuild();
   renderPartOverlays();
   renderStatus();
 }
@@ -1003,6 +1016,7 @@ async function filletTool(existing?: FilletFeature) {
         get: () => feat.mode,
         set: (v) => {
           feat.mode = v as FilletFeature["mode"];
+          rebuild();
           // Keep the default names in step with the choice.
           if (!existing && /^(Fillet|Chamfer) \d+$/.test(feat.name)) {
             feat.name = nextName(feat.mode === "fillet" ? "Fillet" : "Chamfer");
@@ -1013,6 +1027,7 @@ async function filletTool(existing?: FilletFeature) {
     ],
     onInput: (v) => {
       if (v > 0) feat.radius = v;
+      rebuild();
     },
   });
   mode = { kind: "fillet", feat, keypad: kp };
@@ -1052,6 +1067,7 @@ function toggleFilletEdge(feat: FilletFeature, p: Ptr) {
   if (k >= 0) feat.edges.splice(k, 1);
   else feat.edges.push({ mid });
   highlightFilletEdges(feat);
+  rebuild();
   renderStatus();
 }
 
@@ -1073,6 +1089,7 @@ function toggleShellFace(feat: ShellFeature, faceId: number) {
   if (i >= 0) feat.faces.splice(i, 1);
   else feat.faces.push({ center: pf.center, normal: pf.plane.normal });
   highlightShellFaces(feat);
+  rebuild();
 }
 
 // ---------- Parameters ----------
