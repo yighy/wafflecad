@@ -864,19 +864,23 @@ function applyMove(inst: PartInstance, m: THREE.Matrix4) {
 /** The mates' state for the current placements: what is left free, and what cannot hold. */
 let solveState: { key: string; dof: number; failing: Set<string> } | null = null;
 
-/** Where each part turns about when the solver moves it: its middle, as drawn. */
-function partCenters() {
-  const out: Record<string, Vec3> = {};
+/** Where each part turns about when the solver moves it (its middle, as drawn), and its size. */
+function partFrames() {
+  const centers: Record<string, Vec3> = {};
+  const radii: Record<string, number> = {};
   for (const i of doc.instances ?? []) {
     const b = vp.bodyBox(i.id);
-    if (b) out[i.id] = b.getCenter(new THREE.Vector3()).toArray() as Vec3;
+    if (!b) continue;
+    centers[i.id] = b.getCenter(new THREE.Vector3()).toArray() as Vec3;
+    radii[i.id] = b.getSize(new THREE.Vector3()).length() / 2;
   }
-  return out;
+  return { centers, radii };
 }
 
 /** Moves the parts so the mates hold (nothing moves when they cannot all hold). */
 function applyMates() {
-  const sol = solveMates(doc.instances ?? [], doc.mates ?? [], partCenters());
+  const f = partFrames();
+  const sol = solveMates(doc.instances ?? [], doc.mates ?? [], f.centers, f.radii);
   for (const [id, p] of sol.placed) Object.assign(instanceOf(id)!, p);
   solveState = { key: mateKey(), dof: sol.dof, failing: new Set(sol.failing) };
 }
@@ -886,7 +890,8 @@ const mateKey = () => JSON.stringify([doc.instances, doc.mates]);
 /** The mates' state, worked out again when the parts or mates changed (undo, opening). */
 function mateState() {
   if (!solveState || solveState.key !== mateKey()) {
-    const sol = solveMates(doc.instances ?? [], doc.mates ?? [], partCenters());
+    const f = partFrames();
+    const sol = solveMates(doc.instances ?? [], doc.mates ?? [], f.centers, f.radii);
     solveState = { key: mateKey(), dof: sol.dof, failing: new Set(sol.failing) };
   }
   return solveState;
@@ -1180,11 +1185,11 @@ function syncGizmo() {
 // ---------- Moving parts live (dragged with a finger or the handles) ----------
 
 /** Placements while a part is dragged, kept out of the document until it is let go. */
-let dragging: { insts: PartInstance[]; built: Map<string, THREE.Matrix4>; centers: Record<string, Vec3>; lead: string } | null = null;
+let dragging: { insts: PartInstance[]; built: Map<string, THREE.Matrix4>; centers: Record<string, Vec3>; radii: Record<string, number>; lead: string } | null = null;
 
 function beginDrag(id: string) {
   const insts = structuredClone(doc.instances ?? []);
-  dragging = { insts, built: new Map(insts.map((i) => [i.id, instanceMatrix(i)])), centers: partCenters(), lead: id };
+  dragging = { insts, built: new Map(insts.map((i) => [i.id, instanceMatrix(i)])), ...partFrames(), lead: id };
 }
 
 /**
@@ -1204,7 +1209,7 @@ function dragBy(step: THREE.Matrix4) {
     const c = d.centers[i.id];
     if (c) centers[i.id] = new THREE.Vector3(...c).applyMatrix4(instanceMatrix(i).multiply(d.built.get(i.id)!.clone().invert())).toArray() as Vec3;
   }
-  const sol = solveMates(trial, doc.mates ?? [], centers);
+  const sol = solveMates(trial, doc.mates ?? [], centers, d.radii);
   if (sol.failing.length) return; // no way there: it stays where it was
   for (const [id, p] of sol.placed) Object.assign(trial.find((i) => i.id === id)!, p);
   d.insts = trial;

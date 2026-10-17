@@ -911,6 +911,10 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   sol = solveMates([A, B], [mate("t", "touch", top, bottom), mate("x", "axis", axisA1, axisB1), mate("y", "axis", ref("A", "axis", [15, 5, 0], [0, 0, 1]), ref("B", "axis", [15, 5, 0], [0, 0, 1]))]);
   const p = placedB(sol);
   check("mates: two axes place B exactly on A", !sol.failing.length && sol.dof === 0 && near(p.at[0], 0, 1e-5) && near(p.at[1], 0, 1e-5) && near(p.at[2], 5, 1e-5) && p.rot.every((r) => near(r, 0, 1e-4)), JSON.stringify(p));
+  // A part a little tilted is set level, not spun about the face: its turn about Z stays close.
+  sol = solveMates([A, { ...B, at: [60, 0, 20], rot: [20, 15, 30] }], [mate("t", "touch", top, bottom)], { B: [70, 5, 22.5] }, { B: 11.5 });
+  const spin = sol.placed.get("B")!.rot;
+  check("mates: a tilted part is levelled without spinning round", !sol.failing.length && Math.abs(spin[0]) < 1e-3 && Math.abs(spin[1]) < 1e-3 && spin[2] > 20 && spin[2] < 45, JSON.stringify(spin));
   // Flush tops, from B lying upside down with its top facing A's top exactly.
   const topB = ref("B", "plane", [10, 5, 5], [0, 0, 1]);
   sol = solveMates([A, { ...B, at: [40, 0, 10], rot: [180, 0, 0] }], [mate("f", "align", top, topB)]);

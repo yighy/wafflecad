@@ -79,9 +79,11 @@ function mateErrors(mate: Mate, ma: THREE.Matrix4, mb: THREE.Matrix4): number[] 
 /**
  * Moves the parts so that the mates hold, each as little as it can. Fixed parts never move; parts
  * with no mate stay where they are. `centers`: where each part turns about (its middle, world
- * coordinates), so that turning it does not swing it far away.
+ * coordinates), so that turning it does not swing it far away. `radii`: each part's size (half its
+ * diagonal): a turn counts as the distance it moves the part's ends, so the solver does not turn a
+ * part (spinning it about a face, say) where a short slide does.
  */
-export function solveMates(instances: PartInstance[], mates: Mate[], centers: Record<string, Vec3> = {}): MateSolution {
+export function solveMates(instances: PartInstance[], mates: Mate[], centers: Record<string, Vec3> = {}, radii: Record<string, number> = {}): MateSolution {
   const byId = new Map(instances.map((i) => [i.id, i]));
   const live = mates.filter((m) => byId.has(m.a.part) && byId.has(m.b.part) && m.a.part !== m.b.part);
   const free = instances.filter((i) => !i.fixed);
@@ -90,6 +92,8 @@ export function solveMates(instances: PartInstance[], mates: Mate[], centers: Re
   const col = new Map(moving.map((i, k) => [i.id, k * 6]));
   const base = new Map(instances.map((i) => [i.id, instanceMatrix(i)]));
   const center = new Map(instances.map((i) => [i.id, new THREE.Vector3(...(centers[i.id] ?? i.at))]));
+  // The turn unknowns are in millimetres at the part's ends: angle = unknown / radius.
+  const radius = new Map(instances.map((i) => [i.id, Math.max(radii[i.id] ?? 20, 1)]));
   const n = moving.length * 6;
 
   const poseOf = (id: string, x: Float64Array) => {
@@ -97,7 +101,7 @@ export function solveMates(instances: PartInstance[], mates: Mate[], centers: Re
     const k = col.get(id);
     if (k === undefined) return m0;
     const c = center.get(id)!;
-    const w = new THREE.Vector3(x[k + 3], x[k + 4], x[k + 5]);
+    const w = new THREE.Vector3(x[k + 3], x[k + 4], x[k + 5]).divideScalar(radius.get(id)!);
     const angle = w.length();
     const turn = angle > 0 ? new THREE.Matrix4().makeRotationAxis(w.clone().divideScalar(angle), angle) : new THREE.Matrix4();
     return new THREE.Matrix4()
@@ -159,7 +163,7 @@ export function solveMates(instances: PartInstance[], mates: Mate[], centers: Re
   for (let k = 0; k < moving.length && best.c > TOL * TOL; k++)
     for (const axis of [0, 1, 2]) {
       const start = new Float64Array(n);
-      start[k * 6 + 3 + axis] = Math.PI;
+      start[k * 6 + 3 + axis] = Math.PI * radius.get(moving[k].id)!;
       const tryIt = descend(start);
       if (tryIt.c < best.c) best = tryIt;
       if (best.c <= TOL * TOL) break;
