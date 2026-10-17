@@ -986,14 +986,62 @@ body.busy #status-pill .dot {
 #chips::-webkit-scrollbar {
   display: none;
 }
-#chips.more-left {
-  mask-image: linear-gradient(to right, transparent, #000 28px);
+/* Scrollable areas (see ui/scrollHints.ts): the content fades out where there is more. */
+[data-scroll="x"].more-start {
+  mask-image: linear-gradient(to right, transparent, #000 32px);
 }
-#chips.more-right {
-  mask-image: linear-gradient(to left, transparent, #000 28px);
+[data-scroll="x"].more-end {
+  mask-image: linear-gradient(to left, transparent, #000 32px);
 }
-#chips.more-left.more-right {
-  mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+[data-scroll="x"].more-start.more-end {
+  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
+[data-scroll="y"].more-start {
+  mask-image: linear-gradient(to bottom, transparent, #000 36px);
+}
+[data-scroll="y"].more-end {
+  mask-image: linear-gradient(to top, transparent, #000 36px);
+}
+[data-scroll="y"].more-start.more-end {
+  mask-image: linear-gradient(to bottom, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+}
+/* A small round arrow in the faded edge: tap to scroll one step. */
+.scroll-arrow {
+  position: fixed;
+  width: 28px;
+  height: 28px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--muted);
+  box-shadow: var(--shadow);
+  transform: translate(-50%, -50%) scale(0.6);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
+  z-index: 30;
+}
+.scroll-arrow.shown {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+.scroll-arrow .ic {
+  transition: none;
+}
+.scroll-arrow.y.end .ic {
+  transform: rotate(90deg);
+}
+.scroll-arrow.y.start .ic {
+  transform: rotate(-90deg);
+}
+.scroll-arrow.x.start .ic {
+  transform: rotate(180deg);
 }
 #chips .chip {
   touch-action: pan-x;

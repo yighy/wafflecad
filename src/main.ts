@@ -11,6 +11,7 @@ import { SketchView, newSketch, sampleCurve, sketchLineWorld, uid } from "./sket
 import { openKeypad, setKeypadHost, type KeypadHandle } from "./ui/keypad";
 import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
+import { scrollHints } from "./ui/scrollHints";
 import { DistanceHandle, sketchArrow } from "./ui/distanceHandle";
 import { findRegions } from "./sketch/profiles";
 import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
@@ -2640,16 +2641,15 @@ window.addEventListener("popstate", () => {
 
 // ---------- Boot ----------
 
-/** The timeline scrolls sideways: finger or pen drag, mouse wheel; faded ends show there is more. */
-function setupTimelineScroll() {
+/**
+ * Areas that scroll say so (touch screens hide scrollbars): faded edges, a small arrow, a nudge
+ * the first time. The timeline also scrolls sideways with a mouse wheel.
+ */
+function setupScrollAreas() {
+  scrollHints($("#tools"), "y", "tools");
+  scrollHints($("#panel"), "y", "panel");
   const el = $("#chips");
-  const edges = () => {
-    el.classList.toggle("more-left", el.scrollLeft > 2);
-    el.classList.toggle("more-right", el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
-  };
-  el.addEventListener("scroll", edges, { passive: true });
-  new ResizeObserver(edges).observe(el);
-  new MutationObserver(edges).observe(el, { childList: true });
+  scrollHints(el, "x", "timeline");
   el.addEventListener(
     "wheel",
     (e) => {
@@ -2675,7 +2675,7 @@ async function boot() {
     b.onclick = redo;
   }
   createAxisGizmo($("#gizmo"), vp, 124);
-  setupTimelineScroll();
+  setupScrollAreas();
   $("#help-close").onclick = () => $("#help").classList.remove("open");
   renderAll();
   solver = await Solver.create(planegcsWasm);
