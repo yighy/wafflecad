@@ -12,6 +12,10 @@ const P: Record<string, string> = {
   import: '<path d="M6 3h8l4 4v14H6z" fill="currentColor" fill-opacity=".14"/><path d="M14 3v4h4"/><path d="M12 10v7M9 14l3 3 3-3"/>',
   project: '<path d="M3 19.5l4-4.5h14l-4 4.5z" fill="currentColor" fill-opacity=".14"/><path d="M12 3v9.5M8.5 9 12 12.5 15.5 9"/>',
   sketch: '<path d="M3 20.5l3.5-5h14.5l-3.5 5z" fill="currentColor" fill-opacity=".14"/><path d="M15 3l3 3-6.5 6.5H8.5v-3z" fill="currentColor" fill-opacity=".14"/>',
+  // The three reference planes as seen in the default (isometric) view.
+  planeXY: '<path d="M2 12 12 7l10 5-10 5z" fill="currentColor" fill-opacity=".22"/>',
+  planeXZ: '<path d="M5 5l12 5v10L5 15z" fill="currentColor" fill-opacity=".22"/>',
+  planeYZ: '<path d="M7 10l12-5v10L7 20z" fill="currentColor" fill-opacity=".22"/>',
   plane: '<path d="M3 16 9 8h12l-6 8z" fill="currentColor" fill-opacity=".14"/>',
   variable: '<rect x="3" y="5" width="18" height="14" rx="2" fill="currentColor" fill-opacity=".14"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/>',
   extrude: '<path d="M4 15l8-3.5 8 3.5v3l-8 3.5-8-3.5z" fill="currentColor" fill-opacity=".14"/><path d="M4 15l8 3.5 8-3.5M12 18.5v3"/><path d="M12 3v6.5M8.5 6.5 12 3l3.5 3.5"/>',

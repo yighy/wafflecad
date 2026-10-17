@@ -1551,7 +1551,16 @@ const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: st
 ];
 
 /** `disabled`: why the tool cannot be used now; it stays in place, greyed, and tapping it says why. */
-function toolRow(ic: string, label: string, run: () => void, opts: { active?: boolean; on?: boolean; key?: string; disabled?: string } = {}) {
+/**
+ * `tint`: colour of the icon (the reference planes use their 3D colour); `tag`: a short text
+ * under the icon, still readable when the panel is folded to icons.
+ */
+function toolRow(
+  ic: string,
+  label: string,
+  run: () => void,
+  opts: { active?: boolean; on?: boolean; key?: string; disabled?: string; tint?: string; tag?: string } = {},
+) {
   const b = document.createElement("button");
   b.className = "tool";
   if (opts.disabled) {
@@ -1564,10 +1573,60 @@ function toolRow(ic: string, label: string, run: () => void, opts: { active?: bo
   if (opts.on) b.classList.add("on");
   b.innerHTML = `<span class="tile">${icon(ic)}</span><span class="label"></span>`;
   b.querySelector(".label")!.textContent = label;
+  const tile = b.querySelector<HTMLElement>(".tile")!;
+  if (opts.tint) tile.style.color = opts.tint;
+  if (opts.tag) {
+    const t = document.createElement("span");
+    t.className = "tile-tag";
+    t.textContent = opts.tag;
+    tile.appendChild(t);
+  }
+  holdForName(b, label);
   b.title = opts.key ? `${label} (${opts.key})` : label;
   b.setAttribute("aria-label", label);
   b.onclick = run;
   return b;
+}
+
+/**
+ * Holding a tool whose label is hidden (panel folded to icons) shows its name in a bubble, and
+ * that press does not run the tool. Fingers cannot hover, so this is the way to read the icons.
+ */
+function holdForName(b: HTMLElement, name: string) {
+  let timer = 0;
+  let shown = false;
+  const hide = () => {
+    clearTimeout(timer);
+    document.getElementById("tool-bubble")?.remove();
+  };
+  b.addEventListener("pointerdown", () => {
+    shown = false;
+    const label = b.querySelector<HTMLElement>(".label");
+    if (label && label.getBoundingClientRect().width > 8) return; // the name is already visible
+    timer = window.setTimeout(() => {
+      shown = true;
+      const r = b.getBoundingClientRect();
+      const bubble = document.createElement("div");
+      bubble.id = "tool-bubble";
+      bubble.textContent = name;
+      bubble.style.left = `${r.right + 8}px`;
+      bubble.style.top = `${r.top + r.height / 2}px`;
+      document.body.appendChild(bubble);
+    }, 420);
+  });
+  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) b.addEventListener(ev, hide);
+  // A long press only shows the name.
+  b.addEventListener(
+    "click",
+    (e) => {
+      if (!shown) return;
+      shown = false;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    },
+    true,
+  );
+  b.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
 function section(title: string) {
@@ -1622,7 +1681,8 @@ function renderTools() {
     );
   } else if (mode.kind === "pickPlane") {
     el.appendChild(section("Sketch plane"));
-    for (const p of STD_PLANES) el.appendChild(toolRow("plane", PLANE_NAMES[p.label], () => createSketchOn(p)));
+    for (const p of STD_PLANES)
+      el.appendChild(toolRow("plane" + p.label, PLANE_NAMES[p.label], () => createSketchOn(p), { tint: PLANE_COLORS[p.label], tag: p.label }));
     el.appendChild(toolRow("close", "Cancel", () => escape()));
   } else {
     el.appendChild(section("Sketch"));
