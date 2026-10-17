@@ -3050,6 +3050,7 @@ function setupMenu() {
   const items: [string, () => void][] = [
     ["Projects", () => void showProjects()],
     ["New project", () => void newProject()],
+    ["Open file…", openFile],
     ["Save file (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`)],
     ["Import STEP…", () => void importStep()],
     ["Export", () => {}],
