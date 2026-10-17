@@ -1144,13 +1144,8 @@ body.busy #status-pill .dot {
   flex-direction: column;
 }
 .menu .menu-sub button {
-  gap: 10px;
   min-height: 42px;
   padding-left: 26px;
-}
-.menu-sub button span {
-  font-size: 12px;
-  color: var(--muted);
 }
 
 /* ---------- Overlay labels and handles on the 3D view ---------- */

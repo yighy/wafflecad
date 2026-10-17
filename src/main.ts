@@ -3050,7 +3050,6 @@ function setupMenu() {
   const items: [string, () => void][] = [
     ["Projects", () => void showProjects()],
     ["New project", () => void newProject()],
-    ["Open file…", openFile],
     ["Save file (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`)],
     ["Import STEP…", () => void importStep()],
     ["Export", () => {}],
@@ -3061,15 +3060,13 @@ function setupMenu() {
   const formats = document.createElement("div");
   formats.className = "menu-sub";
   const inner = document.createElement("div");
-  for (const [format, label, hint] of [
-    ["step", "STEP", "other CAD software"],
-    ["stl", "STL", "slicers"],
-    ["3mf", "3MF", "slicers, with units"],
+  for (const [format, label] of [
+    ["step", "STEP"],
+    ["stl", "STL"],
+    ["3mf", "3MF"],
   ] as const) {
     const b = document.createElement("button");
-    b.innerHTML = `<b></b><span></span>`;
-    b.querySelector("b")!.textContent = label;
-    b.querySelector("span")!.textContent = hint;
+    b.textContent = label;
     b.onclick = () => {
       menu.classList.remove("open");
       formats.classList.remove("open");
