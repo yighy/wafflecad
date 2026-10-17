@@ -620,5 +620,18 @@ const hvDrop = transformGroup(hv, hvr.lines, { kind: "rotate", deg: 30, about: [
 check("a turn drops the H/V it breaks", hvDrop.dropped === 2 && solver.solve(hv).ok);
 check("the origin cannot move", !!transformGroup(newSketch("O", XY), ["O"], { kind: "move", dx: 1, dy: 0 }).error);
 
+// --- A large pinned import stays light for the solver (pins are constants, not equations).
+let bigSvg = "";
+for (let i = 0; i < 150; i++) bigSvg += `<ellipse cx="${(i % 15) * 10 + 5}" cy="${Math.floor(i / 15) * 10 + 5}" rx="4" ry="3"/>`;
+const bsk = newSketch("Big", XY);
+insertShapes(bsk, parseSvg(`<svg width="160mm" height="110mm" viewBox="0 0 160 110">${bigSvg}</svg>`).shapes, { scale: 1, place: "file", fixed: true });
+const tBig = performance.now();
+const bres = solver.solve(bsk);
+const bMs = performance.now() - tBig;
+check("600 pinned Béziers solve quickly", bres.ok && bres.dof === 0 && bMs < 500, `${bMs.toFixed(0)} ms`);
+const fixedPt = bsk.entities.find((e): e is SkPoint => e.type === "point" && !e.fixed)!;
+solver.solve(bsk, { points: [{ id: fixedPt.id, x: fixedPt.x + 5, y: fixedPt.y }] });
+check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id).x, fixedPt.x));
+
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

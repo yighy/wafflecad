@@ -78,8 +78,14 @@ export class Solver {
 
 function toPrimitives(sk: SketchFeature, view: SketchView): SketchPrimitive[] {
   const out: SketchPrimitive[] = [];
+  // Pinned points are constants for the solver, not unknowns held by two equations each: an
+  // imported drawing pins thousands of them, which would otherwise exhaust the solver's memory.
+  const pinned = new Map<string, [number, number]>();
+  for (const c of sk.constraints) if (c.type === "fix") pinned.set(c.refs[0], c.at ?? view.xy(c.refs[0]));
   for (const e of sk.entities) {
-    if (e.type === "point") out.push({ id: e.id, type: "point", x: e.x, y: e.y, fixed: !!e.fixed });
+    if (e.type !== "point") continue;
+    const pin = pinned.get(e.id);
+    out.push({ id: e.id, type: "point", x: pin ? pin[0] : e.x, y: pin ? pin[1] : e.y, fixed: !!e.fixed || !!pin });
   }
   for (const e of sk.entities) {
     switch (e.type) {
@@ -188,13 +194,9 @@ function constraintPrims(c: SkConstraint, view: SketchView): SketchPrimitive[] {
       return view.get(d)?.type === "point"
         ? [{ id, type: "p2p_symmetric_ppp", p1_id: a, p2_id: b, p_id: d }]
         : [{ id, type: "p2p_symmetric_ppl", p1_id: a, p2_id: b, l_id: d }];
-    case "fix": {
-      const [x, y] = c.at ?? view.xy(a);
-      return [
-        { id, type: "coordinate_x", p_id: a, x },
-        { id: `${id}#y`, type: "coordinate_y", p_id: a, y },
-      ];
-    }
+    case "fix":
+      // Handled as a constant point (see toPrimitives).
+      return [];
     case "distance":
       if (A?.type === "line") return [{ id, type: "p2p_distance", p1_id: A.p1, p2_id: A.p2, distance: v }];
       if (B?.type === "line") return [{ id, type: "p2l_distance", p_id: a, l_id: b, distance: v }];

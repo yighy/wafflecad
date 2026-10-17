@@ -1268,8 +1268,31 @@ export class SketchEditor implements PointerTool {
 
   // ---------- Rendering ----------
 
+  /**
+   * What render() can keep while the geometry does not change (hover, cursor, selection): the
+   * curves' polylines in world space and the shaded regions. A large import makes these the
+   * costly part of a render.
+   */
+  private geomCache: { sig: string; curves: Map<string, number[]> } = { sig: "", curves: new Map() };
+  private fillSig = "";
+
+  private geomSig() {
+    return JSON.stringify(this.sk.entities) + JSON.stringify(this.sk.plane);
+  }
+
   render() {
     const v = this.view;
+    const sig = this.geomSig();
+    if (this.geomCache.sig !== sig) this.geomCache = { sig, curves: new Map() };
+    const cachedPolyline = (id: string, make: () => P2[]) => {
+      let flat = this.geomCache.curves.get(id);
+      if (!flat) {
+        flat = [];
+        for (const p of make()) flat.push(...this.toWorld(p).toArray());
+        this.geomCache.curves.set(id, flat);
+      }
+      return flat;
+    };
     const COLORS = palette();
     const lines: LineBatch = { positions: [], colors: [], width: 2.5, overlay: true };
     const constr: LineBatch = { positions: [], colors: [], width: 1.5, overlay: true, dashed: true };
@@ -1308,12 +1331,19 @@ export class SketchEditor implements PointerTool {
       }
       const b = c.construction ? constr : lines;
       const col = colorOf(c.id, c.construction ? COLORS.construction : base);
-      if (c.type === "line") seg(b, v.xy(c.p1), v.xy(c.p2), col);
-      else if (c.type === "circle") poly(b, circlePts(v.xy(c.c), c.r), col);
-      else if (c.type === "spline" || c.type === "bezier") poly(b, sampleCurve(v, c), col);
-      else {
+      if (c.type === "line") {
+        seg(b, v.xy(c.p1), v.xy(c.p2), col);
+        continue;
+      }
+      const flat = cachedPolyline(c.id, () => {
+        if (c.type === "circle") return circlePts(v.xy(c.c), c.r);
+        if (c.type === "spline" || c.type === "bezier") return sampleCurve(v, c);
         const [a0, a1] = v.arcAngles(c);
-        poly(b, circlePts(v.xy(c.c), v.arcRadius(c), a0, a1), col);
+        return circlePts(v.xy(c.c), v.arcRadius(c), a0, a1);
+      });
+      for (let i = 0; i + 3 < flat.length; i += 3) {
+        b.positions.push(flat[i], flat[i + 1], flat[i + 2], flat[i + 3], flat[i + 4], flat[i + 5]);
+        b.colors.push(col[0], col[1], col[2], col[0], col[1], col[2]);
       }
     }
     const sharpMarks: LineBatch = { positions: [], colors: [], width: 1.5, overlay: true };
@@ -1391,12 +1421,17 @@ export class SketchEditor implements PointerTool {
 
     this.vp.setSketchLayer([axes, constr, sharpMarks, lines, preview, trim], [pts, big]);
 
-    // Closed regions, filled faintly: what an extrusion will use.
-    const regions = findRegions(this.sk).map((r) => ({
-      outer: loopPoly(r.outer),
-      holes: r.holes.map(loopPoly),
-    }));
-    this.vp.setFills(this.sk.plane, regions, cssVar("--sk-fill", "#4cc3ff"));
+    // Closed regions, filled faintly: what an extrusion will use. Only redone when the geometry
+    // (or the theme colour) changed.
+    const fill = cssVar("--sk-fill", "#4cc3ff");
+    if (this.fillSig !== sig + fill) {
+      this.fillSig = sig + fill;
+      const regions = findRegions(this.sk).map((r) => ({
+        outer: loopPoly(r.outer),
+        holes: r.holes.map(loopPoly),
+      }));
+      this.vp.setFills(this.sk.plane, regions, fill);
+    }
     this.renderLabels(v);
   }
 
