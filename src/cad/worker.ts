@@ -2,7 +2,7 @@
 import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
-import { buildResult, buildShape, exportFile } from "./build";
+import { buildResult, buildShape, exportFile, setPartDocs } from "./build";
 import { measure } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
@@ -22,6 +22,10 @@ ready.then(
 self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   await ready;
   const req = ev.data;
+  if (req.type === "parts") {
+    setPartDocs(req.parts);
+    return;
+  }
   if (req.type === "build") {
     try {
       const ex = req.pickExclude;

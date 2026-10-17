@@ -1,7 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, CadDocument, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, CadDocument, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
@@ -13,6 +13,7 @@ import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
 import { scrollHints } from "./ui/scrollHints";
 import { DistanceHandle, sketchArrow } from "./ui/distanceHandle";
+import { PlaceGizmo } from "./ui/placeGizmo";
 import { findRegions } from "./sketch/profiles";
 import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
 import { parseDxf } from "./sketch/dxf";
@@ -104,7 +105,8 @@ type Mode =
   | { kind: "fillet"; feat: FilletFeature; keypad: KeypadHandle }
   | { kind: "hole"; feat: HoleFeature; keypad: KeypadHandle }
   | { kind: "pattern"; feat: PatternFeature; keypad: KeypadHandle }
-  | { kind: "revolve"; feat: RevolveFeature; keypad: KeypadHandle };
+  | { kind: "revolve"; feat: RevolveFeature; keypad: KeypadHandle }
+  | { kind: "place"; feat: PartInstance; keypad: KeypadHandle };
 
 /** Modes where a feature is being edited with the keypad open. */
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
@@ -192,6 +194,7 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     renderTimeline();
     renderPanel();
     renderPartOverlays();
+    syncGizmo();
     if (thumbStale) scheduleThumb();
     if (measuring) showMeasurePicks();
   } else if (m.type === "measured") {
@@ -331,7 +334,8 @@ function leaveModes() {
   pendingFaceTool = null;
 }
 
-async function openProject(id: string) {
+/** `from`: the assembly this part is opened from (offered as the way back). */
+async function openProject(id: string, from: { id: string; name: string } | null = null) {
   await flushSave();
   captureThumb();
   const p = await getProject(id).catch(() => null);
@@ -339,6 +343,8 @@ async function openProject(id: string) {
   leaveModes();
   project = p.meta;
   doc = asDocument(p.doc) ?? emptyDoc();
+  cameFrom = from;
+  if (isAssembly()) await loadParts();
   prefs.project = id;
   savePrefs();
   selectedFeature = null;
@@ -346,7 +352,7 @@ async function openProject(id: string) {
   lastBuild = null; // the first build of the project frames it
   hiddenBodies = new Set();
   vp.setHiddenBodies(hiddenBodies);
-  thumbStale = !p.meta.thumb && p.doc.features.length > 0;
+  thumbStale = !p.meta.thumb && (p.doc.features.length > 0 || !!p.doc.instances?.length);
   resetHistory();
   vp.setModel(null);
   rebuild(true);
@@ -356,7 +362,7 @@ async function openProject(id: string) {
 /** Saves `d` as a new project and opens it. */
 async function createProject(name: string, d: CadDocument = emptyDoc()) {
   const now = Date.now();
-  const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now };
+  const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now, kind: d.kind };
   try {
     await putProject(meta, d);
   } catch {
@@ -369,6 +375,14 @@ async function newProject() {
   const names = (await listProjects().catch(() => [])).map((p) => p.name);
   await createProject(freeName("Model", names));
   closeProjects();
+}
+
+/** A new assembly, and the parts to put in it right away. */
+async function newAssembly() {
+  const names = (await listProjects().catch(() => [])).map((p) => p.name);
+  await createProject(freeName("Assembly", names), { ...emptyDoc(), kind: "assembly", instances: [] });
+  closeProjects();
+  void showPartPicker();
 }
 
 /**
@@ -654,6 +668,233 @@ async function extrude(existing?: ExtrudeFeature) {
   }
   feat.distance = Math.sign(feat.distance || 1) * value;
   feat.distanceExpr = res?.expr;
+  commit();
+}
+
+// ---------- Assemblies: parts from other projects, placed by hand ----------
+
+const isAssembly = () => doc.kind === "assembly";
+/** Documents and names of the parts the open assembly uses (their latest saved versions). */
+let partDocs: Record<string, CadDocument> = {};
+let partNames: Record<string, string> = {};
+/** The assembly the open part was opened from: a button goes back to it. */
+let cameFrom: { id: string; name: string } | null = null;
+let gizmo: PlaceGizmo | null = null;
+let gizmoFor = "";
+
+/** Reads the parts the assembly uses and hands them to the worker. */
+async function loadParts() {
+  const ids = [...new Set((doc.instances ?? []).map((i) => i.project))];
+  const got = await Promise.all(ids.map((id) => getProject(id).catch(() => null)));
+  partDocs = {};
+  partNames = {};
+  got.forEach((p, i) => {
+    if (!p) return;
+    partDocs[ids[i]] = asDocument(p.doc) ?? emptyDoc();
+    partNames[ids[i]] = p.meta.name;
+  });
+  sendParts();
+}
+
+function sendParts() {
+  worker.postMessage({ type: "parts", parts: partDocs } satisfies WorkerRequest);
+}
+
+const instanceOf = (id: string | null) => doc.instances?.find((i) => i.id === id) ?? null;
+
+/** Picks a project to place in the assembly (parts only, not the assembly itself). */
+async function showPartPicker() {
+  let list: ProjectMeta[];
+  try {
+    list = (await listProjects()).filter((p) => p.kind !== "assembly" && p.id !== project?.id);
+  } catch {
+    return toast("This browser cannot keep projects");
+  }
+  if (!list.length) return toast("Make a part in a project of its own first (New project)");
+  closeProjects();
+  const el = document.createElement("div");
+  el.id = "projects";
+  el.addEventListener("pointerdown", (e) => {
+    if (e.target === el) closeProjects();
+  });
+  el.innerHTML = `<div class="projects-card">
+    <header><h2>Insert a part</h2><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
+    <div class="projects-grid"></div></div>`;
+  el.querySelector<HTMLElement>(".projects-close")!.onclick = closeProjects;
+  const grid = el.querySelector(".projects-grid")!;
+  for (const p of list) {
+    const card = document.createElement("div");
+    card.className = "project-card";
+    card.innerHTML = `<button class="project-thumb"></button><div class="project-row"><div class="project-info"><div class="project-name"></div><div class="project-date"></div></div></div>`;
+    const thumb = card.querySelector<HTMLElement>(".project-thumb")!;
+    if (p.thumb) {
+      const img = document.createElement("img");
+      img.src = p.thumb;
+      img.alt = "";
+      thumb.appendChild(img);
+    } else thumb.innerHTML = icon("part", 40);
+    card.querySelector(".project-name")!.textContent = p.name;
+    card.querySelector(".project-date")!.textContent = ago(p.updated);
+    const pick = () => {
+      closeProjects();
+      void insertPart(p);
+    };
+    thumb.onclick = pick;
+    card.querySelector<HTMLElement>(".project-info")!.onclick = pick;
+    grid.appendChild(card);
+  }
+  document.body.appendChild(el);
+}
+
+/** Places a part beside the others (its exact place is then set by hand). */
+async function insertPart(p: ProjectMeta, d?: CadDocument) {
+  if (!d) {
+    const got = await getProject(p.id).catch(() => null);
+    if (!got) return toast("This project could not be read");
+    d = asDocument(got.doc) ?? emptyDoc();
+  }
+  partDocs[p.id] = d;
+  partNames[p.id] = p.name;
+  sendParts();
+  const box = vp.modelBox();
+  const inst: PartInstance = {
+    id: uid(),
+    project: p.id,
+    name: freeName(p.name, (doc.instances ?? []).map((i) => i.name)),
+    at: box ? [Math.round(box.max.x + 10), 0, 0] : [0, 0, 0],
+    rot: [0, 0, 0],
+  };
+  doc.instances = [...(doc.instances ?? []), inst];
+  selectedFeature = inst.id;
+  fitNext = true;
+  commit();
+}
+
+function duplicateInstance(inst: PartInstance) {
+  const box = vp.bodyBox(inst.id);
+  const copy: PartInstance = {
+    ...inst,
+    id: uid(),
+    name: freeName(partNames[inst.project] ?? inst.name.replace(/ \d+$/, ""), (doc.instances ?? []).map((i) => i.name)),
+    at: [inst.at[0] + (box ? Math.ceil(box.max.x - box.min.x) + 5 : 20), inst.at[1], inst.at[2]],
+    rot: [...inst.rot],
+  };
+  doc.instances = [...(doc.instances ?? []), copy];
+  selectedFeature = copy.id;
+  commit();
+}
+
+function removeInstance(inst: PartInstance) {
+  doc.instances = (doc.instances ?? []).filter((i) => i !== inst);
+  if (selectedFeature === inst.id) selectedFeature = null;
+  commit();
+}
+
+function renameInstance(inst: PartInstance) {
+  const name = prompt("Part name", inst.name)?.trim();
+  if (!name || name === inst.name) return;
+  inst.name = name;
+  commit();
+}
+
+/** Opens the part's own project to change it; the assembly follows when it is opened again. */
+async function openPart(inst: PartInstance) {
+  if (!project) return;
+  const from = { id: project.id, name: project.name };
+  await openProject(inst.project, from);
+}
+
+/** The placement of a part, as a matrix (turned about its origin, then moved). */
+function instanceMatrix(inst: PartInstance) {
+  const e = new THREE.Euler(...(inst.rot.map((d) => THREE.MathUtils.degToRad(d)) as Vec3), "XYZ");
+  return new THREE.Matrix4().compose(new THREE.Vector3(...inst.at), new THREE.Quaternion().setFromEuler(e), new THREE.Vector3(1, 1, 1));
+}
+
+/** Moves a part by `m` (a slide or a turn made with the handles), in place of where it was. */
+function applyMove(inst: PartInstance, m: THREE.Matrix4) {
+  const p = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  m.clone().multiply(instanceMatrix(inst)).decompose(p, q, new THREE.Vector3());
+  const e = new THREE.Euler().setFromQuaternion(q, "XYZ");
+  const clean = (v: number, step: number) => Math.round(v / step) * step + 0;
+  inst.at = [p.x, p.y, p.z].map((v) => clean(v, 1e-4)) as Vec3;
+  inst.rot = [e.x, e.y, e.z].map((r) => clean(THREE.MathUtils.radToDeg(r), 1e-4)) as Vec3;
+}
+
+/** The handles on the selected part, while nothing else is going on. */
+function syncGizmo() {
+  const inst = isAssembly() && mode.kind === "part" && !measuring ? instanceOf(selectedFeature) : null;
+  const box = inst && !hiddenBodies.has(inst.id) ? vp.bodyBox(inst.id) : null;
+  const key = inst && box ? `${inst.id}|${box.min.toArray()}|${box.max.toArray()}` : "";
+  if (key === gizmoFor) return;
+  gizmoFor = key;
+  gizmo?.dispose();
+  gizmo = null;
+  if (!inst || !box) return;
+  gizmo = new PlaceGizmo(
+    vp,
+    box.getCenter(new THREE.Vector3()),
+    (m) => vp.moveBody(inst.id, m),
+    (m) => {
+      applyMove(inst, m);
+      commit();
+    },
+  );
+}
+
+/** Position and turns of a part, typed on the keypad (one value at a time). */
+async function placeTool(inst: PartInstance) {
+  if (isOperation(mode)) return;
+  const before = { at: [...inst.at] as Vec3, rot: [...inst.rot] as Vec3 };
+  const LABELS = ["X", "Y", "Z", "Turn X", "Turn Y", "Turn Z"];
+  let field = 0;
+  const get = (i: number) => (i < 3 ? inst.at[i] : inst.rot[i - 3]);
+  const set = (i: number, v: number) => {
+    if (i < 3) inst.at[i] = v;
+    else inst.rot[i - 3] = v;
+    rebuild();
+  };
+  const choose = (i: number) => {
+    field = i;
+    kp.setLabel(LABELS[i], i < 3 ? "mm" : "°");
+    kp.set(get(i));
+  };
+  const row = (from: number): Segmented => ({
+    options: [0, 1, 2].map((k) => ({ value: String(from + k), label: LABELS[from + k] })),
+    get: () => String(field),
+    set: (v) => choose(Number(v)),
+  });
+  const kp = openKeypad({
+    title: inst.name,
+    subtitle: "Position of its origin, and turns about it",
+    label: LABELS[0],
+    value: get(0),
+    confirmLabel: "Confirm",
+    segments: [row(0), row(3)],
+    extras: [
+      {
+        label: "Negate",
+        icon: "flip",
+        run: () => {
+          set(field, -get(field));
+          kp.set(get(field));
+        },
+      },
+    ],
+    onInput: (v) => set(field, v),
+  });
+  mode = { kind: "place", feat: inst, keypad: kp };
+  renderAll();
+  const res = await kp.result;
+  mode = { kind: "part" };
+  if (!res) {
+    inst.at = before.at;
+    inst.rot = before.rot;
+    rebuild(true);
+    renderAll();
+    return;
+  }
+  set(field, res.value);
   commit();
 }
 
@@ -1780,6 +2021,7 @@ function renderAll() {
   renderStatus();
   renderViewButtons();
   renderPartOverlays();
+  syncGizmo();
 }
 
 const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: string }[] = [
@@ -1943,7 +2185,20 @@ function renderTools() {
     for (const p of STD_PLANES)
       el.appendChild(toolRow("plane" + p.label, PLANE_NAMES[p.label], () => createSketchOn(p), { tint: PLANE_COLORS[p.label], tag: p.label }));
     el.appendChild(toolRow("close", "Cancel", () => escape()));
+  } else if (isAssembly()) {
+    el.appendChild(section("Parts"));
+    el.appendChild(toolRow("plus", "Insert part", () => void showPartPicker(), { key: "I" }));
+    el.appendChild(toolRow("import", "Import STEP", () => void importStep()));
+    if (doc.instances?.length) {
+      el.appendChild(section("Design"));
+      el.appendChild(toolRow("measure", "Measure", toggleMeasure, { active: !!measuring, key: "D" }));
+    }
   } else {
+    if (cameFrom) {
+      const back = cameFrom;
+      el.appendChild(section("Assembly"));
+      el.appendChild(toolRow("back", `Back to ${back.name}`, () => void openProject(back.id)));
+    }
     el.appendChild(section("Sketch"));
     el.appendChild(toolRow("sketch", "New sketch", startNewSketch, { key: "S" }));
     // Tools appear as the document grows: a sketch brings Extrude and Revolve, a solid brings
@@ -2141,6 +2396,39 @@ function renderPanel() {
   }
   if (showParams) return renderParamsPanel(el);
 
+  if (isAssembly()) {
+    const inst = instanceOf(selectedFeature);
+    if (!inst) {
+      if (doc.instances?.length) return;
+      head(project?.name ?? "Assembly", "No parts yet");
+      const hint = document.createElement("p");
+      hint.className = "p-hint";
+      hint.textContent = "Insert parts from your other projects, then drag the arrows and rings to place them.";
+      el.appendChild(hint);
+      actions([["plus", "Insert part", () => void showPartPicker(), "primary"]]);
+      return;
+    }
+    const err = lastBuild?.errors[inst.id] ?? lastBuild?.warnings?.[inst.id];
+    const where = `${inst.at.map(fmtNum).join(", ")} mm${inst.rot.some((r) => r) ? ` · turned ${inst.rot.map((r) => fmtNum(r) + "°").join(", ")}` : ""}`;
+    head(inst.name, err ?? `${partNames[inst.project] ?? "Missing project"} · ${where}`, !!err, true);
+    const hidden = hiddenBodies.has(inst.id);
+    const items: [string, string, () => void, string?][] = [
+      ["edit", "Position…", () => void placeTool(inst)],
+      ["copy", "Duplicate", () => duplicateInstance(inst)],
+      ["rename", "Rename", () => renameInstance(inst)],
+      [hidden ? "eye" : "eyeOff", hidden ? "Show" : "Hide", () => toggleBody(inst.id)],
+    ];
+    if ((lastBuild?.bodies?.length ?? 0) > 1) {
+      const others = lastBuild!.bodies!.filter((b) => b.id !== inst.id);
+      const isolated = !hidden && others.every((b) => hiddenBodies.has(b.id));
+      items.push(["eye", isolated ? "Show all parts" : "Show only this part", () => isolateBody(inst.id)]);
+    }
+    if (partDocs[inst.project]) items.push(["folder", "Open the part", () => void openPart(inst)]);
+    items.push(["trash", "Remove", () => removeInstance(inst), "danger"]);
+    actions(items);
+    return;
+  }
+
   if (selectedFace) {
     const plane = selectedFace.plane;
     head("Face", plane ? "Flat face" : "Curved face", false, true);
@@ -2258,6 +2546,7 @@ let chipsShown: Set<string> | null = null;
 function renderTimeline() {
   const el = $("#chips");
   el.replaceChildren();
+  if (isAssembly()) return renderPartList(el);
   if (!doc.features.length) {
     const e = document.createElement("span");
     e.className = "empty";
@@ -2299,6 +2588,40 @@ function renderTimeline() {
   for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
 }
 
+/** An assembly's timeline: its parts, in the order they were inserted. */
+function renderPartList(el: HTMLElement) {
+  const list = doc.instances ?? [];
+  if (!list.length) {
+    const e = document.createElement("span");
+    e.className = "empty";
+    e.textContent = "The parts of the assembly appear here. Insert one from your projects.";
+    el.appendChild(e);
+  }
+  const current = isOperation(mode) ? mode.feat.id : selectedFeature;
+  for (const inst of list) {
+    const b = document.createElement("button");
+    b.className = "chip";
+    if (chipsShown && !chipsShown.has(inst.id)) b.classList.add("pop");
+    if (inst.id === current) b.classList.add("sel");
+    if (lastBuild?.errors[inst.id]) b.classList.add("error");
+    else if (lastBuild?.warnings?.[inst.id]) b.classList.add("warn");
+    if (hiddenBodies.has(inst.id)) b.classList.add("muted");
+    b.innerHTML = icon(hiddenBodies.has(inst.id) ? "eyeOff" : "part", 20) + "<span></span>";
+    b.querySelector("span")!.textContent = inst.name;
+    b.onclick = () => {
+      if (mode.kind !== "part") return toast("Finish the current step first");
+      if (measuring) endMeasure();
+      selectedFeature = selectedFeature === inst.id ? null : inst.id;
+      renderAll();
+    };
+    el.appendChild(b);
+    if (inst.id === current) requestAnimationFrame(() => b.scrollIntoView({ inline: "nearest", block: "nearest" }));
+  }
+  chipsShown = new Set(list.map((i) => i.id));
+  for (const b of buttons(".undo-btn")) b.disabled = undoPos === 0;
+  for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
+}
+
 function renderStatus() {
   let s = kernelMessage;
   if (mode.kind === "pickPlane") s = "New sketch · tap a plane or a flat face";
@@ -2321,6 +2644,9 @@ function renderStatus() {
     s = `${mode.feat.mode === "fillet" ? "Fillet" : "Chamfer"} · ${n ? `${n} edge${n > 1 ? "s" : ""} chosen` : "tap the edges"}, type the size`;
   }
   else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
+  else if (mode.kind === "place") s = `${mode.feat.name} · choose a value and type it`;
+  else if (isAssembly() && !s && !measuring && doc.instances?.length)
+    s = instanceOf(selectedFeature) ? "Drag an arrow to slide the part, a ring to turn it" : "Tap a part to place it";
   if (buildSlow) s = s ? `Building… · ${s}` : "Building the model…";
   $("#status").textContent = s;
 }
@@ -2440,7 +2766,7 @@ function syncBodyList(el: HTMLElement) {
   if (list.length < 2) return;
   const t = document.createElement("div");
   t.className = "dm-title";
-  t.textContent = "Bodies";
+  t.textContent = isAssembly() ? "Parts" : "Bodies";
   el.appendChild(t);
   for (const b of list) {
     const btn = document.createElement("button");
@@ -2642,6 +2968,11 @@ const partTool: PointerTool = {
     }
     if (mode.kind === "fillet") return toggleFilletEdge(mode.feat, p);
     if (mode.kind === "part" && measuring) return measureTap(p);
+    if (mode.kind === "part" && isAssembly()) {
+      const id = face == null ? null : (lastBuild?.bodies?.find((b) => b.faceIds.includes(face))?.id ?? null);
+      selectedFeature = id;
+      return renderAll();
+    }
     if (mode.kind === "hole") return holeUp(mode.feat, p);
     if (mode.kind === "revolve") {
       const sk = doc.features.find((x): x is SketchFeature => x.id === (mode as { feat: RevolveFeature }).feat.sketchId && x.kind === "sketch");
@@ -3012,8 +3343,21 @@ async function importStep() {
   if (!text.slice(0, 400).includes("ISO-10303-21")) return toast("This is not a STEP file");
   leaveModes();
   const fileId = uid();
-  doc.files = { ...doc.files, [fileId]: text };
   const name = file.name.replace(/\.(step|stp)$/i, "") || "Import";
+  if (isAssembly()) {
+    // In an assembly, the file becomes a part: a project of its own, placed here.
+    const part: CadDocument = { ...emptyDoc(), files: { [fileId]: text }, features: [{ id: uid(), kind: "import", name, fileId, op: "add" }] };
+    const now = Date.now();
+    const names = (await listProjects().catch(() => [])).map((p) => p.name);
+    const meta: ProjectMeta = { id: newProjectId(), name: names.includes(name) ? freeName(name, names) : name, created: now, updated: now };
+    try {
+      await putProject(meta, part);
+    } catch {
+      return toast("Could not save in this browser");
+    }
+    return insertPart(meta, part);
+  }
+  doc.files = { ...doc.files, [fileId]: text };
   // An imported part usually stays apart: it starts a body of its own.
   doc.features.push({ id: uid(), kind: "import", name, fileId, op: "add", body: "new" });
   fitNext = true;
@@ -3077,9 +3421,10 @@ async function showProjects() {
     document.body.appendChild(el);
   }
   el.innerHTML = `<div class="projects-card">
-    <header><h2>Projects</h2><button class="projects-open">${icon("folder", 20)}<span>Open file</span></button><button class="primary projects-new">${icon("plus", 20)}<span>New project</span></button><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
+    <header><h2>Projects</h2><button class="projects-open">${icon("folder", 20)}<span>Open file</span></button><button class="projects-asm">${icon("assembly", 20)}<span>New assembly</span></button><button class="primary projects-new">${icon("plus", 20)}<span>New project</span></button><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
     <div class="projects-grid"></div></div>`;
   el.querySelector<HTMLElement>(".projects-new")!.onclick = () => void newProject();
+  el.querySelector<HTMLElement>(".projects-asm")!.onclick = () => void newAssembly();
   el.querySelector<HTMLElement>(".projects-open")!.onclick = openFile;
   el.querySelector<HTMLElement>(".projects-close")!.onclick = closeProjects;
   const grid = el.querySelector(".projects-grid")!;
@@ -3104,10 +3449,10 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[]) {
     img.src = p.thumb;
     img.alt = "";
     thumb.appendChild(img);
-  } else thumb.innerHTML = icon("extrude", 40);
+  } else thumb.innerHTML = icon(p.kind === "assembly" ? "assembly" : "extrude", 40);
   const name = card.querySelector<HTMLElement>(".project-name")!;
   name.textContent = p.name;
-  card.querySelector(".project-date")!.textContent = current ? "Open now" : ago(p.updated);
+  card.querySelector(".project-date")!.textContent = (p.kind === "assembly" ? "Assembly · " : "") + (current ? "Open now" : ago(p.updated));
   const open = async () => {
     if (p.id !== project?.id) await openProject(p.id);
     closeProjects();
@@ -3181,6 +3526,7 @@ function setupMenu() {
   const items: [string, () => void][] = [
     ["Projects", () => void showProjects()],
     ["New project", () => void newProject()],
+    ["New assembly", () => void newAssembly()],
     ["Open file…", openFile],
     ["Save file (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`)],
     ["Import STEP…", () => void importStep()],
@@ -3349,6 +3695,15 @@ window.addEventListener("keydown", (e) => {
     else return;
     return renderAll();
   }
+  if (mode.kind === "part" && isAssembly()) {
+    const key = k.toLowerCase();
+    const inst = instanceOf(selectedFeature);
+    if (key === "i") void showPartPicker();
+    else if (key === "d") toggleMeasure();
+    else if (key === "f") vp.fit();
+    else if (key === "delete" && inst) removeInstance(inst);
+    return;
+  }
   if (mode.kind === "part") {
     const key = k.toLowerCase();
     if (key === "s") startNewSketch();
@@ -3431,7 +3786,7 @@ async function boot() {
     onUndo: undo,
     onRedo: redo,
   });
-  if (!doc.features.length) $("#help").classList.add("open");
+  if (!doc.features.length && !isAssembly()) $("#help").classList.add("open");
   if ("serviceWorker" in navigator && import.meta.env.PROD) navigator.serviceWorker.register(`./sw.js?v=${__APP_VERSION__}`);
 }
 

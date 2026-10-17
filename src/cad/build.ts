@@ -1,7 +1,7 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
 import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
-import type { Axis, BuildResult, CadDocument, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import type { Axis, BuildResult, CadDocument, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
 import { sketchLineWorld } from "../sketch/model";
@@ -381,6 +381,7 @@ export function readStep(text: string): Shape3D {
 
 /** Replays the features (from the cache where possible); a failing feature is skipped and reported. */
 export function buildShape(doc: CadDocument) {
+  if (doc.kind === "assembly") return assemblyShape(doc);
   const names = new Map(doc.features.map((f) => [f.id, f.name]));
   const keys: string[] = [];
   let key = "";
@@ -496,6 +497,64 @@ export function buildShape(doc: CadDocument) {
   return { shape, bodies: [...bodies].map(([id, s]) => ({ id, shape: s })), errors, warnings };
 }
 
+// ---------- Assemblies ----------
+
+/** Documents of the parts the open assembly uses, by project id (sent by the app). */
+let partDocs: Record<string, CadDocument> = {};
+export function setPartDocs(parts: Record<string, CadDocument>) {
+  partDocs = parts;
+}
+
+/** A part's solid turned and moved into place (a copy: the part's own solid stays as it is). */
+export function placeShape(part: Shape3D, p: Pick<PartInstance, "at" | "rot">): Shape3D {
+  let s = part.clone();
+  const [rx, ry, rz] = p.rot;
+  if (rz) s = s.rotate(rz, [0, 0, 0], [0, 0, 1]);
+  if (ry) s = s.rotate(ry, [0, 0, 0], [0, 1, 0]);
+  if (rx) s = s.rotate(rx, [0, 0, 0], [1, 0, 0]);
+  if (p.at.some((v) => v !== 0)) s = s.translate(p.at);
+  return s;
+}
+
+/** Each placed part, kept while neither the part nor its place change. */
+const placedCache = new Map<string, { part: Shape3D; key: string; shape: Shape3D }>();
+/** The last assembly as one shape: the same object while no part moved, so its mesh is reused. */
+let lastAssembly: { parts: Shape3D[]; shape: Shape3D | null } = { parts: [], shape: null };
+
+/** An assembly: each part built from its own project (from the cache when unchanged), then placed. */
+function assemblyShape(doc: CadDocument) {
+  const errors: Record<string, string> = {};
+  const warnings: Record<string, string> = {};
+  const bodies: { id: string; shape: Shape3D }[] = [];
+  for (const inst of doc.instances ?? []) {
+    const part = partDocs[inst.project];
+    if (!part) {
+      errors[inst.id] = "Its project is no longer there";
+      continue;
+    }
+    if (part.kind === "assembly") {
+      errors[inst.id] = "An assembly cannot be placed in another one yet";
+      continue;
+    }
+    const r = buildShape(part);
+    if (!r.shape) {
+      errors[inst.id] = "The part has no solid yet";
+      continue;
+    }
+    if (Object.keys(r.errors).length) warnings[inst.id] = "Some steps of the part fail: open it to fix them";
+    const key = JSON.stringify([inst.at, inst.rot]);
+    let p = placedCache.get(inst.id);
+    if (!p || p.part !== r.shape || p.key !== key) placedCache.set(inst.id, (p = { part: r.shape, key, shape: placeShape(r.shape, inst) }));
+    bodies.push({ id: inst.id, shape: p.shape });
+  }
+  const used = new Set(bodies.map((b) => b.id));
+  for (const id of placedCache.keys()) if (!used.has(id)) placedCache.delete(id);
+  const parts = bodies.map((b) => b.shape);
+  if (parts.length !== lastAssembly.parts.length || parts.some((s, i) => s !== lastAssembly.parts[i]))
+    lastAssembly = { parts, shape: combined(new Map(bodies.map((b) => [b.id, b.shape]))) };
+  return { shape: lastAssembly.shape, bodies, errors, warnings };
+}
+
 /** Display data of a shape: meshes at each quality, and its flat faces once asked for. */
 interface Meshed {
   fine?: Pick<BuildResult, "mesh" | "edges" | "edgeGroups">;
@@ -556,6 +615,7 @@ function meshShape(shape: Shape3D, draft: boolean): Pick<BuildResult, "mesh" | "
  */
 /** Names of the bodies: the ones given, else "Body 1", "Body 2"… in order. */
 function bodyNames(doc: CadDocument, ids: string[]) {
+  if (doc.kind === "assembly") return ids.map((id) => doc.instances?.find((i) => i.id === id)?.name ?? "Part");
   return ids.map((id, i) => doc.bodyNames?.[id] ?? `Body ${i + 1}`);
 }
 
@@ -567,8 +627,10 @@ export function buildResult(doc: CadDocument, opts: { draft?: boolean; planar?: 
   const view = m.fine ?? (opts.draft ? (m.draft ??= meshShape(shape, true)) : (m.fine = meshShape(shape, false)));
   if (!opts.draft && opts.planar !== false) m.planar ??= planarFaces(shape);
   // Which faces and edges belong to which body (to colour or hide them apart), when there are several.
-  m.bodyFaces ??= bodies.length > 1 ? bodies.map((b) => b.shape.faces.map((f) => f.hashCode)) : [];
-  m.bodyEdges ??= bodies.length > 1 ? bodies.map((b) => b.shape.edges.map((e) => e.hashCode)) : [];
+  // (An assembly's parts are always told apart: a single one is still picked and moved.)
+  const apart = bodies.length > 1 || doc.kind === "assembly";
+  m.bodyFaces ??= apart ? bodies.map((b) => b.shape.faces.map((f) => f.hashCode)) : [];
+  m.bodyEdges ??= apart ? bodies.map((b) => b.shape.edges.map((e) => e.hashCode)) : [];
   const names = bodyNames(doc, bodies.map((b) => b.id));
   const bodyInfo = bodies.map((b, i) => ({ id: b.id, name: names[i], faceIds: m.bodyFaces![i] ?? [], edgeIds: m.bodyEdges![i] ?? [] }));
   const mesh = view.mesh && {

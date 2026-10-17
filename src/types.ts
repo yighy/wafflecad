@@ -315,6 +315,24 @@ export interface CadDocument {
   files?: Record<string, string>;
   /** Names given to bodies (by body id); unnamed bodies are "Body 1", "Body 2"… in order. */
   bodyNames?: Record<string, string>;
+  /** An assembly places parts (other projects) instead of having steps of its own. */
+  kind?: "assembly";
+  instances?: PartInstance[];
+}
+
+/** A part placed in an assembly: another project, turned and then moved. */
+export interface PartInstance {
+  id: string;
+  /** The project the part comes from; its latest saved version is always used. */
+  project: string;
+  name: string;
+  /** Where the part's origin goes (mm). */
+  at: Vec3;
+  /**
+   * Turns about the X, Y and Z axes through the part's origin (degrees): Z first, then Y, then X,
+   * each about the fixed axes (the same as a three.js "XYZ" Euler angle).
+   */
+  rot: Vec3;
 }
 
 /** A separate solid of the part, and the faces that belong to it (B-rep hash codes). */
@@ -418,6 +436,8 @@ export type WorkerRequest =
    * coarser mesh and no flat faces, for builds made while a value is being dragged. */
   | { type: "build"; reqId: number; doc: CadDocument; pickExclude?: string; draft?: boolean }
   | { type: "export"; reqId: number; doc: CadDocument; format: ExportFormat; name: string }
+  /** The documents of the parts the open assembly uses, by project id (kept until replaced). */
+  | { type: "parts"; parts: Record<string, CadDocument> }
   | { type: "measure"; reqId: number; doc: CadDocument; picks: MeasurePick[] };
 
 export type WorkerResponse =

@@ -11,14 +11,15 @@ import { insertShapes } from "../src/sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } from "../src/cad/holePlace";
 import { filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
-import { buildResult, buildShape, exportFile } from "../src/cad/build";
+import { buildResult, buildShape, exportFile, setPartDocs } from "../src/cad/build";
+import * as THREE from "three";
 import { measure } from "../src/cad/measure";
 import { textShapes } from "../src/sketch/text";
 import { offsetEntities } from "../src/sketch/offset";
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
-import type { CadDocument, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
+import type { CadDocument, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
 setOC(await opencascade());
 const solver = await Solver.create();
@@ -861,6 +862,32 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("bodies: names and faces reported", res.bodies?.map((b) => b.name).join() === "Body 1,Lid" && res.bodies.every((b) => b.faceIds.length === 6), JSON.stringify(res.bodies?.map((b) => [b.name, b.faceIds.length])));
   const text = new TextDecoder().decode(new Uint8Array(await exportFile({ ...two(), bodyNames: { lid: "Lid" } }, "3mf", "Box")!.arrayBuffer()));
   check("bodies: 3MF has one object per body", (text.match(/<object /g) ?? []).length === 2 && text.includes('name="Lid"') && (text.match(/<item /g) ?? []).length === 2);
+}
+
+// --- Assemblies: a part (the 20 × 10 × 5 box) placed twice, from another project.
+{
+  setPartDocs({ p1: block() });
+  const asm = (...instances: PartInstance[]): CadDocument => ({ format: "waffle", version: 1, features: [], kind: "assembly", instances });
+  const a: PartInstance = { id: "a", project: "p1", name: "Box 1", at: [0, 0, 0], rot: [0, 0, 0] };
+  const b: PartInstance = { id: "b", project: "p1", name: "Box 2", at: [30, 0, 0], rot: [0, 0, 90] };
+  const r = buildShape(asm(a, b));
+  const bb = r.bodies[1]?.shape.boundingBox.bounds;
+  check("assembly: two copies of a part, apart", r.bodies.length === 2 && r.bodies.every((x) => near(measureVolume(x.shape), 1000, 1e-3)), JSON.stringify(r.errors));
+  check("assembly: turned about Z, then moved", !!bb && near(bb[0][0], 20, 1e-3) && near(bb[1][0], 30, 1e-3) && near(bb[0][1], 0, 1e-3) && near(bb[1][1], 20, 1e-3), JSON.stringify(bb));
+  // Any turn matches the app's own matrix (three.js "XYZ" Euler angles).
+  const c: PartInstance = { id: "c", project: "p1", name: "C", at: [1, 2, 3], rot: [30, 45, 60] };
+  const cb = buildShape(asm(c)).bodies[0].shape.boundingBox.bounds;
+  const m = new THREE.Matrix4().compose(new THREE.Vector3(1, 2, 3), new THREE.Quaternion().setFromEuler(new THREE.Euler(...([30, 45, 60].map((d) => (d * Math.PI) / 180) as [number, number, number]), "XYZ")), new THREE.Vector3(1, 1, 1));
+  const box = new THREE.Box3();
+  for (const x of [0, 20]) for (const y of [0, 10]) for (const z of [0, 5]) box.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(m));
+  check("assembly: turns match the view", [0, 1, 2].every((k) => near(cb[0][k], box.min.getComponent(k), 1e-3) && near(cb[1][k], box.max.getComponent(k), 1e-3)), JSON.stringify([cb, box.min, box.max]));
+  check("assembly: unchanged, the same shape comes back (its mesh is reused)", buildShape(asm(a, b)).shape === buildShape(asm(a, b)).shape);
+  const gone = buildShape(asm(a, { ...b, project: "nope" }));
+  check("assembly: a part whose project is gone is reported", gone.bodies.length === 1 && !!gone.errors.b, JSON.stringify(gone.errors));
+  const one = buildResult(asm(a));
+  check("assembly: a single part is still told apart", one.bodies?.length === 1 && one.bodies[0].name === "Box 1" && one.bodies[0].faceIds.length === 6 && one.bodies[0].edgeIds.length === 12);
+  const text = new TextDecoder().decode(new Uint8Array(await exportFile(asm(a, b), "3mf", "Asm")!.arrayBuffer()));
+  check("assembly: 3MF has one object per part, by name", (text.match(/<object /g) ?? []).length === 2 && text.includes('name="Box 1"') && text.includes('name="Box 2"'));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

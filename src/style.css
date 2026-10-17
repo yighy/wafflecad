@@ -1238,6 +1238,65 @@ body.busy #status-pill .dot {
   background: var(--accent);
 }
 
+/* Handles placing a part of an assembly: arrows to slide it, rings to turn it. */
+.place-layer line {
+  stroke-width: 2.5;
+}
+.place-layer polyline {
+  fill: none;
+  stroke-width: 2;
+  opacity: 0.55;
+}
+.gizmo-knob {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 38px;
+  height: 38px;
+  margin: -19px 0 0 -19px;
+  border-radius: 50%;
+  background: var(--card);
+  border: 3px solid currentColor;
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+}
+.gizmo-knob.move::after {
+  content: "";
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.gizmo-knob.turn {
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
+  border-style: dashed;
+}
+.gizmo-knob.dragging {
+  cursor: grabbing;
+  background: color-mix(in srgb, currentColor 22%, var(--card));
+}
+.gizmo-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  translate: -50% 0;
+  padding: 4px 10px;
+  border-radius: 10px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.chip.muted {
+  opacity: 0.55;
+}
+
 .selbox {
   position: absolute;
   display: none;

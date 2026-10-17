@@ -10,6 +10,8 @@ export interface ProjectMeta {
   updated: number;
   /** Small picture of the model (data URL), taken while it was being edited. */
   thumb?: string;
+  /** An assembly of other projects (none: a part). */
+  kind?: "assembly";
 }
 
 const DB_NAME = "waffle";

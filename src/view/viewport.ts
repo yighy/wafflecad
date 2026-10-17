@@ -68,6 +68,8 @@ export class Viewport {
   private hiddenBodies = new Set<string>();
   private hiddenEdges = new Set<number>();
   private shown: { r: BuildResult | null; preview?: PreviewResult } = { r: null };
+  /** A body being dragged (an assembly's part): its vertices and edges as built, to move from. */
+  private moving: { id: string; verts: Uint32Array; pos: Float32Array; nrm: Float32Array; edges: Float32Array; edgeRanges: [number, number][] } | null = null;
   private edgeHighlight: THREE.Object3D | null = null;
   private highlight: THREE.Mesh | null = null;
   private lineMaterials: LineMaterial[] = [];
@@ -410,6 +412,7 @@ export class Viewport {
    */
   setModel(r: BuildResult | null, preview?: PreviewResult) {
     this.shown = { r, preview };
+    this.moving = null;
     disposeChildren(this.modelGroup);
     this.mesh = null;
     this.shownMesh = null;
@@ -443,13 +446,7 @@ export class Viewport {
     this.shownEdges = null;
     const drawEdges = (all: Float32Array, groups: EdgeGroup[], bodies?: BodyInfo[]) => {
       const hidden = this.hiddenOf(bodies, "edgeIds");
-      const edges = hidden.size ? visibleEdges(all, groups, hidden) : all;
-      if (!edges.length) return;
-      const edge = new THREE.Color(cssVar("--edge", "#141414"));
-      const colors: number[] = [];
-      for (let i = 0; i < edges.length / 3; i++) colors.push(edge.r, edge.g, edge.b);
-      this.shownEdges = this.makeLines({ positions: Array.from(edges), colors, width: 1.5 });
-      this.modelGroup.add(this.shownEdges);
+      this.drawEdges(hidden.size ? visibleEdges(all, groups, hidden) : all);
     };
     this.shownMesh = this.mesh;
     if (preview?.mesh) {
@@ -466,6 +463,87 @@ export class Viewport {
     this.modelGroup.add(this.capMesh);
     this.applyDisplay();
     this.requestRender();
+  }
+
+  /** Draws the model's edges (in place of those drawn before). */
+  private drawEdges(edges: Float32Array) {
+    if (this.shownEdges) {
+      this.modelGroup.remove(this.shownEdges);
+      this.shownEdges.geometry.dispose();
+      this.shownEdges = null;
+    }
+    if (!edges.length) return;
+    const edge = new THREE.Color(cssVar("--edge", "#141414"));
+    const colors: number[] = [];
+    for (let i = 0; i < edges.length / 3; i++) colors.push(edge.r, edge.g, edge.b);
+    this.shownEdges = this.makeLines({ positions: Array.from(edges), colors, width: 1.5 });
+    this.modelGroup.add(this.shownEdges);
+  }
+
+  /** The box around the whole model as built, or null when there is none. */
+  modelBox(): THREE.Box3 | null {
+    const v = this.shown.r?.mesh?.vertices;
+    if (!v?.length) return null;
+    return new THREE.Box3().setFromArray(v);
+  }
+
+  /** The box around a body as drawn now (an assembly's part), or null if it is not there. */
+  bodyBox(id: string): THREE.Box3 | null {
+    const r = this.shown.r;
+    const body = r?.bodies?.find((b) => b.id === id);
+    if (!r?.mesh || !this.mesh || !body) return null;
+    const pos = this.mesh.geometry.getAttribute("position");
+    const faces = new Set(body.faceIds);
+    const box = new THREE.Box3();
+    const p = new THREE.Vector3();
+    for (const fg of r.mesh.faceGroups)
+      if (faces.has(fg.faceId)) for (let k = fg.start; k < fg.start + fg.count; k++) box.expandByPoint(p.fromBufferAttribute(pos, r.mesh.triangles[k]));
+    return box.isEmpty() ? null : box;
+  }
+
+  /**
+   * Draws a body moved by `m` from where it was built, while it is being dragged (the build that
+   * follows puts it there for good). No rebuild: only its vertices and edges move.
+   */
+  moveBody(id: string, m: THREE.Matrix4) {
+    const r = this.shown.r;
+    if (!r?.mesh || !this.mesh) return;
+    if (this.moving?.id !== id) {
+      const body = r.bodies?.find((b) => b.id === id);
+      if (!body) return;
+      const faces = new Set(body.faceIds);
+      const verts = new Set<number>();
+      for (const fg of r.mesh.faceGroups) if (faces.has(fg.faceId)) for (let k = fg.start; k < fg.start + fg.count; k++) verts.add(r.mesh.triangles[k]);
+      const edgeIds = new Set(body.edgeIds);
+      const g = this.mesh.geometry;
+      this.moving = {
+        id,
+        verts: Uint32Array.from(verts),
+        pos: (g.getAttribute("position").array as Float32Array).slice(),
+        nrm: (g.getAttribute("normal").array as Float32Array).slice(),
+        edges: this.edgeLines.slice(),
+        edgeRanges: this.edgeGroups.filter((e) => edgeIds.has(e.id)).map((e) => [e.start, e.start + e.count]),
+      };
+    }
+    const mv = this.moving;
+    const g = this.mesh.geometry;
+    const pos = g.getAttribute("position") as THREE.BufferAttribute;
+    const nrm = g.getAttribute("normal") as THREE.BufferAttribute;
+    const nm = new THREE.Matrix3().getNormalMatrix(m);
+    const v = new THREE.Vector3();
+    for (const i of mv.verts) {
+      v.fromArray(mv.pos, i * 3).applyMatrix4(m).toArray(pos.array, i * 3);
+      v.fromArray(mv.nrm, i * 3).applyMatrix3(nm).normalize().toArray(nrm.array, i * 3);
+    }
+    pos.needsUpdate = true;
+    nrm.needsUpdate = true;
+    g.computeBoundingSphere();
+    g.computeBoundingBox();
+    const edges = mv.edges.slice();
+    for (const [a, b] of mv.edgeRanges) for (let k = a; k < b; k++) v.fromArray(mv.edges, k * 3).applyMatrix4(m).toArray(edges, k * 3);
+    this.edgeLines = edges;
+    this.drawEdges(visibleEdges(edges, this.edgeGroups, this.hiddenEdges));
+    this.applyDisplay();
   }
 
   /** The geometry of a mesh, its bodies tinted apart and the hidden ones left out. */
