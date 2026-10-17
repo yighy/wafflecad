@@ -1099,7 +1099,26 @@ export class SketchEditor implements PointerTool {
         poly(b, circlePts(v.xy(c.c), v.arcRadius(c), a0, a1), col);
       }
     }
+    const sharpMarks: LineBatch = { positions: [], colors: [], width: 1.5, overlay: true };
+    // A fillet's virtual corner: a small cross where the lines would meet, with their extensions.
     for (const p of v.points()) {
+      if (!p.sharp || this.selection.has(p.id) || this.hoverId === p.id) continue;
+      const at: P2 = [p.x, p.y];
+      const r = this.vp.wpp * 5;
+      seg(sharpMarks, [p.x - r, p.y - r], [p.x + r, p.y + r], COLORS.construction);
+      seg(sharpMarks, [p.x - r, p.y + r], [p.x + r, p.y - r], COLORS.construction);
+      for (const c of this.sk.constraints) {
+        if (c.type !== "pointOn" || c.refs[0] !== p.id) continue;
+        const l = v.get(c.refs[1]);
+        if (l?.type !== "line") continue;
+        const [a, b] = [v.xy(l.p1), v.xy(l.p2)];
+        const near = Math.hypot(a[0] - at[0], a[1] - at[1]) < Math.hypot(b[0] - at[0], b[1] - at[1]) ? a : b;
+        seg(constr, near, at, COLORS.construction);
+      }
+    }
+    for (const p of v.points()) {
+      // Virtual corners are drawn above; as a dot only when selected or under the pointer.
+      if (p.sharp && !this.selection.has(p.id) && this.hoverId !== p.id) continue;
       const col = p.id === ORIGIN && !this.selection.has(p.id) ? COLORS.origin : colorOf(p.id, base);
       pts.positions.push(...this.toWorld([p.x, p.y]).toArray());
       pts.colors.push(...col);
@@ -1146,7 +1165,7 @@ export class SketchEditor implements PointerTool {
     const trim: LineBatch = { positions: [], colors: [], width: 5, overlay: true };
     if (this.trimPreview) poly(trim, this.trimPreview.removed, COLORS.trim);
 
-    this.vp.setSketchLayer([axes, constr, lines, preview, trim], [pts, big]);
+    this.vp.setSketchLayer([axes, constr, sharpMarks, lines, preview, trim], [pts, big]);
 
     // Closed regions, filled faintly: what an extrusion will use.
     const regions = findRegions(this.sk).map((r) => ({
@@ -1176,8 +1195,13 @@ export class SketchEditor implements PointerTool {
       }
       return arcMid(v, e);
     };
+    const isSharp = (id: string) => (v.get(id) as SkPoint | undefined)?.sharp === true;
     for (const c of this.sk.constraints) {
       const isDim = DIMENSION_TYPES.includes(c.type);
+      // A fillet's virtual corner stays on both lines by itself: no glyphs unless it is selected.
+      if (c.type === "pointOn" && isSharp(c.refs[0]) && !this.selection.has(c.refs[0]) && !this.selection.has(c.id)) continue;
+      /** Screen push for a radius label: outwards along the radius, off the curve. */
+      let out: [number, number] | null = null;
       let at: P2 | null = null;
       if (isDim) {
         const [a, b] = c.refs.map((r) => v.get(r));
@@ -1185,10 +1209,12 @@ export class SketchEditor implements PointerTool {
         else if (c.type === "angle" && a?.type === "line" && b?.type === "line")
           at = mid(mid(v.xy(a.p1), v.xy(a.p2)), mid(v.xy(b.p1), v.xy(b.p2)));
         else if ((c.type === "radius" || c.type === "diameter") && (a?.type === "circle" || a?.type === "arc")) {
-          if (a.type === "circle") {
-            const ctr = v.xy(a.c);
-            at = [ctr[0] + a.r * 0.7071, ctr[1] + a.r * 0.7071];
-          } else at = arcMid(v, a);
+          const ctr = v.xy(a.c);
+          at = a.type === "circle" ? [ctr[0] + a.r * 0.7071, ctr[1] + a.r * 0.7071] : arcMid(v, a);
+          const [cx, cy] = this.toScreen(ctr);
+          const [mx, my] = this.toScreen(at);
+          const len = Math.hypot(mx - cx, my - cy);
+          out = len > 1e-6 ? [(mx - cx) / len, (my - cy) / len] : [0.7071, -0.7071];
         } else if (a?.type === "point" && b?.type === "line") {
           const proj = this.project({ ...b, axis: true }, v.xy(a.id), v);
           if (proj) at = mid(v.xy(a.id), proj);
@@ -1213,7 +1239,11 @@ export class SketchEditor implements PointerTool {
       });
       let dx = 0;
       let dy = 0;
-      if (!isDim) {
+      if (out) {
+        // Far enough that even a small fillet stays visible under its label.
+        dx = out[0] * 34;
+        dy = out[1] * 26;
+      } else if (!isDim) {
         const k = (perEntity.get(c.refs[0]) ?? 0) + 1;
         perEntity.set(c.refs[0], k);
         dx = 14 + (k - 1) * 22;
