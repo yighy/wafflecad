@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.webp" width="900" alt="WaffleCAD: a filleted bracket, its wall parameter being edited on the keypad">
+  <img src="docs/screenshot.webp" width="900" alt="WaffleCAD in the dark theme: a hollowed bracket, its wall parameter being edited on the keypad">
 </p>
 
 ## Features
