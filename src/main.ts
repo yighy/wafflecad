@@ -3,7 +3,7 @@ import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
 import type { Axis, BuildResult, CadDocument, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
-import { Viewport, cssVar, type LineBatch } from "./view/viewport";
+import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
 import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
@@ -61,8 +61,9 @@ interface Prefs {
   /** Where the user dragged the side panel (top-left corner, CSS px); null = default place. */
   panelPos: { x: number; y: number } | null;
   perspective: boolean;
+  display: DisplayMode;
 }
-const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false };
+const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges" };
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
 } catch {
@@ -116,6 +117,7 @@ let undoPos = 0;
 
 const vp = new Viewport($("#view"));
 vp.perspective = prefs.perspective;
+vp.setDisplayMode(prefs.display);
 let solver: Solver;
 
 // ---------- Worker ----------
@@ -1945,6 +1947,92 @@ function renderStatus() {
   $("#status").textContent = s;
 }
 
+// ---------- Display menu: how the solid is drawn, and a section through it ----------
+
+let displayMenuOpen = false;
+
+const DISPLAY_MODES: [DisplayMode, string][] = [
+  ["shaded-edges", "Shaded with edges"],
+  ["shaded", "Shaded"],
+  ["wireframe", "Wireframe"],
+  ["xray", "X-ray"],
+  ["technical", "Technical lines"],
+];
+
+function renderDisplayMenu() {
+  let el = document.getElementById("display-menu");
+  if (!displayMenuOpen) {
+    el?.remove();
+    renderViewButtons();
+    return;
+  }
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "display-menu";
+    el.addEventListener("pointerdown", (e) => e.stopPropagation());
+    document.body.appendChild(el);
+  }
+  el.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "dm-title";
+  head.textContent = "Display";
+  el.appendChild(head);
+  for (const [m, label] of DISPLAY_MODES) {
+    const b = document.createElement("button");
+    b.className = "dm-mode";
+    b.classList.toggle("on", vp.displayMode === m);
+    b.textContent = label;
+    b.onclick = () => {
+      vp.setDisplayMode(m);
+      prefs.display = m;
+      savePrefs();
+      if (mode.kind === "sketch") vp.setModelOpacity(0.45);
+      renderDisplayMenu();
+    };
+    el.appendChild(b);
+  }
+  const sec = document.createElement("div");
+  sec.className = "dm-title";
+  sec.textContent = "Section";
+  el.appendChild(sec);
+  const seg = document.createElement("div");
+  seg.className = "seg";
+  const current = vp.section;
+  for (const a of ["off", "X", "Y", "Z"] as const) {
+    const b = document.createElement("button");
+    b.textContent = a === "off" ? "Off" : a;
+    b.classList.toggle("on", a === "off" ? !current : current?.axis === a);
+    b.onclick = () => {
+      vp.setSection(a === "off" ? null : { axis: a, at: current?.at ?? 0.5 });
+      renderDisplayMenu();
+    };
+    seg.appendChild(b);
+  }
+  el.appendChild(seg);
+  if (current) {
+    // Slide the cutting plane through the model.
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = "0";
+    range.max = "100";
+    range.value = String(Math.round(current.at * 100));
+    range.className = "dm-range";
+    range.setAttribute("aria-label", "Section position");
+    range.oninput = () => vp.setSection({ axis: current.axis, at: Number(range.value) / 100 });
+    el.appendChild(range);
+  }
+  renderViewButtons();
+}
+
+// A tap elsewhere closes the display menu.
+document.addEventListener("pointerdown", (e) => {
+  if (!displayMenuOpen) return;
+  const t = e.target as HTMLElement;
+  if (t.closest("#display-menu") || t.closest("#view-buttons")) return;
+  displayMenuOpen = false;
+  renderDisplayMenu();
+});
+
 function renderViewButtons() {
   const el = $("#view-buttons");
   el.replaceChildren();
@@ -1965,6 +2053,10 @@ function renderViewButtons() {
       savePrefs();
       renderViewButtons();
     }, vp.perspective);
+  add("display", "Display: shading, wireframe, X-ray, section", () => {
+    displayMenuOpen = !displayMenuOpen;
+    renderDisplayMenu();
+  }, displayMenuOpen || vp.displayMode !== "shaded-edges" || !!vp.section);
   add("grid", "Grid", () => {
     vp.setGridVisible(!vp.isGridVisible);
     renderViewButtons();

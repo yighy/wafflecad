@@ -23,6 +23,14 @@ export interface PointBatch {
   size: number;
 }
 
+/** How the solid is drawn. */
+export type DisplayMode = "shaded-edges" | "shaded" | "wireframe" | "xray" | "technical";
+/** A cut through the model: along an axis, at a fraction of the model's extent (0 to 1). */
+export interface Section {
+  axis: "X" | "Y" | "Z";
+  at: number;
+}
+
 export class Viewport {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -46,6 +54,13 @@ export class Viewport {
   private helperGroup = new THREE.Group();
   private gridGroup = new THREE.Group();
   private mesh: THREE.Mesh | null = null;
+  /** What is drawn (the build, or its preview): display modes and sections act on these. */
+  private shownMesh: THREE.Mesh | null = null;
+  private shownEdges: LineSegments2 | null = null;
+  private capMesh: THREE.Mesh | null = null;
+  private display: DisplayMode = "shaded-edges";
+  private sectionCut: Section | null = null;
+  private clipPlane = new THREE.Plane();
   private faceGroups: MeshData["faceGroups"] = [];
   private edgeLines: Float32Array<ArrayBufferLike> = new Float32Array();
   private edgeGroups: EdgeGroup[] = [];
@@ -72,6 +87,7 @@ export class Viewport {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.autoClear = false;
+    this.renderer.localClippingEnabled = true;
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.classList.add("gl");
 
@@ -233,9 +249,8 @@ export class Viewport {
   applyThemeColors() {
     (this.scene.background as THREE.Color).set(cssVar("--bg3d", "#1d2026"));
     this.modelColor = cssVar("--model", "#8fa8c8");
-    if (this.mesh) (this.mesh.material as THREE.MeshStandardMaterial).color.set(this.modelColor);
     this.lastGrid = "";
-    this.requestRender();
+    this.applyDisplay();
   }
 
   setGridVisible(on: boolean) {
@@ -355,6 +370,9 @@ export class Viewport {
   setModel(r: BuildResult | null, preview?: PreviewResult) {
     disposeChildren(this.modelGroup);
     this.mesh = null;
+    this.shownMesh = null;
+    this.shownEdges = null;
+    this.capMesh = null;
     this.edgeHighlight = null;
     this.edgeLines = new Float32Array();
     this.edgeGroups = [];
@@ -380,13 +398,16 @@ export class Viewport {
     this.edgeLines = r.edges;
     this.edgeGroups = r.edgeGroups;
     this.modelGroup.add(this.mesh);
+    this.shownEdges = null;
     const drawEdges = (edges: Float32Array) => {
       if (!edges.length) return;
       const edge = new THREE.Color(cssVar("--edge", "#141414"));
       const colors: number[] = [];
       for (let i = 0; i < edges.length / 3; i++) colors.push(edge.r, edge.g, edge.b);
-      this.modelGroup.add(this.makeLines({ positions: Array.from(edges), colors, width: 1.5 }));
+      this.shownEdges = this.makeLines({ positions: Array.from(edges), colors, width: 1.5 });
+      this.modelGroup.add(this.shownEdges);
     };
+    this.shownMesh = this.mesh;
     if (preview?.mesh) {
       // Raycasting ignores visibility: the hidden build is still what gets picked.
       this.mesh.visible = false;
@@ -394,15 +415,84 @@ export class Viewport {
       pg.setAttribute("position", new THREE.BufferAttribute(preview.mesh.vertices, 3));
       pg.setAttribute("normal", new THREE.BufferAttribute(preview.mesh.normals, 3));
       pg.setIndex(new THREE.BufferAttribute(preview.mesh.triangles, 1));
-      this.modelGroup.add(new THREE.Mesh(pg, mat));
+      this.shownMesh = new THREE.Mesh(pg, mat);
+      this.modelGroup.add(this.shownMesh);
       drawEdges(preview.edges);
     } else drawEdges(r.edges);
+    // Inside faces seen through a section: drawn as a solid "cap" colour.
+    this.capMesh = new THREE.Mesh(this.shownMesh.geometry, new THREE.MeshBasicMaterial({ side: THREE.BackSide }));
+    this.modelGroup.add(this.capMesh);
+    this.applyDisplay();
+    this.requestRender();
+  }
+
+  get displayMode() {
+    return this.display;
+  }
+  setDisplayMode(m: DisplayMode) {
+    this.display = m;
+    this.applyDisplay();
+  }
+  get section() {
+    return this.sectionCut;
+  }
+  setSection(s: Section | null) {
+    this.sectionCut = s;
+    this.applyDisplay();
+  }
+
+  /** Applies the display mode and the section to what is drawn. */
+  private applyDisplay() {
+    const mesh = this.shownMesh;
+    if (!mesh) return this.requestRender();
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+    const m = this.display;
+    mat.color.set(m === "technical" ? cssVar("--card", "#ffffff") : this.modelColor);
+    mat.emissive.set(m === "technical" ? cssVar("--card", "#ffffff") : "#000000");
+    mat.emissiveIntensity = m === "technical" ? 0.85 : 1;
+    mat.transparent = m === "xray";
+    mat.opacity = m === "xray" ? 0.22 : 1;
+    mat.depthWrite = m !== "xray";
+    // The shown mesh may be the picking one too: hiding it keeps it pickable (raycasting ignores it).
+    mesh.visible = m !== "wireframe";
+    if (this.shownEdges) {
+      this.shownEdges.visible = m !== "shaded";
+      const em = this.shownEdges.material as LineMaterial;
+      // Wireframe and X-ray show every edge, hidden ones included.
+      em.depthTest = m !== "wireframe" && m !== "xray";
+      em.needsUpdate = true;
+    }
+    // Section: keep the side of the plane away from the usual (+X, −Y, +Z) viewpoint.
+    const planes: THREE.Plane[] = [];
+    const s = this.sectionCut;
+    if (s) {
+      mesh.geometry.computeBoundingBox();
+      const b = mesh.geometry.boundingBox!;
+      const k = { X: 0, Y: 1, Z: 2 }[s.axis];
+      const lo = b.min.getComponent(k);
+      const hi = b.max.getComponent(k);
+      const pos = lo + (hi - lo) * Math.min(1, Math.max(0, s.at));
+      const n = new THREE.Vector3();
+      n.setComponent(k, s.axis === "Y" ? 1 : -1);
+      this.clipPlane.set(n, s.axis === "Y" ? -pos : pos);
+      planes.push(this.clipPlane);
+    }
+    mat.clippingPlanes = planes;
+    mat.needsUpdate = true;
+    if (this.shownEdges) (this.shownEdges.material as LineMaterial).clippingPlanes = planes;
+    if (this.capMesh) {
+      const cm = this.capMesh.material as THREE.MeshBasicMaterial;
+      cm.color.set(this.modelColor).multiplyScalar(0.62);
+      cm.clippingPlanes = planes;
+      cm.needsUpdate = true;
+      this.capMesh.visible = !!s && m !== "wireframe" && m !== "xray";
+    }
     this.requestRender();
   }
 
   setModelOpacity(o: number) {
-    if (!this.mesh) return;
-    const m = this.mesh.material as THREE.MeshStandardMaterial;
+    if (!this.shownMesh) return;
+    const m = this.shownMesh.material as THREE.MeshStandardMaterial;
     m.transparent = o < 1;
     m.opacity = o;
     m.depthWrite = o >= 1;

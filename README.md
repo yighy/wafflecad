@@ -19,6 +19,7 @@
   trim, fillet, mirror, model edges brought into the sketch, DXF and SVG import.
 - **Solids** with OpenCascade: extrude, revolve, Press Pull, shell, fillet / chamfer, metric holes
   (counterbore, countersink), mirror and patterns. Every step stays editable in the timeline.
+- **Display**: shaded, wireframe, X-ray, technical lines, and a section view sliding through the part.
 - **Parameters**: name a value (`wall = 2`) and use it in any dimension (`width - 2*wall`).
 - **Exchange**: STEP for other CAD software, STL for slicers.
 - **Installable** (PWA) and works offline once loaded. A keyboard and a mouse work but are never needed.
