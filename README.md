@@ -122,7 +122,8 @@ Revolutions can join, cut or intersect, and be repeated by patterns.
 
 ## Working on faces
 
-Tap a flat face of the solid: the right panel offers **Sketch on this face**, **Press Pull** and **Shell**.
+Tap a flat face of the solid: the right panel offers **Sketch on this face** and **Look at**; the Press Pull,
+Shell and Hole tools on the left then start from that face.
 (The Press Pull and Shell tools on the left also work the other way round: choose the tool, then tap a face.)
 
 - **Press Pull**: pull the handle or type a distance. Positive pulls the face out and adds material,
@@ -141,7 +142,7 @@ Tap a flat face of the solid: the right panel offers **Sketch on this face**, **
 
 Two ways to place them:
 
-- **On the face**: tap a flat face, then **Hole here**. While the keypad is open:
+- **On the face**: tap a flat face, then **Hole** on the left. While the keypad is open:
   - tap the face to add a hole: it snaps to the face centre, a circle's centre or an edge's middle when
     close to one (the snap is named next to the hole), else to a 1 mm grid;
   - drag a hole to move it, with the same snapping;
@@ -149,7 +150,7 @@ Two ways to place them:
     and the hole moves square to that edge (tap the face or another hole to go back to the depth);
   - **Remove hole** drops the selected one.
 - **Precise**: draw a sketch on the face with points where the holes go, dimension them, then select the
-  sketch in the timeline and tap **Holes at its points**. The holes then follow the sketch's dimensions and
+  sketch in the timeline and tap **Hole** on the left. The holes then follow the sketch's dimensions and
   parameters. **Flip direction** drills the other way for sketches on reference planes.
 
 ## Mirror and patterns

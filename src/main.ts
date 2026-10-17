@@ -1796,9 +1796,6 @@ function renderPanel() {
     const items: [string, string, () => void, string?][] = [];
     if (plane) {
       items.push(["sketch", "Sketch on this face", () => createSketchOn(plane)]);
-      items.push(["pushpull", "Press Pull", () => faceTool("pushpull")]);
-      items.push(["shell", "Shell (open this face)", () => faceTool("shell")]);
-      items.push(["hole", "Hole here", () => faceTool("hole")]);
       items.push(["lookAt", "Look at", () => vp.viewNormalTo(plane)]);
     }
     actions(items);
@@ -1811,9 +1808,6 @@ function renderPanel() {
     const items: [string, string, () => void, string?][] = [];
     if (f.kind === "sketch") {
       items.push(["edit", "Edit sketch", () => enterSketch(f)]);
-      items.push(["extrude", "Extrude", () => void extrude()]);
-      items.push(["revolve", "Revolve", () => void revolveTool()]);
-      if (sketchHolePoints(f).length) items.push(["hole", "Holes at its points", startHoles]);
     } else if (f.kind === "extrude") items.push(["edit", "Edit", () => void extrude(f)]);
     else if (f.kind === "pushpull") items.push(["edit", "Edit", () => void pushPull(f)]);
     else if (f.kind === "fillet") items.push(["edit", "Edit", () => void filletTool(f)]);
