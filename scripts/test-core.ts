@@ -5,6 +5,7 @@ import { Solver } from "../src/sketch/solver";
 import { deleteEntities, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
 import { trimPlan } from "../src/sketch/trim";
+import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } from "../src/cad/holePlace";
 import { filletCorner, mirrorEntities, projectEdge } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile } from "../src/cad/build";
@@ -476,6 +477,23 @@ check("circular edge becomes a circle", !!ringC && near(ringC.r, 4, 1e-6));
 const halfRing = ring.slice(0, 21);
 projectEdge(csk, halfRing);
 check("half circle becomes an arc", csk.entities.some((e) => e.type === "arc"));
+
+// --- Hole placement on the 20 × 10 × 5 block's top face.
+const hb = buildResult(block());
+const hf = faceFrame([0, 0, 1], [10, 5, 5]);
+const hEdges = edgesInPlane(hf, hb.edges, hb.edgeGroups);
+check("top face edges found in plane", hEdges.segments.length === 4, String(hEdges.segments.length));
+const hc = to2D(hf, [10, 5, 5]);
+let hs2 = snapHole([10.4, 5.3], hEdges, hc, 1);
+check("snaps to the face centre", near(hs2.at[0], 10) && near(hs2.at[1], 5) && hs2.label === "Face centre", JSON.stringify(hs2));
+hs2 = snapHole([0.3, 5.2], hEdges, hc, 1);
+check("snaps to an edge middle", near(hs2.at[0], 0) && near(hs2.at[1], 5) && hs2.label === "Edge middle", JSON.stringify(hs2));
+hs2 = snapHole([3.4, 2.6], hEdges, hc, 1);
+check("falls back to a 1 mm grid", near(hs2.at[0], 3) && near(hs2.at[1], 3) && hs2.label === null, JSON.stringify(hs2));
+const hd = holeDims([3, 2], hEdges);
+check("distances to the two nearest edges", hd.length === 2 && near(hd[0].dist, 2) && near(hd[1].dist, 3), JSON.stringify(hd.map((d) => d.dist)));
+const moved3 = to3D(hf, atDistance(hd[0], 4));
+check("typing a distance moves the hole square to the edge", near(moved3[0], 3) && near(moved3[1], 4) && near(moved3[2], 5), JSON.stringify(moved3));
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

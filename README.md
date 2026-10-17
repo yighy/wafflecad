@@ -125,8 +125,13 @@ Tap a flat face of the solid: the right panel offers **Sketch on this face**, **
 
 Two ways to place them:
 
-- **Quick**: tap a flat face, then **Hole here**; while the keypad is open, tap the face again to add
-  holes, or tap a hole to remove it.
+- **On the face**: tap a flat face, then **Hole here**. While the keypad is open:
+  - tap the face to add a hole: it snaps to the face centre, a circle's centre or an edge's middle when
+    close to one (the snap is named next to the hole), else to a 1 mm grid;
+  - drag a hole to move it, with the same snapping;
+  - the selected hole shows its distances to the two nearest edges: tap one, type the value on the keypad,
+    and the hole moves square to that edge (tap the face or another hole to go back to the depth);
+  - **Remove hole** drops the selected one.
 - **Precise**: draw a sketch on the face with points where the holes go, dimension them, then select the
   sketch in the timeline and tap **Holes at its points**. The holes then follow the sketch's dimensions and
   parameters. **Flip direction** drills the other way for sketches on reference planes.
