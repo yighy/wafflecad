@@ -16,12 +16,17 @@
 ## Features
 
 - **Sketches** with constraints and dimensions (FreeCAD's solver): lines, rectangles, circles, arcs, splines,
-  trim, fillet, mirror, model edges brought into the sketch, DXF and SVG import.
+  polygons, slots, ellipses, text, offset, trim, fillet, mirror, model edges brought into the sketch, DXF and
+  SVG import.
 - **Solids** with OpenCascade: extrude, revolve, Press Pull, shell, fillet / chamfer, metric holes
   (counterbore, countersink), mirror and patterns. Every step stays editable in the timeline.
+- **Bodies**: several solids in one part (a box and its lid), each joined, cut, renamed, hidden or shown
+  alone.
+- **Measure** faces, edges and corners: lengths, radii, distances, angles.
 - **Display**: shaded, wireframe, X-ray, technical lines, and a section view sliding through the part.
 - **Parameters**: name a value (`wall = 2`) and use it in any dimension (`width - 2*wall`).
-- **Exchange**: STEP for other CAD software, STL for slicers.
+- **Projects**: several models kept in the browser, in a gallery with pictures.
+- **Exchange**: STEP import and export for other CAD software, STL and 3MF (one object per body) for slicers.
 - **Installable** (PWA) and works offline once loaded. A keyboard and a mouse work but are never needed.
 
 ## Gestures
@@ -52,7 +57,7 @@ browser and replayed on every change (earlier steps are cached).
 
 ## Limitations
 
-- One body per document; no assemblies yet.
+- No assemblies yet: the bodies of a part do not move or connect to each other.
 - Faces and edges are found again by position: if an earlier change moves them a lot, the step needs
   to be picked again (it turns orange, or red, in the timeline).
 - Model edges brought into a sketch, and sketches on faces, are copies: they do not follow later changes
