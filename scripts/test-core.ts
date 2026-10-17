@@ -13,13 +13,14 @@ import { filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup 
 import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile, setPartDocs } from "../src/cad/build";
 import * as THREE from "three";
-import { measure } from "../src/cad/measure";
+import { hasRef, measure, refGeometry } from "../src/cad/measure";
+import { instanceMatrix, solveMates, worldRef } from "../src/cad/mates";
 import { textShapes } from "../src/sketch/text";
 import { offsetEntities } from "../src/sketch/offset";
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
-import type { CadDocument, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
+import type { CadDocument, Mate, MateRef, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
 setOC(await opencascade());
 const solver = await Solver.create();
@@ -888,6 +889,49 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("assembly: a single part is still told apart", one.bodies?.length === 1 && one.bodies[0].name === "Box 1" && one.bodies[0].faceIds.length === 6 && one.bodies[0].edgeIds.length === 12);
   const text = new TextDecoder().decode(new Uint8Array(await exportFile(asm(a, b), "3mf", "Asm")!.arrayBuffer()));
   check("assembly: 3MF has one object per part, by name", (text.match(/<object /g) ?? []).length === 2 && text.includes('name="Box 1"') && text.includes('name="Box 2"'));
+}
+
+// --- Mates: B (the 20 × 10 × 5 box, placed anyhow) brought onto A (fixed at the origin).
+{
+  const A: PartInstance = { id: "A", project: "p", name: "A", at: [0, 0, 0], rot: [0, 0, 0], fixed: true };
+  const B: PartInstance = { id: "B", project: "p", name: "B", at: [60, 20, 3], rot: [20, -35, 50] };
+  const ref = (part: string, kind: MateRef["kind"], origin: [number, number, number], dir: [number, number, number]): MateRef => ({ part, kind, origin, dir });
+  const top = ref("A", "plane", [10, 5, 5], [0, 0, 1]);
+  const bottom = ref("B", "plane", [10, 5, 0], [0, 0, -1]);
+  const mate = (id: string, kind: Mate["kind"], a: MateRef, b: MateRef, value = 0): Mate => ({ id, name: id, kind, a, b, value });
+  const placedB = (sol: ReturnType<typeof solveMates>) => ({ ...B, ...sol.placed.get("B")! });
+  let sol = solveMates([A, B], [mate("t", "touch", top, bottom)]);
+  let wb = worldRef(bottom, instanceMatrix(placedB(sol)));
+  check("mates: touch puts B's bottom on A's top", !sol.failing.length && near(wb.origin.z, 5, 1e-5) && near(wb.dir.z, -1, 1e-6) && sol.dof === 3, JSON.stringify([sol, wb]));
+  // Two pins: a hole axis at (5, 5) and one at (15, 5) on each part.
+  const axisA1 = ref("A", "axis", [5, 5, 0], [0, 0, 1]);
+  const axisB1 = ref("B", "axis", [5, 5, 0], [0, 0, 1]);
+  sol = solveMates([A, B], [mate("t", "touch", top, bottom), mate("x", "axis", axisA1, axisB1)]);
+  check("mates: touch + one axis leaves the turn about it", !sol.failing.length && sol.dof === 1, JSON.stringify(sol));
+  sol = solveMates([A, B], [mate("t", "touch", top, bottom), mate("x", "axis", axisA1, axisB1), mate("y", "axis", ref("A", "axis", [15, 5, 0], [0, 0, 1]), ref("B", "axis", [15, 5, 0], [0, 0, 1]))]);
+  const p = placedB(sol);
+  check("mates: two axes place B exactly on A", !sol.failing.length && sol.dof === 0 && near(p.at[0], 0, 1e-5) && near(p.at[1], 0, 1e-5) && near(p.at[2], 5, 1e-5) && p.rot.every((r) => near(r, 0, 1e-4)), JSON.stringify(p));
+  // Flush tops, from B lying upside down with its top facing A's top exactly.
+  const topB = ref("B", "plane", [10, 5, 5], [0, 0, 1]);
+  sol = solveMates([A, { ...B, at: [40, 0, 10], rot: [180, 0, 0] }], [mate("f", "align", top, topB)]);
+  const fb = worldRef(topB, instanceMatrix({ ...B, ...sol.placed.get("B")! }));
+  check("mates: flush from upside down turns it over", !sol.failing.length && near(fb.dir.z, 1, 1e-6) && near(fb.origin.z, 5, 1e-5), JSON.stringify([sol, fb]));
+  sol = solveMates([A, B], [mate("t", "touch", top, bottom), mate("g", "touch", top, bottom, 3)]);
+  check("mates: contradicting mates are reported, nothing moves", sol.failing.length > 0 && sol.placed.size === 0, JSON.stringify(sol.failing));
+  sol = solveMates([A, B], [mate("x", "axis", axisA1, axisB1), mate("a", "angle", ref("A", "plane", [20, 5, 2.5], [1, 0, 0]), ref("B", "plane", [20, 5, 2.5], [1, 0, 0]), 90)]);
+  const wa = worldRef(ref("B", "plane", [20, 5, 2.5], [1, 0, 0]), instanceMatrix(placedB(sol)));
+  check("mates: an angle about an axis", !sol.failing.length && near(wa.dir.x, 0, 1e-5) && near(Math.abs(wa.dir.y), 1, 1e-5) && sol.dof === 1, JSON.stringify([sol, wa]));
+  // Faces and holes of a real part, read for mates, and found again only while they are there.
+  const holed = buildShape(block({ id: "h", kind: "hole", name: "H", points: [[5, 5, 5]], normal: [0, 0, 1], size: "M3", fit: "clearance", head: "none", depth: 0 } as never)).shape!;
+  const topFace = holed.faces.find((f) => f.geomType === "PLANE" && near(f.center.z, 5))!;
+  const hole = holed.faces.find((f) => f.geomType === "CYLINDRE")!;
+  const g1 = refGeometry(holed, { kind: "face", id: topFace.hashCode });
+  const g2 = refGeometry(holed, { kind: "face", id: hole.hashCode });
+  check("mates: a flat face gives its plane, a hole its axis", g1?.kind === "plane" && near(g1.dir[2], 1) && g2?.kind === "axis" && near(g2.origin[0], 5, 1e-6) && near(g2.origin[1], 5, 1e-6) && near(Math.abs(g2.dir[2]), 1), JSON.stringify([g1, g2]));
+  check("mates: a face still there is found, a moved one is not", hasRef(holed, g2!) && hasRef(holed, g1!) && !hasRef(holed, { ...g2!, origin: [6, 5, 0] }));
+  const asmDoc: CadDocument = { format: "waffle", version: 1, features: [], kind: "assembly", instances: [{ id: "a", project: "p1", name: "A", at: [0, 0, 0], rot: [0, 0, 0] }], mates: [{ id: "m", name: "M", kind: "touch", a: { part: "a", kind: "plane", origin: [10, 5, 7], dir: [0, 0, 1] }, b: { part: "a", kind: "plane", origin: [10, 5, 5], dir: [0, 0, 1] }, value: 0 }] };
+  setPartDocs({ p1: block() });
+  check("mates: a face gone from its part is reported", !!buildShape(asmDoc).warnings.m, JSON.stringify(buildShape(asmDoc).warnings));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

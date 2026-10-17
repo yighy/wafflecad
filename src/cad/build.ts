@@ -4,6 +4,7 @@ import { EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, 
 import type { Axis, BuildResult, CadDocument, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
+import { hasRef } from "./measure";
 import { sketchLineWorld } from "../sketch/model";
 import { findRegions } from "../sketch/profiles";
 
@@ -516,6 +517,9 @@ export function placeShape(part: Shape3D, p: Pick<PartInstance, "at" | "rot">): 
   return s;
 }
 
+/** Whether a part's solid still has a mate's face or axis (found once per solid). */
+const refChecks = new WeakMap<Shape3D, Map<string, boolean>>();
+
 /** Each placed part, kept while neither the part nor its place change. */
 const placedCache = new Map<string, { part: Shape3D; key: string; shape: Shape3D }>();
 /** The last assembly as one shape: the same object while no part moved, so its mesh is reused. */
@@ -526,6 +530,8 @@ function assemblyShape(doc: CadDocument) {
   const errors: Record<string, string> = {};
   const warnings: Record<string, string> = {};
   const bodies: { id: string; shape: Shape3D }[] = [];
+  /** Each part's solid in its own coordinates (to check the faces mates use). */
+  const own = new Map<string, Shape3D>();
   for (const inst of doc.instances ?? []) {
     const part = partDocs[inst.project];
     if (!part) {
@@ -542,10 +548,25 @@ function assemblyShape(doc: CadDocument) {
       continue;
     }
     if (Object.keys(r.errors).length) warnings[inst.id] = "Some steps of the part fail: open it to fix them";
+    own.set(inst.id, r.shape);
     const key = JSON.stringify([inst.at, inst.rot]);
     let p = placedCache.get(inst.id);
     if (!p || p.part !== r.shape || p.key !== key) placedCache.set(inst.id, (p = { part: r.shape, key, shape: placeShape(r.shape, inst) }));
     bodies.push({ id: inst.id, shape: p.shape });
+  }
+  // A mate whose face or axis is no longer in its part (the part was changed) still holds the
+  // parts where they were, and says so.
+  for (const m of doc.mates ?? []) {
+    const lost = [m.a, m.b].some((ref) => {
+      const s = own.get(ref.part);
+      if (!s) return false;
+      const key = JSON.stringify([ref.kind, ref.origin, ref.dir]);
+      let known = refChecks.get(s);
+      if (!known) refChecks.set(s, (known = new Map()));
+      if (!known.has(key)) known.set(key, hasRef(s, ref));
+      return !known.get(key);
+    });
+    if (lost) warnings[m.id] = "A face it uses changed in its part: delete it and mate again";
   }
   const used = new Set(bodies.map((b) => b.id));
   for (const id of placedCache.keys()) if (!used.has(id)) placedCache.delete(id);

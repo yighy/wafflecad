@@ -22,8 +22,9 @@
   (counterbore, countersink), mirror and patterns. Every step stays editable in the timeline.
 - **Bodies**: several solids in one part (a box and its lid), each joined, cut, renamed, hidden or shown
   alone.
-- **Assemblies**: parts from your other projects, placed with arrows and rings or typed values. A part
-  changed in its own project is updated in every assembly that uses it.
+- **Assemblies**: parts from your other projects, placed with arrows and rings or typed values, and tied
+  by mates: faces facing, flush or at an angle, holes and pins on one axis. A part changed in its own
+  project is updated in every assembly that uses it.
 - **Measure** faces, edges and corners: lengths, radii, distances, angles.
 - **Display**: shaded, wireframe, X-ray, technical lines, and a section view sliding through the part.
 - **Parameters**: name a value (`wall = 2`) and use it in any dimension (`width - 2*wall`).
@@ -59,7 +60,7 @@ browser and replayed on every change (earlier steps are cached).
 
 ## Limitations
 
-- Assembly parts are placed by hand: no mates between them yet, and an assembly cannot contain another one.
+- An assembly cannot contain another one, and a mate whose face changed in its part must be made again.
 - Faces and edges are found again by position: if an earlier change moves them a lot, the step needs
   to be picked again (it turns orange, or red, in the timeline).
 - Model edges brought into a sketch, and sketches on faces, are copies: they do not follow later changes

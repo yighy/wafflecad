@@ -52,6 +52,7 @@ const P: Record<string, string> = {
   folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z" fill="currentColor" fill-opacity=".14"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2" fill="currentColor" fill-opacity=".14"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>',
   more: '<circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/>',
+  mate: '<rect x="3" y="14" width="18" height="6" rx="1.5" fill="currentColor" fill-opacity=".14"/><rect x="7" y="4" width="10" height="6" rx="1.5" fill="currentColor" fill-opacity=".14"/><path d="M12 10v4M9.5 12.5 12 14l2.5-1.5"/>',
   part: '<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z" fill="currentColor" fill-opacity=".14"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>',
   assembly: '<path d="M8 3.5l5 2.8v5.6L8 14.7 3 11.9V6.3z" fill="currentColor" fill-opacity=".14"/><path d="M16 9.3l5 2.8v5.6l-5 2.8-5-2.8v-5.6z" fill="currentColor" fill-opacity=".14"/>',
   back: '<path d="M10 5 3 12l7 7z" fill="currentColor" fill-opacity=".14"/><path d="M3 12h11a6 6 0 0 1 6 6v1"/>',

@@ -318,6 +318,8 @@ export interface CadDocument {
   /** An assembly places parts (other projects) instead of having steps of its own. */
   kind?: "assembly";
   instances?: PartInstance[];
+  /** How the assembly's parts are tied together. */
+  mates?: Mate[];
 }
 
 /** A part placed in an assembly: another project, turned and then moved. */
@@ -333,6 +335,34 @@ export interface PartInstance {
    * each about the fixed axes (the same as a three.js "XYZ" Euler angle).
    */
   rot: Vec3;
+  /** Held where it is: mates move the other parts to it. */
+  fixed?: boolean;
+}
+
+/**
+ * A flat face (plane: a point on it and its outward normal) or a round face or edge, a hole or a
+ * pin (axis: a point on it and its direction) of a part, in the part's own coordinates, so it
+ * follows the part wherever it is placed.
+ */
+export interface MateRef {
+  part: string;
+  kind: "plane" | "axis";
+  origin: Vec3;
+  dir: Vec3;
+}
+
+/**
+ * A mate between two parts. touch: faces facing each other, `value` mm apart (0: in contact);
+ * align: faces turned the same way, `value` mm apart (0: flush); axis: on the same axis (a pin in
+ * its hole); angle: faces at `value` degrees.
+ */
+export interface Mate {
+  id: string;
+  name: string;
+  kind: "touch" | "align" | "axis" | "angle";
+  a: MateRef;
+  b: MateRef;
+  value: number;
 }
 
 /** A separate solid of the part, and the faces that belong to it (B-rep hash codes). */
@@ -438,11 +468,14 @@ export type WorkerRequest =
   | { type: "export"; reqId: number; doc: CadDocument; format: ExportFormat; name: string }
   /** The documents of the parts the open assembly uses, by project id (kept until replaced). */
   | { type: "parts"; parts: Record<string, CadDocument> }
-  | { type: "measure"; reqId: number; doc: CadDocument; picks: MeasurePick[] };
+  | { type: "measure"; reqId: number; doc: CadDocument; picks: MeasurePick[] }
+  /** The plane or axis of a face or edge of the model (world coordinates), to mate it. */
+  | { type: "ref"; reqId: number; doc: CadDocument; pick: Exclude<MeasurePick, { kind: "point" }> };
 
 export type WorkerResponse =
   | { type: "ready" }
   | { type: "fatal"; message: string }
   | ({ type: "built"; reqId: number; preview?: PreviewResult } & BuildResult)
   | { type: "file"; reqId: number; blob: Blob | null; error?: string }
-  | { type: "measured"; reqId: number; result: MeasureResult };
+  | { type: "measured"; reqId: number; result: MeasureResult }
+  | { type: "ref"; reqId: number; ref: Omit<MateRef, "part"> | null; error?: string };

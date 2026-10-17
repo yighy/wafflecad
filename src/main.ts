@@ -1,7 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, CadDocument, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, CadDocument, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
@@ -14,6 +14,7 @@ import { createAxisGizmo } from "./ui/axisGizmo";
 import { scrollHints } from "./ui/scrollHints";
 import { DistanceHandle, sketchArrow } from "./ui/distanceHandle";
 import { PlaceGizmo } from "./ui/placeGizmo";
+import { instanceMatrix, localRef, placementOf, solveMates, worldRef } from "./cad/mates";
 import { findRegions } from "./sketch/profiles";
 import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
 import { parseDxf } from "./sketch/dxf";
@@ -106,7 +107,17 @@ type Mode =
   | { kind: "hole"; feat: HoleFeature; keypad: KeypadHandle }
   | { kind: "pattern"; feat: PatternFeature; keypad: KeypadHandle }
   | { kind: "revolve"; feat: RevolveFeature; keypad: KeypadHandle }
-  | { kind: "place"; feat: PartInstance; keypad: KeypadHandle };
+  | { kind: "place"; feat: PartInstance; keypad: KeypadHandle }
+  /** Choosing the two faces or holes of a new mate. */
+  | { kind: "mate"; picks: MatePick[] }
+  | { kind: "mateEdit"; feat: Mate; keypad: KeypadHandle };
+
+/** A face or hole chosen for a mate: its plane or axis, and what to highlight. */
+interface MatePick {
+  ref: MateRef;
+  face?: number;
+  edge?: number;
+}
 
 /** Modes where a feature is being edited with the keypad open. */
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
@@ -143,6 +154,7 @@ let kernelReady = false;
 let reqCounter = 0;
 let latestBuild = 0;
 const pendingFiles = new Map<number, (b: Blob | null, err?: string) => void>();
+const pendingRefs = new Map<number, (ref: Omit<MateRef, "part"> | null) => void>();
 let buildTimer = 0;
 /** One build at a time: while one runs, later changes wait and go as a single build after it. */
 let buildRunning = false;
@@ -202,6 +214,9 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     measuring.result = m.result;
     renderPanel();
     renderPartOverlays();
+  } else if (m.type === "ref") {
+    pendingRefs.get(m.reqId)?.(m.ref);
+    pendingRefs.delete(m.reqId);
   } else if (m.type === "file") {
     pendingFiles.get(m.reqId)?.(m.blob, m.error);
     pendingFiles.delete(m.reqId);
@@ -344,7 +359,12 @@ async function openProject(id: string, from: { id: string; name: string } | null
   project = p.meta;
   doc = asDocument(p.doc) ?? emptyDoc();
   cameFrom = from;
-  if (isAssembly()) await loadParts();
+  if (isAssembly()) {
+    await loadParts();
+    // Assemblies made before mates: the first part holds the others.
+    if (doc.instances?.length && !doc.instances.some((i) => i.fixed)) doc.instances[0].fixed = true;
+    solveState = null;
+  }
   prefs.project = id;
   savePrefs();
   selectedFeature = null;
@@ -540,6 +560,10 @@ function escape(): boolean {
   if (pendingFaceTool) {
     pendingFaceTool = null;
     renderAll();
+    return true;
+  }
+  if (mode.kind === "mate") {
+    startMate();
     return true;
   }
   if (showParams) {
@@ -763,6 +787,8 @@ async function insertPart(p: ProjectMeta, d?: CadDocument) {
     name: freeName(p.name, (doc.instances ?? []).map((i) => i.name)),
     at: box ? [Math.round(box.max.x + 10), 0, 0] : [0, 0, 0],
     rot: [0, 0, 0],
+    // The first part holds still: the others are mated to it.
+    fixed: !doc.instances?.length || undefined,
   };
   doc.instances = [...(doc.instances ?? []), inst];
   selectedFeature = inst.id;
@@ -778,6 +804,7 @@ function duplicateInstance(inst: PartInstance) {
     name: freeName(partNames[inst.project] ?? inst.name.replace(/ \d+$/, ""), (doc.instances ?? []).map((i) => i.name)),
     at: [inst.at[0] + (box ? Math.ceil(box.max.x - box.min.x) + 5 : 20), inst.at[1], inst.at[2]],
     rot: [...inst.rot],
+    fixed: undefined,
   };
   doc.instances = [...(doc.instances ?? []), copy];
   selectedFeature = copy.id;
@@ -786,6 +813,8 @@ function duplicateInstance(inst: PartInstance) {
 
 function removeInstance(inst: PartInstance) {
   doc.instances = (doc.instances ?? []).filter((i) => i !== inst);
+  // Its mates go with it.
+  doc.mates = doc.mates?.filter((m) => m.a.part !== inst.id && m.b.part !== inst.id);
   if (selectedFeature === inst.id) selectedFeature = null;
   commit();
 }
@@ -804,26 +833,253 @@ async function openPart(inst: PartInstance) {
   await openProject(inst.project, from);
 }
 
-/** The placement of a part, as a matrix (turned about its origin, then moved). */
-function instanceMatrix(inst: PartInstance) {
-  const e = new THREE.Euler(...(inst.rot.map((d) => THREE.MathUtils.degToRad(d)) as Vec3), "XYZ");
-  return new THREE.Matrix4().compose(new THREE.Vector3(...inst.at), new THREE.Quaternion().setFromEuler(e), new THREE.Vector3(1, 1, 1));
-}
-
 /** Moves a part by `m` (a slide or a turn made with the handles), in place of where it was. */
 function applyMove(inst: PartInstance, m: THREE.Matrix4) {
-  const p = new THREE.Vector3();
-  const q = new THREE.Quaternion();
-  m.clone().multiply(instanceMatrix(inst)).decompose(p, q, new THREE.Vector3());
-  const e = new THREE.Euler().setFromQuaternion(q, "XYZ");
-  const clean = (v: number, step: number) => Math.round(v / step) * step + 0;
-  inst.at = [p.x, p.y, p.z].map((v) => clean(v, 1e-4)) as Vec3;
-  inst.rot = [e.x, e.y, e.z].map((r) => clean(THREE.MathUtils.radToDeg(r), 1e-4)) as Vec3;
+  Object.assign(inst, placementOf(m.clone().multiply(instanceMatrix(inst))));
+}
+
+// ---------- Mates ----------
+
+/** The mates' state for the current placements: what is left free, and what cannot hold. */
+let solveState: { key: string; dof: number; failing: Set<string> } | null = null;
+
+/** Where each part turns about when the solver moves it: its middle, as drawn. */
+function partCenters() {
+  const out: Record<string, Vec3> = {};
+  for (const i of doc.instances ?? []) {
+    const b = vp.bodyBox(i.id);
+    if (b) out[i.id] = b.getCenter(new THREE.Vector3()).toArray() as Vec3;
+  }
+  return out;
+}
+
+/** Moves the parts so the mates hold (nothing moves when they cannot all hold). */
+function applyMates() {
+  const sol = solveMates(doc.instances ?? [], doc.mates ?? [], partCenters());
+  for (const [id, p] of sol.placed) Object.assign(instanceOf(id)!, p);
+  solveState = { key: mateKey(), dof: sol.dof, failing: new Set(sol.failing) };
+}
+
+const mateKey = () => JSON.stringify([doc.instances, doc.mates]);
+
+/** The mates' state, worked out again when the parts or mates changed (undo, opening). */
+function mateState() {
+  if (!solveState || solveState.key !== mateKey()) {
+    const sol = solveMates(doc.instances ?? [], doc.mates ?? [], partCenters());
+    solveState = { key: mateKey(), dof: sol.dof, failing: new Set(sol.failing) };
+  }
+  return solveState;
+}
+
+const MATE_KINDS: Record<Mate["kind"], string> = { touch: "Touch", align: "Flush", axis: "Axis", angle: "Angle" };
+
+function mateName(kind: Mate["kind"]) {
+  return freeName(MATE_KINDS[kind], (doc.mates ?? []).map((m) => m.name));
+}
+
+const mateOf = (id: string | null) => doc.mates?.find((m) => m.id === id) ?? null;
+
+function startMate() {
+  if (isOperation(mode)) return;
+  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if (mode.kind === "mate") {
+    mode = { kind: "part" };
+    vp.highlightFaces([]);
+    vp.highlightEdges([]);
+    return renderAll();
+  }
+  if (measuring) endMeasure();
+  selectedFeature = null;
+  mode = { kind: "mate", picks: [] };
+  renderAll();
+}
+
+/** The plane or axis of a face or edge, from the worker. */
+function askRef(pick: { kind: "face" | "edge"; id: number }) {
+  const reqId = ++reqCounter;
+  return new Promise<Omit<MateRef, "part"> | null>((resolve) => {
+    pendingRefs.set(reqId, resolve);
+    worker.postMessage({ type: "ref", reqId, doc, pick } satisfies WorkerRequest);
+  });
+}
+
+/** A tap while choosing a mate: a hole or round edge near the tap, else the face under it. */
+async function mateTap(p: Ptr) {
+  if (mode.kind !== "mate") return;
+  const m = mode;
+  const bodies = lastBuild?.bodies ?? [];
+  const ei = vp.pickEdge(p.x, p.y, hitRadiusPx(p));
+  const face = vp.pickFace(p.x, p.y);
+  let pick: MatePick | null = null;
+  for (const k of [ei != null ? { kind: "edge" as const, id: vp.edgeId(ei) } : null, face != null ? { kind: "face" as const, id: face } : null]) {
+    if (!k) continue;
+    const body = bodies.find((b) => (k.kind === "face" ? b.faceIds : b.edgeIds).includes(k.id));
+    const inst = instanceOf(body?.id ?? null);
+    if (!inst) continue;
+    const g = await askRef(k);
+    if (mode !== m) return; // left meanwhile
+    if (!g) continue;
+    pick = { ref: { part: inst.id, kind: g.kind, ...localRef(g.origin, g.dir, instanceMatrix(inst)) }, face: k.kind === "face" ? k.id : undefined, edge: k.kind === "edge" ? (ei ?? undefined) : undefined };
+    break;
+  }
+  if (!pick) return toast("Tap a flat face, a hole or a round edge of a part");
+  const first = m.picks[0];
+  if (first && first.ref.part === pick.ref.part) return toast("Now tap the other part");
+  if (first && first.ref.kind !== pick.ref.kind) return toast(first.ref.kind === "plane" ? "Now tap a flat face of the other part" : "Now tap a hole, a pin or a round edge of the other part");
+  m.picks.push(pick);
+  showMatePicks(m.picks);
+  if (m.picks.length < 2) return renderAll();
+  const [a, b] = m.picks.map((x) => x.ref);
+  const kind: Mate["kind"] = a.kind === "axis" ? "axis" : "touch";
+  const mate: Mate = { id: uid(), name: mateName(kind), kind, a, b, value: 0 };
+  mode = { kind: "part" };
+  showMatePicks([]);
+  doc.mates = [...(doc.mates ?? []), mate];
+  if (kind === "axis") {
+    applyMates();
+    selectedFeature = mate.id;
+    if (mateState().failing.has(mate.id)) toast("This mate cannot hold with the others");
+    return commit();
+  }
+  void mateTool(mate, true);
+}
+
+function showMatePicks(picks: MatePick[]) {
+  vp.highlightFaces(picks.flatMap((k) => (k.face != null ? [k.face] : [])));
+  vp.highlightEdges(picks.flatMap((k) => (k.edge != null ? [k.edge] : [])));
+}
+
+/** A mate between faces: how (facing, flush or at an angle) and the gap or angle, on the keypad. */
+async function mateTool(mate: Mate, isNew = false) {
+  if (isOperation(mode) || mate.kind === "axis") return;
+  const before = JSON.stringify(mate);
+  const places = JSON.stringify(doc.instances);
+  const unit = () => (mate.kind === "angle" ? "°" : "mm");
+  const label = () => ({ touch: "Gap", align: "Offset", angle: "Angle", axis: "" })[mate.kind];
+  const update = () => {
+    applyMates();
+    kp.setNote(mateState().failing.has(mate.id) ? "Cannot hold with the other mates" : null);
+    renderTimeline();
+    rebuild();
+  };
+  const kp = openKeypad({
+    title: mate.name,
+    subtitle: `${partLabel(mate.a.part)} and ${partLabel(mate.b.part)}`,
+    label: label(),
+    value: mate.value,
+    unit: unit(),
+    confirmLabel: "Confirm",
+    segments: [
+      {
+        options: [
+          { value: "touch", label: "Facing" },
+          { value: "align", label: "Flush" },
+          { value: "angle", label: "Angle" },
+        ],
+        get: () => mate.kind,
+        set: (v) => {
+          const kind = v as Mate["kind"];
+          if (kind === mate.kind) return;
+          // Turning to an angle starts at a right angle; back to faces, at contact.
+          mate.value = kind === "angle" ? 90 : 0;
+          if (isNew) mate.name = freeName(MATE_KINDS[kind], (doc.mates ?? []).filter((x) => x !== mate).map((x) => x.name));
+          mate.kind = kind;
+          kp.setLabel(label(), unit());
+          kp.set(mate.value);
+          update();
+        },
+      },
+    ],
+    onInput: (v) => {
+      mate.value = v;
+      update();
+    },
+  });
+  mode = { kind: "mateEdit", feat: mate, keypad: kp };
+  selectedFeature = mate.id;
+  update();
+  renderAll();
+  const res = await kp.result;
+  mode = { kind: "part" };
+  if (!res) {
+    doc.instances = JSON.parse(places);
+    if (isNew) {
+      doc.mates = doc.mates?.filter((x) => x !== mate);
+      selectedFeature = null;
+    } else Object.assign(mate, JSON.parse(before));
+    solveState = null;
+    rebuild(true);
+    renderAll();
+    return;
+  }
+  mate.value = res.value;
+  applyMates();
+  if (mateState().failing.has(mate.id)) toast("This mate cannot hold with the others");
+  commit();
+}
+
+function deleteMate(mate: Mate) {
+  doc.mates = doc.mates?.filter((m) => m !== mate);
+  if (selectedFeature === mate.id) selectedFeature = null;
+  applyMates();
+  commit();
+}
+
+/** Facing ⇄ flush: the second face turned round. */
+function flipMate(mate: Mate) {
+  mate.kind = mate.kind === "touch" ? "align" : "touch";
+  // A name it was given by default follows what it now is.
+  if (/^(Touch|Flush) \d+$/.test(mate.name)) mate.name = freeName(MATE_KINDS[mate.kind], (doc.mates ?? []).filter((x) => x !== mate).map((x) => x.name));
+  applyMates();
+  commit();
+}
+
+function toggleFixed(inst: PartInstance) {
+  inst.fixed = !inst.fixed || undefined;
+  applyMates();
+  commit();
+}
+
+const partLabel = (id: string) => instanceOf(id)?.name ?? "a removed part";
+
+/** The faces or axes of the selected mate (or of the picks being made), drawn over the model. */
+function mateMarks(batch: LineBatch) {
+  const refs = mode.kind === "mate" ? mode.picks.map((k) => k.ref) : (() => {
+    const m = mateOf(selectedFeature) ?? (mode.kind === "mateEdit" ? mode.feat : null);
+    return m ? [m.a, m.b] : [];
+  })();
+  const acc = rgb("--accent");
+  const s = 26 * vp.wpp;
+  for (const ref of refs) {
+    const inst = instanceOf(ref.part);
+    if (!inst) continue;
+    const { origin: o, dir: n } = worldRef(ref, instanceMatrix(inst));
+    const seg = (a: THREE.Vector3, b: THREE.Vector3) => {
+      batch.positions.push(...a.toArray(), ...b.toArray());
+      batch.colors.push(...acc, ...acc);
+    };
+    if (ref.kind === "axis") {
+      seg(o.clone().addScaledVector(n, -3 * s), o.clone().addScaledVector(n, 3 * s));
+      continue;
+    }
+    // A square on the face, and its normal.
+    const u = new THREE.Vector3().crossVectors(n, Math.abs(n.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)).normalize();
+    const v = new THREE.Vector3().crossVectors(n, u);
+    const c = [u.clone().add(v), u.clone().sub(v), u.clone().negate().sub(v), v.clone().sub(u)].map((d) => o.clone().addScaledVector(d, s));
+    for (let i = 0; i < 4; i++) seg(c[i], c[(i + 1) % 4]);
+    seg(o, o.clone().addScaledVector(n, 1.5 * s));
+  }
 }
 
 /** The handles on the selected part, while nothing else is going on. */
 function syncGizmo() {
   const inst = isAssembly() && mode.kind === "part" && !measuring ? instanceOf(selectedFeature) : null;
+  if (inst?.fixed) {
+    gizmo?.dispose();
+    gizmo = null;
+    gizmoFor = "";
+    return;
+  }
   const box = inst && !hiddenBodies.has(inst.id) ? vp.bodyBox(inst.id) : null;
   const key = inst && box ? `${inst.id}|${box.min.toArray()}|${box.max.toArray()}` : "";
   if (key === gizmoFor) return;
@@ -837,6 +1093,8 @@ function syncGizmo() {
     (m) => vp.moveBody(inst.id, m),
     (m) => {
       applyMove(inst, m);
+      // Mated, it only keeps the part of the move its mates leave free.
+      applyMates();
       commit();
     },
   );
@@ -895,6 +1153,7 @@ async function placeTool(inst: PartInstance) {
     return;
   }
   set(field, res.value);
+  applyMates();
   commit();
 }
 
@@ -2189,6 +2448,10 @@ function renderTools() {
     el.appendChild(section("Parts"));
     el.appendChild(toolRow("plus", "Insert part", () => void showPartPicker(), { key: "I" }));
     el.appendChild(toolRow("import", "Import STEP", () => void importStep()));
+    if ((doc.instances?.length ?? 0) > 1 || mode.kind === "mate") {
+      el.appendChild(section("Mates"));
+      el.appendChild(toolRow("mate", "Mate", startMate, { active: mode.kind === "mate", key: "M" }));
+    }
     if (doc.instances?.length) {
       el.appendChild(section("Design"));
       el.appendChild(toolRow("measure", "Measure", toggleMeasure, { active: !!measuring, key: "D" }));
@@ -2387,6 +2650,18 @@ function renderPanel() {
     actions([["check", "Finish sketch", exitSketch, "primary"]]);
     return;
   }
+  if (mode.kind === "mate") {
+    const n = mode.picks.length;
+    head("New mate", n ? `On ${partLabel(mode.picks[0].ref.part)} · now the other part` : "Tap a face or a hole of a part");
+    const hint = document.createElement("p");
+    hint.className = "p-hint";
+    hint.textContent = n
+      ? "Tap the face or hole of the other part that goes onto it."
+      : "Two flat faces: they meet, flush or at an angle. Two holes, pins or round edges: they share an axis.";
+    el.appendChild(hint);
+    actions([["close", "Cancel", () => startMate()]]);
+    return;
+  }
   if (mode.kind !== "part") return;
   if (measuring) {
     head("Measure", "", false);
@@ -2397,9 +2672,30 @@ function renderPanel() {
   if (showParams) return renderParamsPanel(el);
 
   if (isAssembly()) {
+    const mate = mateOf(selectedFeature);
+    if (mate) {
+      const failing = mateState().failing.has(mate.id);
+      const err = failing ? "Cannot hold with the other mates" : lastBuild?.warnings?.[mate.id];
+      const how = mate.kind === "axis" ? "same axis" : mate.kind === "angle" ? `${fmtNum(mate.value)}°` : mate.value ? `${fmtNum(mate.value)} mm apart` : mate.kind === "touch" ? "in contact" : "flush";
+      head(mate.name, err ?? `${partLabel(mate.a.part)} and ${partLabel(mate.b.part)} · ${how}`, !!err, true);
+      const items: [string, string, () => void, string?][] = [];
+      if (mate.kind !== "axis") items.push(["edit", "Edit", () => void mateTool(mate)]);
+      if (mate.kind === "touch" || mate.kind === "align") items.push(["flip", mate.kind === "touch" ? "Make it flush" : "Make them face", () => flipMate(mate)]);
+      items.push(["trash", "Delete", () => deleteMate(mate), "danger"]);
+      actions(items);
+      return;
+    }
     const inst = instanceOf(selectedFeature);
     if (!inst) {
-      if (doc.instances?.length) return;
+      if (doc.instances?.length) {
+        const st = mateState();
+        head(project?.name ?? "Assembly", st.failing.size ? `${st.failing.size} mate${st.failing.size > 1 ? "s" : ""} cannot hold` : st.dof ? `${st.dof} degree${st.dof > 1 ? "s" : ""} of freedom left` : "Fully placed", st.failing.size > 0);
+        const hint = document.createElement("p");
+        hint.className = "p-hint";
+        hint.textContent = "Tap a part to move it. Mate ties two parts: tap a face or hole on each.";
+        el.appendChild(hint);
+        return;
+      }
       head(project?.name ?? "Assembly", "No parts yet");
       const hint = document.createElement("p");
       hint.className = "p-hint";
@@ -2410,10 +2706,11 @@ function renderPanel() {
     }
     const err = lastBuild?.errors[inst.id] ?? lastBuild?.warnings?.[inst.id];
     const where = `${inst.at.map(fmtNum).join(", ")} mm${inst.rot.some((r) => r) ? ` · turned ${inst.rot.map((r) => fmtNum(r) + "°").join(", ")}` : ""}`;
-    head(inst.name, err ?? `${partNames[inst.project] ?? "Missing project"} · ${where}`, !!err, true);
+    head(inst.name, err ?? `${inst.fixed ? "Fixed · " : ""}${partNames[inst.project] ?? "Missing project"} · ${where}`, !!err, true);
     const hidden = hiddenBodies.has(inst.id);
     const items: [string, string, () => void, string?][] = [
       ["edit", "Position…", () => void placeTool(inst)],
+      ["lookAt", inst.fixed ? "Let it move" : "Fix in place", () => toggleFixed(inst)],
       ["copy", "Duplicate", () => duplicateInstance(inst)],
       ["rename", "Rename", () => renameInstance(inst)],
       [hidden ? "eye" : "eyeOff", hidden ? "Show" : "Hide", () => toggleBody(inst.id)],
@@ -2617,7 +2914,31 @@ function renderPartList(el: HTMLElement) {
     el.appendChild(b);
     if (inst.id === current) requestAnimationFrame(() => b.scrollIntoView({ inline: "nearest", block: "nearest" }));
   }
-  chipsShown = new Set(list.map((i) => i.id));
+  const mates = doc.mates ?? [];
+  if (mates.length) {
+    const sep = document.createElement("span");
+    sep.className = "chip-sep";
+    el.appendChild(sep);
+  }
+  const failing = mates.length ? mateState().failing : new Set<string>();
+  for (const m of mates) {
+    const b = document.createElement("button");
+    b.className = "chip";
+    if (chipsShown && !chipsShown.has(m.id)) b.classList.add("pop");
+    if (m.id === current) b.classList.add("sel");
+    if (failing.has(m.id)) b.classList.add("error");
+    else if (lastBuild?.warnings?.[m.id]) b.classList.add("warn");
+    b.innerHTML = icon("mate", 20) + "<span></span>";
+    b.querySelector("span")!.textContent = m.kind === "touch" || m.kind === "align" ? (m.value ? `${m.name} · ${fmtNum(m.value)}` : m.name) : m.kind === "angle" ? `${m.name} · ${fmtNum(m.value)}°` : m.name;
+    b.onclick = () => {
+      if (mode.kind !== "part") return toast("Finish the current step first");
+      if (measuring) endMeasure();
+      selectedFeature = selectedFeature === m.id ? null : m.id;
+      renderAll();
+    };
+    el.appendChild(b);
+  }
+  chipsShown = new Set([...list.map((i) => i.id), ...mates.map((m) => m.id)]);
   for (const b of buttons(".undo-btn")) b.disabled = undoPos === 0;
   for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
 }
@@ -2645,6 +2966,8 @@ function renderStatus() {
   }
   else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
   else if (mode.kind === "place") s = `${mode.feat.name} · choose a value and type it`;
+  else if (mode.kind === "mate") s = mode.picks.length ? "Mate · now the face or hole on the other part" : "Mate · tap a flat face, a hole or a round edge of a part";
+  else if (mode.kind === "mateEdit") s = `${mode.feat.name} · facing, flush or at an angle; type the gap`;
   else if (isAssembly() && !s && !measuring && doc.instances?.length)
     s = instanceOf(selectedFeature) ? "Drag an arrow to slide the part, a ring to turn it" : "Tap a part to place it";
   if (buildSlow) s = s ? `Building… · ${s}` : "Building the model…";
@@ -2913,6 +3236,7 @@ function renderPartOverlays() {
       labels.push({ el: tag, at: new THREE.Vector3((line[0][0] + line[1][0]) / 2, (line[0][1] + line[1][1]) / 2, (line[0][2] + line[1][2]) / 2) });
     }
   }
+  if (isAssembly()) mateMarks(batch);
   vp.setSketchLayer([batch], [marks]);
   vp.setLabels(labels);
 }
@@ -2961,6 +3285,7 @@ const partTool: PointerTool = {
   },
   up(p) {
     if (mode.kind === "pickPlane") return pickPlaneAt(p);
+    if (mode.kind === "mate") return void mateTap(p);
     const face = vp.pickFace(p.x, p.y);
     if (mode.kind === "shell") {
       if (face != null) toggleShellFace(mode.feat, face);
@@ -3698,10 +4023,17 @@ window.addEventListener("keydown", (e) => {
   if (mode.kind === "part" && isAssembly()) {
     const key = k.toLowerCase();
     const inst = instanceOf(selectedFeature);
+    const mate = mateOf(selectedFeature);
     if (key === "i") void showPartPicker();
+    else if (key === "m") startMate();
     else if (key === "d") toggleMeasure();
     else if (key === "f") vp.fit();
     else if (key === "delete" && inst) removeInstance(inst);
+    else if (key === "delete" && mate) deleteMate(mate);
+    return;
+  }
+  if (mode.kind === "mate") {
+    if (k.toLowerCase() === "m") startMate();
     return;
   }
   if (mode.kind === "part") {

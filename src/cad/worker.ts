@@ -3,7 +3,7 @@ import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
 import { buildResult, buildShape, exportFile, setPartDocs } from "./build";
-import { measure } from "./measure";
+import { measure, refGeometry } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
 const post = (msg: WorkerResponse, transfer: Transferable[] = []) =>
@@ -56,6 +56,17 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         errors: { _: String(e) },
       });
     }
+    return;
+  }
+  if (req.type === "ref") {
+    let ref = null;
+    let error: string | undefined;
+    try {
+      ref = refGeometry(buildShape(req.doc).shape, req.pick);
+    } catch (e) {
+      error = String(e);
+    }
+    post({ type: "ref", reqId: req.reqId, ref, error });
     return;
   }
   if (req.type === "measure") {

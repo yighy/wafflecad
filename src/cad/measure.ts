@@ -29,7 +29,7 @@ interface Circ {
   Location(): { X(): number; Y(): number; Z(): number };
   Axis(): { Direction(): { X(): number; Y(): number; Z(): number } };
 }
-const adaptor = (s: Face | Edge) => (s as unknown as { _geomAdaptor(): { Circle(): Circ; Cylinder(): Circ } })._geomAdaptor();
+const adaptor = (s: Face | Edge) => (s as unknown as { _geomAdaptor(): { Circle(): Circ; Cylinder(): Circ; Cone(): Circ } })._geomAdaptor();
 
 function faceItem(face: Face): Item {
   const rows: MeasureRow[] = [{ label: "Area", value: measureArea(face), unit: "mm²" }];
@@ -134,4 +134,49 @@ export function measure(shape: Shape3D | null, picks: MeasurePick[]): MeasureRes
   }
   if (a.dir && b.dir) rows.push({ label: "Angle", value: angle(a.dir, b.dir), unit: "°" });
   return { rows, line };
+}
+
+/** A plane (a flat face) or an axis (a round face or edge), for a mate. */
+type RefGeom = { kind: "plane" | "axis"; origin: Vec3; dir: Vec3 };
+
+function faceRef(face: Face): RefGeom | null {
+  if (face.geomType === "PLANE") return { kind: "plane", origin: v3(face.center), dir: unit(v3(face.normalAt(face.center))) };
+  if (face.geomType === "CYLINDRE" || face.geomType === "CONE") {
+    const c = adaptor(face)[face.geomType === "CONE" ? "Cone" : "Cylinder"]();
+    return { kind: "axis", origin: gp(c.Location()), dir: unit(gp(c.Axis().Direction())) };
+  }
+  return null;
+}
+
+function edgeRef(edge: Edge): RefGeom | null {
+  if (edge.geomType === "CIRCLE") {
+    const c = adaptor(edge).Circle();
+    return { kind: "axis", origin: gp(c.Location()), dir: unit(gp(c.Axis().Direction())) };
+  }
+  // Straight edges are left out: a tap near one means the face beside it.
+  return null;
+}
+
+/** The plane or axis of a face or edge of the model, or null for shapes that have none. */
+export function refGeometry(shape: Shape3D | null, pick: Exclude<MeasurePick, { kind: "point" }>): RefGeom | null {
+  if (!shape) return null;
+  if (pick.kind === "face") {
+    const f = shape.faces.find((x) => x.hashCode === pick.id);
+    return f ? faceRef(f) : null;
+  }
+  const e = shape.edges.find((x) => x.hashCode === pick.id);
+  return e ? edgeRef(e) : null;
+}
+
+/** Whether a part still has the plane or axis a mate uses (its own coordinates). */
+export function hasRef(shape: Shape3D, ref: Omit<RefGeom, "kind"> & { kind: string }): boolean {
+  const close = (g: RefGeom | null) => {
+    if (!g || g.kind !== ref.kind) return false;
+    const off: Vec3 = [g.origin[0] - ref.origin[0], g.origin[1] - ref.origin[1], g.origin[2] - ref.origin[2]];
+    if (ref.kind === "plane") return dot(g.dir, ref.dir) > 1 - 1e-6 && Math.abs(dot(off, ref.dir)) < 1e-3;
+    if (Math.abs(dot(g.dir, ref.dir)) < 1 - 1e-6) return false;
+    const along = dot(off, ref.dir);
+    return Math.hypot(off[0] - along * ref.dir[0], off[1] - along * ref.dir[1], off[2] - along * ref.dir[2]) < 1e-3;
+  };
+  return shape.faces.some((f) => close(faceRef(f))) || (ref.kind === "axis" && shape.edges.some((e) => close(edgeRef(e))));
 }
