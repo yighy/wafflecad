@@ -1005,44 +1005,6 @@ body.busy #status-pill .dot {
 [data-scroll="y"].more-start.more-end {
   mask-image: linear-gradient(to bottom, transparent, #000 36px, #000 calc(100% - 36px), transparent);
 }
-/* A small round arrow in the faded edge: tap to scroll one step. */
-.scroll-arrow {
-  position: fixed;
-  width: 28px;
-  height: 28px;
-  min-width: 0;
-  min-height: 0;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: var(--card);
-  color: var(--muted);
-  box-shadow: var(--shadow);
-  transform: translate(-50%, -50%) scale(0.6);
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 0.2s,
-    transform 0.2s;
-  z-index: 30;
-}
-.scroll-arrow.shown {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translate(-50%, -50%) scale(1);
-}
-.scroll-arrow .ic {
-  transition: none;
-}
-.scroll-arrow.y.end .ic {
-  transform: rotate(90deg);
-}
-.scroll-arrow.y.start .ic {
-  transform: rotate(-90deg);
-}
-.scroll-arrow.x.start .ic {
-  transform: rotate(180deg);
-}
 #chips .chip {
   touch-action: pan-x;
 }
