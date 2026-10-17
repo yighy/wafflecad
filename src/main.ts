@@ -105,6 +105,8 @@ let buildTimer = 0;
 /** One build at a time: while one runs, later changes wait and go as a single build after it. */
 let buildRunning = false;
 let buildAgain = false;
+/** Press Pull distance of the build in progress: its ghost goes once that result is shown. */
+let ghostDistanceSent: number | null = null;
 
 worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
   const m = ev.data;
@@ -126,6 +128,8 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     const first = lastBuild === null;
     lastBuild = m;
     vp.setModel(m, m.preview);
+    // The real Press Pull result is in: its instant ghost is no longer needed.
+    if (mode.kind === "pushpull" && ghostDistanceSent === mode.feat.distance) vp.setGhost(null);
     if (isOperation(mode)) mode.keypad.setNote(m.preview?.error ?? null);
     if (first && m.mesh) vp.fit();
     if (mode.kind === "sketch") vp.setModelOpacity(0.45);
@@ -147,6 +151,7 @@ function sendBuild() {
     return;
   }
   buildRunning = true;
+  ghostDistanceSent = mode.kind === "pushpull" ? mode.feat.distance : null;
   latestBuild = ++reqCounter;
   worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined } satisfies WorkerRequest);
 }
@@ -483,10 +488,18 @@ async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
   selectedFace = null;
   vp.highlightFace(null);
 
+  // The face as it is before this step, to draw an instant ghost while the kernel works.
+  const pf = lastBuild?.planarFaces.find((f) => sameFace(feat.face, f.center, f.plane.normal));
+  const ghostTris = !existing && pf ? vp.faceTriangles(pf.faceId) : null;
+  const showGhost = () => {
+    if (ghostTris) vp.setGhost(ghostTris, feat.face.normal.map((c) => c * feat.distance) as Vec3);
+  };
+
   let handle: DistanceHandle | null = null;
   const setDistance = (d: number, fromKeypad = false) => {
     feat.distance = d;
     if (!fromKeypad) kp.set(d);
+    showGhost();
     handle?.update();
     renderTimeline();
     rebuild();
@@ -525,11 +538,13 @@ async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
     (d) => setDistance(d),
   );
   renderAll();
+  showGhost();
   rebuild(true);
 
   const res = await kp.result;
   const value = res?.value ?? null;
   handle.dispose();
+  vp.setGhost(null);
   mode = { kind: "part" };
   if (value === null || value === 0) {
     if (existing) Object.assign(feat, before);

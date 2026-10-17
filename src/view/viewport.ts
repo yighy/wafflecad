@@ -44,6 +44,8 @@ export class Viewport {
   private modelGroup = new THREE.Group();
   private sketchGroup = new THREE.Group();
   private helperGroup = new THREE.Group();
+  /** Instant preview drawn by the view itself while the kernel works (Press Pull drag). */
+  private ghostGroup = new THREE.Group();
   private gridGroup = new THREE.Group();
   private mesh: THREE.Mesh | null = null;
   private faceGroups: MeshData["faceGroups"] = [];
@@ -87,7 +89,7 @@ export class Viewport {
 
     this.scene.background = new THREE.Color();
     this.applyThemeColors();
-    this.scene.add(this.gridGroup, this.modelGroup, this.helperGroup, this.sketchGroup);
+    this.scene.add(this.gridGroup, this.modelGroup, this.helperGroup, this.sketchGroup, this.ghostGroup);
     // Bright, flat-ish lighting: top faces lightest, sides in two distinct greys.
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a93a0, 2.0));
     const top = new THREE.DirectionalLight(0xffffff, 1.3);
@@ -531,6 +533,71 @@ export class Viewport {
     // Visible only if nothing of the model is clearly in front of that point.
     const visible = order.find(([, h]) => !front || front.distance >= depth(h.p) - slack);
     return visible ? visible[0] : null;
+  }
+
+  /** The triangles of one B-rep face of the shown model, as flat xyz positions. */
+  faceTriangles(faceId: number): Float32Array | null {
+    if (!this.mesh) return null;
+    const g = this.faceGroups.find((f) => f.faceId === faceId);
+    if (!g) return null;
+    const pos = this.mesh.geometry.getAttribute("position");
+    const idx = this.mesh.geometry.index!.array;
+    const out = new Float32Array(g.count * 3);
+    for (let k = 0; k < g.count; k++) {
+      const v = idx[g.start + k];
+      out[k * 3] = pos.getX(v);
+      out[k * 3 + 1] = pos.getY(v);
+      out[k * 3 + 2] = pos.getZ(v);
+    }
+    return out;
+  }
+
+  /**
+   * A translucent prism: the face (its triangles) swept by `offset`. Drawn at once, while the
+   * real result is being built. Null clears it.
+   */
+  setGhost(tris: Float32Array | null, offset?: Vec3) {
+    disposeChildren(this.ghostGroup);
+    if (!tris || !offset || Math.hypot(...offset) < 1e-9) return this.requestRender();
+    const [ox, oy, oz] = offset;
+    const tri: number[] = [];
+    for (let i = 0; i < tris.length; i += 3) tri.push(tris[i] + ox, tris[i + 1] + oy, tris[i + 2] + oz);
+    // The face's outline: triangle edges used by one triangle only.
+    const key = (i: number) => `${tris[i].toFixed(4)},${tris[i + 1].toFixed(4)},${tris[i + 2].toFixed(4)}`;
+    const edges = new Map<string, { a: number; b: number; n: number }>();
+    for (let t = 0; t < tris.length; t += 9) {
+      for (const [a, b] of [[t, t + 3], [t + 3, t + 6], [t + 6, t]]) {
+        const [ka, kb] = [key(a), key(b)];
+        const k = ka < kb ? ka + "|" + kb : kb + "|" + ka;
+        const e = edges.get(k);
+        if (e) e.n++;
+        else edges.set(k, { a, b, n: 1 });
+      }
+    }
+    const lines: number[] = [];
+    for (const { a, b, n } of edges.values()) {
+      if (n !== 1) continue;
+      const A = [tris[a], tris[a + 1], tris[a + 2]];
+      const B = [tris[b], tris[b + 1], tris[b + 2]];
+      const A2 = [A[0] + ox, A[1] + oy, A[2] + oz];
+      const B2 = [B[0] + ox, B[1] + oy, B[2] + oz];
+      tri.push(...A, ...B, ...B2, ...A, ...B2, ...A2);
+      lines.push(...A2, ...B2);
+    }
+    const color = new THREE.Color(cssVar("--accent", "#ffb648"));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(tri, 3));
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false, depthTest: false }),
+    );
+    mesh.renderOrder = 6;
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute("position", new THREE.Float32BufferAttribute(lines, 3));
+    const outline = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color, depthTest: false }));
+    outline.renderOrder = 7;
+    this.ghostGroup.add(mesh, outline);
+    this.requestRender();
   }
 
   /** Index of the build's edge whose midpoint is at `mid`, if any. */
