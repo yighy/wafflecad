@@ -457,6 +457,15 @@ export class Viewport {
     mesh.visible = m !== "wireframe";
     if (this.shownEdges) {
       this.shownEdges.visible = m !== "shaded";
+      // Where edges carry the drawing (wireframe, X-ray, technical) they take the text colour of the
+      // theme, so they stay visible on a dark background; on shaded faces, the darker edge colour.
+      const key = m === "shaded-edges" || m === "shaded" ? "--edge" : "--text";
+      const col = new THREE.Color(cssVar(key, "#141414"));
+      const geo = this.shownEdges.geometry as LineSegmentsGeometry;
+      const n = (geo.attributes.instanceStart as THREE.InterleavedBufferAttribute).count * 2;
+      const colors = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) colors.set([col.r, col.g, col.b], i * 3);
+      geo.setColors(colors);
       const em = this.shownEdges.material as LineMaterial;
       // Wireframe and X-ray show every edge, hidden ones included.
       em.depthTest = m !== "wireframe" && m !== "xray";
