@@ -185,6 +185,8 @@ button.danger {
 .tool .label {
   flex: 0 1 auto;
   min-width: 0;
+  max-width: 170px;
+  transform-origin: left center;
   padding: 0 14px;
   white-space: nowrap;
   overflow: hidden;
@@ -285,9 +287,23 @@ button.danger {
 body.collapsed #tools {
   width: 64px;
 }
-body.collapsed .tool .label,
+/* Folding: each label slides back into its icon, and the section titles close up so the
+   icon groups move together. Unfolding plays it the other way. */
+body.collapsed .tool {
+  gap: 0;
+}
+body.collapsed .tool .label {
+  max-width: 0;
+  padding: 0;
+  opacity: 0;
+  transform: translateX(-16px) scaleX(0.5);
+  pointer-events: none;
+}
 body.collapsed .section {
-  display: none;
+  max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  opacity: 0;
 }
 
 /* ---------- Status pill ---------- */
@@ -1087,7 +1103,6 @@ body.busy #status-pill .dot {
 
 /* Pressing a control gives way a little; state colours fade instead of jumping. */
 .tool .tile,
-.tool .label,
 .chip,
 #view-buttons button,
 #timeline .history button,
@@ -1101,12 +1116,42 @@ body.busy #status-pill .dot {
     opacity 0.18s;
 }
 .tool:active .tile,
-.tool:active .label,
 .chip:active,
 #view-buttons button:active,
 #timeline .history button:active,
 #menu:active,
 #panel button:active {
+  transform: scale(0.95);
+}
+
+/* Fold / unfold of the tool panel. */
+#tools {
+  transition: width 0.28s ease;
+}
+.tool {
+  transition: gap 0.28s ease;
+}
+.tool .label {
+  transition:
+    max-width 0.28s ease,
+    padding 0.28s ease,
+    opacity 0.2s ease,
+    transform 0.28s ease,
+    background-color 0.18s,
+    color 0.18s;
+}
+.section {
+  max-height: 30px;
+  overflow: hidden;
+  transition:
+    max-height 0.28s ease,
+    margin 0.28s ease,
+    opacity 0.2s ease;
+}
+#status-pill {
+  transition: left 0.28s ease;
+}
+.tool:active .label {
   transform: scale(0.95);
 }
 
@@ -1133,7 +1178,7 @@ body.busy #status-pill .dot {
 #panel-content.enter {
   animation: rise 0.22s ease-out;
 }
-#tools.enter > * {
+#tools .pop-in {
   animation: slide-in 0.24s ease-out backwards;
   animation-delay: calc(var(--i, 0) * 22ms);
 }

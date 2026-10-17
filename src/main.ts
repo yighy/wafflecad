@@ -102,6 +102,9 @@ let reqCounter = 0;
 let latestBuild = 0;
 const pendingFiles = new Map<number, (b: Blob | null, err?: string) => void>();
 let buildTimer = 0;
+/** One build at a time: while one runs, later changes wait and go as a single build after it. */
+let buildRunning = false;
+let buildAgain = false;
 
 worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
   const m = ev.data;
@@ -114,6 +117,11 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     kernelMessage = "Geometry kernel failed to load: " + m.message;
     renderStatus();
   } else if (m.type === "built") {
+    buildRunning = false;
+    if (buildAgain) {
+      buildAgain = false;
+      sendBuild();
+    }
     if (m.reqId !== latestBuild) return;
     const first = lastBuild === null;
     lastBuild = m;
@@ -132,15 +140,32 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
   }
 };
 
+function sendBuild() {
+  if (!kernelReady) return;
+  if (buildRunning) {
+    buildAgain = true;
+    return;
+  }
+  buildRunning = true;
+  latestBuild = ++reqCounter;
+  worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined } satisfies WorkerRequest);
+}
+
+/**
+ * Rebuilds the model. Continuous edits (dragging a handle, typing) are throttled, not debounced:
+ * the model keeps up while the finger moves, as fast as the kernel allows.
+ */
 function rebuild(now = false) {
-  clearTimeout(buildTimer);
-  const go = () => {
-    if (!kernelReady) return;
-    latestBuild = ++reqCounter;
-    worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined } satisfies WorkerRequest);
-  };
-  if (now) go();
-  else buildTimer = window.setTimeout(go, 120);
+  if (now) {
+    clearTimeout(buildTimer);
+    buildTimer = 0;
+    return sendBuild();
+  }
+  if (buildTimer) return;
+  buildTimer = window.setTimeout(() => {
+    buildTimer = 0;
+    sendBuild();
+  }, 50);
 }
 
 function exportFile(format: "step" | "stl") {
@@ -1449,6 +1474,8 @@ function playEnter(slot: string, key: string, el: HTMLElement) {
   el.classList.remove("enter");
   void el.offsetWidth; // restart the animation
   el.classList.add("enter");
+  // Played once: showing the panel again later must not replay it.
+  el.addEventListener("animationend", () => el.classList.remove("enter"), { once: true });
 }
 
 function renderAll() {
@@ -1516,8 +1543,10 @@ function renderTools() {
   collapse.onclick = () => {
     prefs.collapsed = !prefs.collapsed;
     savePrefs();
+    // The same buttons stay, so the fold animates; only this button's icon changes.
     applyPrefs();
-    renderTools();
+    collapse.innerHTML = icon(prefs.collapsed ? "expand" : "collapse", 20);
+    collapse.title = prefs.collapsed ? "Show labels" : "Icons only";
     renderStatus();
   };
   el.appendChild(collapse);
@@ -1585,9 +1614,36 @@ function renderTools() {
     }
     group.appendChild(child);
   }
-  // Staggered entrance when the set of tools changes (sketch, plane choice, model).
-  [...el.children].forEach((c, i) => (c as HTMLElement).style.setProperty("--i", String(i)));
-  playEnter("tools", mode.kind === "sketch" ? "sketch" : mode.kind === "pickPlane" ? "plane" : "part", el);
+  animateNewTools(el);
+}
+
+/** Tools (and section titles) shown at the last refresh; null before the first one. */
+let toolsShown: Set<string> | null = null;
+
+/**
+ * Only what was not there before slides in (staggered); tools that stay, stay still.
+ * A section whose tools are all new comes in as one card.
+ */
+function animateNewTools(el: HTMLElement) {
+  const keyOf = (e: Element) => (e.classList.contains("tool") ? "tool:" + e.getAttribute("aria-label") : "section:" + e.textContent);
+  const items = [...el.querySelectorAll(".tool, .section")];
+  const before = toolsShown;
+  toolsShown = new Set(items.map(keyOf));
+  if (!before) return;
+  let n = 0;
+  const enter = (e: HTMLElement) => {
+    e.style.setProperty("--i", String(n++));
+    e.classList.add("pop-in");
+    e.addEventListener("animationend", () => e.classList.remove("pop-in"), { once: true });
+  };
+  for (const child of [...el.children] as HTMLElement[]) {
+    if (child.classList.contains("tool-group")) {
+      const tools = [...child.children] as HTMLElement[];
+      const fresh = tools.filter((t) => !before.has(keyOf(t)));
+      if (fresh.length === tools.length) enter(child);
+      else fresh.forEach(enter);
+    } else if (child.classList.contains("section") && !before.has(keyOf(child))) enter(child);
+  }
 }
 
 /** Right panel: what can be done with the current selection. */
