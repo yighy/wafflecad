@@ -70,8 +70,12 @@ Menu → Light / dark theme. On phones the tools shrink to icons and the panel b
    **Use edges** adds edges of the model to the sketch: tap them in the 3D view; each becomes a line, circle,
    arc or spline flattened onto the sketch plane, with fixed points (shared where edges meet).
    It is a copy: it does not follow later changes of the model.
-   **Import DXF** (Insert section) brings a 2D drawing into the sketch: lines, arcs, circles, polylines
-   (with their arcs), splines and ellipses, blocks included; texts, hatches and dimensions are skipped.
+   **Import DXF / SVG** (Insert section) brings a 2D drawing into the sketch.
+   DXF: lines, arcs, circles, polylines (with their arcs), splines and ellipses, blocks included; texts,
+   hatches and dimensions are skipped. SVG: paths, rectangles (rounded too), circles, ellipses, lines and
+   polygons, with their transforms; curves stay exact cubic Béziers (also in the STEP export), circular
+   arcs become true arcs, the page is turned so its top is the top of the sketch, and texts must be
+   converted to paths first. A Bézier's control points show (and can be dragged) when it is selected.
    The keypad sets the scale (millimetres per drawing unit, read from the file when it says), placed as
    in the file or centred on the origin, fixed in place or free to constrain. Ends that meet are joined,
    so outlines close and extrude straight away.

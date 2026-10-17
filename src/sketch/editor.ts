@@ -5,7 +5,7 @@ import type { ConstraintType, SkArc, SkConstraint, SkCurve, SkEntity, SkLine, Sk
 import { DIMENSION_TYPES } from "../types";
 import type { PointerTool, Ptr } from "../view/input";
 import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
-import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleSpline, splineSpans, uid } from "./model";
+import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleSpline, splineSpans, uid } from "./model";
 import { arcMid, findRegions, sampleSegments } from "./profiles";
 import { trimPlan, type TrimPlan } from "./trim";
 import { cornerLines, filletCorner, mirrorAxis, mirrorEntities, projectEdge } from "./ops";
@@ -200,13 +200,33 @@ export class SketchEditor implements PointerTool {
     return [Math.round(p[0] / q) * q, Math.round(p[1] / q) * q];
   }
 
+  /**
+   * Bézier control points stay out of the way (not drawn, not picked) unless their curve, or
+   * one of its points, is selected.
+   */
+  private hiddenControls(v: SketchView): Set<string> {
+    const out = new Set<string>();
+    const shown = (b: { id: string; p0: string; c1: string; c2: string; p3: string }) =>
+      [b.id, b.p0, b.c1, b.c2, b.p3].some((id) => this.selection.has(id) || this.hoverId === id);
+    for (const c of v.curves()) if (c.type === "bezier" && !shown(c)) out.add(c.c1).add(c.c2);
+    // A control point that is also the end of some curve stays visible.
+    for (const c of v.curves()) {
+      if (c.type === "bezier") {
+        out.delete(c.p0);
+        out.delete(c.p3);
+      } else for (const id of v.defPoints(c)) out.delete(id);
+    }
+    return out;
+  }
+
   /** Nearest point, then nearest curve, within the pointer's hit radius. */
   private hitTest(p: Ptr, exclude: Set<string> = new Set()): { id: string; kind: "point" | "curve"; at: P2 } | null {
     const v = this.view;
     const R = hitRadius(p.kind);
     let best: { id: string; kind: "point" | "curve"; at: P2; d: number } | null = null;
+    const hidden = this.hiddenControls(v);
     for (const pt of v.points()) {
-      if (exclude.has(pt.id)) continue;
+      if (exclude.has(pt.id) || hidden.has(pt.id)) continue;
       const [sx, sy] = this.toScreen([pt.x, pt.y]);
       const d = Math.hypot(sx - p.x, sy - p.y);
       if (d < R && (!best || d < best.d)) best = { id: pt.id, kind: "point", at: [pt.x, pt.y], d };
@@ -241,7 +261,7 @@ export class SketchEditor implements PointerTool {
       if (!c.axis) t = Math.max(0, Math.min(1, t));
       return [a[0] + t * dx, a[1] + t * dy];
     }
-    if (c.type === "spline") return closestOnPolyline(sampleSpline(v, c), s);
+    if (c.type === "spline" || c.type === "bezier") return closestOnPolyline(sampleCurve(v, c), s);
     const ctr = v.xy(c.c);
     const r = c.type === "circle" ? c.r : v.arcRadius(c);
     let ang = Math.atan2(s[1] - ctr[1], s[0] - ctr[0]);
@@ -1093,7 +1113,7 @@ export class SketchEditor implements PointerTool {
       const col = colorOf(c.id, c.construction ? COLORS.construction : base);
       if (c.type === "line") seg(b, v.xy(c.p1), v.xy(c.p2), col);
       else if (c.type === "circle") poly(b, circlePts(v.xy(c.c), c.r), col);
-      else if (c.type === "spline") poly(b, sampleSpline(v, c), col);
+      else if (c.type === "spline" || c.type === "bezier") poly(b, sampleCurve(v, c), col);
       else {
         const [a0, a1] = v.arcAngles(c);
         poly(b, circlePts(v.xy(c.c), v.arcRadius(c), a0, a1), col);
@@ -1116,9 +1136,16 @@ export class SketchEditor implements PointerTool {
         seg(constr, near, at, COLORS.construction);
       }
     }
+    const hidden = this.hiddenControls(v);
+    for (const c of v.curves()) {
+      if (c.type !== "bezier" || hidden.has(c.c1)) continue;
+      seg(constr, v.xy(c.p0), v.xy(c.c1), COLORS.construction);
+      seg(constr, v.xy(c.p3), v.xy(c.c2), COLORS.construction);
+    }
     for (const p of v.points()) {
       // Virtual corners are drawn above; as a dot only when selected or under the pointer.
       if (p.sharp && !this.selection.has(p.id) && this.hoverId !== p.id) continue;
+      if (hidden.has(p.id)) continue;
       const col = p.id === ORIGIN && !this.selection.has(p.id) ? COLORS.origin : colorOf(p.id, base);
       pts.positions.push(...this.toWorld([p.x, p.y]).toArray());
       pts.colors.push(...col);
@@ -1189,8 +1216,8 @@ export class SketchEditor implements PointerTool {
         const c = v.xy(e.c);
         return [c[0] - e.r * 0.7071, c[1] + e.r * 0.7071];
       }
-      if (e.type === "spline") {
-        const ps = sampleSpline(v, e);
+      if (e.type === "spline" || e.type === "bezier") {
+        const ps = sampleCurve(v, e);
         return ps[Math.floor(ps.length / 2)];
       }
       return arcMid(v, e);

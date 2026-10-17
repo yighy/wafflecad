@@ -1,7 +1,7 @@
 // Trim: removes the piece of a curve between its nearest intersections on both sides of a tap.
 // Pure sketch-model code (no DOM), so it can be tested under Node.
 import type { ConstraintType, SkCurve, SketchFeature } from "../types";
-import { SketchView, deleteEntities, isHiddenPoint, sampleSpline, uid } from "./model";
+import { SketchView, deleteEntities, isHiddenPoint, sampleCurve, uid } from "./model";
 
 type P2 = [number, number];
 
@@ -49,8 +49,9 @@ function shapesOf(v: SketchView, c: SkCurve): Shape[] {
       const [a0, a1] = v.arcAngles(c);
       return [{ kind: "circ", c: v.xy(c.c), r: v.arcRadius(c), a0, a1 }];
     }
-    case "spline": {
-      const ps = sampleSpline(v, c, 32);
+    case "spline":
+    case "bezier": {
+      const ps = sampleCurve(v, c, 32);
       return ps.slice(1).map((b, i): Shape => ({ kind: "seg", a: ps[i], b }));
     }
   }
@@ -131,7 +132,7 @@ function carrierProject(s: Shape, p: P2): P2 {
 export function trimPlan(sk: SketchFeature, curveId: string, at: P2): TrimPlan | null {
   const v = new SketchView(sk);
   const C = v.get(curveId);
-  if (!C || C.type === "point" || C.type === "spline" || (C.type === "line" && C.axis)) return null;
+  if (!C || C.type === "point" || C.type === "spline" || C.type === "bezier" || (C.type === "line" && C.axis)) return null;
   const [T] = shapesOf(v, C);
   const size = T.kind === "seg" ? dist(T.a, T.b) : T.r;
   const tol = Math.max(size, 1) * 1e-6;
@@ -178,7 +179,7 @@ export function trimPlan(sk: SketchFeature, curveId: string, at: P2): TrimPlan |
     if (other.id === C.id || (other.type === "line" && other.axis)) continue;
     for (const s of shapesOf(v, other)) {
       for (const p of carrierHits(T, s)) {
-        if (within(s, p, tol)) addCut(p, { cutter: other.type === "spline" ? undefined : other.id });
+        if (within(s, p, tol)) addCut(p, { cutter: other.type === "spline" || other.type === "bezier" ? undefined : other.id });
       }
     }
   }

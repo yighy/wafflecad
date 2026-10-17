@@ -1,5 +1,5 @@
 // Pure helpers over the sketch data model (no DOM, no solver).
-import type { PlaneDef, SkArc, SkConstraint, SkCurve, SkEntity, SkPoint, SkSpline, SketchFeature, Vec3 } from "../types";
+import type { PlaneDef, SkArc, SkBezier, SkConstraint, SkCurve, SkEntity, SkPoint, SkSpline, SketchFeature, Vec3 } from "../types";
 
 export const ORIGIN = "O";
 export const X_AXIS = "AX";
@@ -85,7 +85,12 @@ export class SketchView {
         return [e.c, e.s, e.e];
       case "spline":
         return e.pts;
+      case "bezier":
+        return [e.p0, e.c1, e.c2, e.p3];
     }
+  }
+  bezierSpan(b: SkBezier): BezierSpan {
+    return { a: this.xy(b.p0), c1: this.xy(b.c1), c2: this.xy(b.c2), b: this.xy(b.p3) };
   }
   /** The Bézier spans of a spline, with the ids of the points each one joins. */
   splineSpans(s: SkSpline) {
@@ -188,6 +193,11 @@ export function sampleBezier(s: BezierSpan, n: number): P2[] {
   return out;
 }
 
+/** Polyline of a spline or a Bézier (for drawing and picking). */
+export function sampleCurve(view: SketchView, c: SkSpline | SkBezier, perSpan = 16): P2[] {
+  return c.type === "bezier" ? sampleBezier(view.bezierSpan(c), perSpan * 2) : sampleSpline(view, c, perSpan);
+}
+
 /** Polyline of a whole spline (for drawing and picking). */
 export function sampleSpline(view: SketchView, s: SkSpline, perSpan = 16): P2[] {
   const out: P2[] = [];
@@ -252,6 +262,8 @@ export function mergePoints(sk: SketchFeature, keep: string, drop: string) {
           return { ...e, c: sub(e.c) };
         case "arc":
           return { ...e, c: sub(e.c), s: sub(e.s), e: sub(e.e) };
+        case "bezier":
+          return { ...e, p0: sub(e.p0), c1: sub(e.c1), c2: sub(e.c2), p3: sub(e.p3) };
         case "spline": {
           const pts = e.pts.map(sub).filter((p, i, a) => i === 0 || p !== a[i - 1]);
           let closed = e.closed;

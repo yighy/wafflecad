@@ -57,6 +57,13 @@ export function findRegions(sk: SketchFeature): ProfileRegion[] {
       const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
       add({ curve: c.id, from: c.p1, to: c.p2, angle: ang, seg: { kind: "line", a, b } });
       add({ curve: c.id, from: c.p2, to: c.p1, angle: ang + Math.PI, seg: { kind: "line", a: b, b: a } });
+    } else if (c.type === "bezier") {
+      const sp = view.bezierSpan(c);
+      if (c.p0 === c.p3) continue;
+      const dir = (p: P2, q: P2, r: P2) =>
+        Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9 ? Math.atan2(q[1] - p[1], q[0] - p[0]) : Math.atan2(r[1] - p[1], r[0] - p[0]);
+      add({ curve: c.id, from: c.p0, to: c.p3, angle: dir(sp.a, sp.c1, sp.c2), seg: { kind: "bezier", a: sp.a, b: sp.b, c1: sp.c1, c2: sp.c2 } });
+      add({ curve: c.id, from: c.p3, to: c.p0, angle: dir(sp.b, sp.c2, sp.c1), seg: { kind: "bezier", a: sp.b, b: sp.a, c1: sp.c2, c2: sp.c1 } });
     } else if (c.type === "spline") {
       // Direction leaving `p` towards its control point (or the far end if they coincide).
       const dir = (p: P2, q: P2, r: P2) =>

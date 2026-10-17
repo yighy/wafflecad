@@ -10,7 +10,8 @@ export type ImportShape =
   | { kind: "line"; a: P2; b: P2; layer?: string }
   | { kind: "circle"; c: P2; r: number; layer?: string }
   | { kind: "arc"; c: P2; r: number; s: P2; e: P2; layer?: string }
-  | { kind: "spline"; pts: P2[]; closed: boolean; layer?: string };
+  | { kind: "spline"; pts: P2[]; closed: boolean; layer?: string }
+  | { kind: "bezier"; a: P2; c1: P2; c2: P2; b: P2; layer?: string };
 
 export interface ImportOptions {
   /** Millimetres per drawing unit. */
@@ -34,6 +35,8 @@ function pointsOf(s: ImportShape): P2[] {
       return [s.s, s.e, s.c];
     case "spline":
       return s.pts;
+    case "bezier":
+      return [s.a, s.c1, s.c2, s.b];
   }
 }
 
@@ -79,6 +82,15 @@ export function insertShapes(sk: SketchFeature, shapes: ImportShape[], opt: Impo
     return id;
   };
 
+  /** A Bézier control point: never shared with other geometry. */
+  const controlAt = (raw: P2): string => {
+    const p = T(raw);
+    const id = uid();
+    added.push({ id, type: "point", x: p[0], y: p[1] });
+    if (opt.fixed) cons.push({ id: uid(), type: "fix", refs: [id], at: [p[0], p[1]], quiet: true });
+    return id;
+  };
+
   let count = 0;
   for (const s of shapes) {
     switch (s.kind) {
@@ -101,6 +113,13 @@ export function insertShapes(sk: SketchFeature, shapes: ImportShape[], opt: Impo
         const e = pointAt(s.e);
         if (a === e) continue;
         added.push({ id: uid(), type: "arc", c: pointAt(s.c), s: a, e });
+        break;
+      }
+      case "bezier": {
+        const a = pointAt(s.a);
+        const e = pointAt(s.b);
+        if (a === e) continue;
+        added.push({ id: uid(), type: "bezier", p0: a, c1: controlAt(s.c1), c2: controlAt(s.c2), p3: e });
         break;
       }
       case "spline": {

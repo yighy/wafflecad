@@ -64,7 +64,21 @@ export interface SkSpline {
   construction?: boolean;
 }
 
-export type SkCurve = SkLine | SkCircle | SkArc | SkSpline;
+/**
+ * Cubic Bézier from p0 to p3, pulled by the control points c1 and c2 (exact: imported SVG
+ * curves stay what they were, down to the STEP export).
+ */
+export interface SkBezier {
+  id: string;
+  type: "bezier";
+  p0: string;
+  c1: string;
+  c2: string;
+  p3: string;
+  construction?: boolean;
+}
+
+export type SkCurve = SkLine | SkCircle | SkArc | SkSpline | SkBezier;
 export type SkEntity = SkPoint | SkCurve;
 
 export type ConstraintType =

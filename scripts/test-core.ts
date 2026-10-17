@@ -6,6 +6,7 @@ import { deleteEntities, mergePoints, newSketch, uid } from "../src/sketch/model
 import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
 import { trimPlan } from "../src/sketch/trim";
 import { parseDxf } from "../src/sketch/dxf";
+import { parseSvg } from "../src/sketch/svg";
 import { insertShapes } from "../src/sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } from "../src/cad/holePlace";
 import { filletCorner, mirrorEntities, projectEdge } from "../src/sketch/ops";
@@ -557,6 +558,40 @@ check("DXF: inches to mm, centred", inch.unitName === "inches" && ipts.length ==
 const sp = parseDxf(dxf(4, [], [["0", "SPLINE", "8", "0", "70", "8", "71", "3", "72", "8", "73", "4", "40", "0", "40", "0", "40", "0", "40", "0", "40", "1", "40", "1", "40", "1", "40", "1", "10", "0", "20", "0", "10", "10", "20", "10", "10", "20", "20", "10", "10", "30", "20", "0"]]));
 const spl = sp.shapes[0];
 check("DXF: NURBS spline sampled through its ends", spl?.kind === "spline" && near(spl.pts[0][0], 0) && near(spl.pts[spl.pts.length - 1][0], 30) && near(spl.pts[Math.floor(spl.pts.length / 2)][1], 7.5, 0.05), JSON.stringify(spl && spl.kind === "spline" ? spl.pts[Math.floor(spl.pts.length / 2)] : spl));
+
+// --- SVG import.
+// 100 × 50 mm document (viewBox in mm units): a rounded rectangle (exact arcs), a circle hole,
+// and a heart made of cubic Béziers, inside a translated group.
+const svgDoc = `<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="50mm" viewBox="0 0 100 50">
+  <!-- comment -->
+  <rect x="5" y="5" width="40" height="30" rx="5"/>
+  <circle cx="25" cy="20" r="4"/>
+  <g transform="translate(60 10)">
+    <path d="M10 6 C10 0 0 0 0 6 C0 12 10 16 10 20 C10 16 20 12 20 6 C20 0 10 0 10 6 Z"/>
+  </g>
+  <text x="1" y="1">hi</text>
+</svg>`;
+const sres = parseSvg(svgDoc);
+const kinds = sres.shapes.map((x) => x.kind);
+check("SVG: rect corners as exact arcs, circle, Béziers, text skipped", near(sres.unitScale, 1) && kinds.filter((k) => k === "arc").length === 4 && kinds.includes("circle") && kinds.filter((k) => k === "bezier").length === 4 && Object.keys(sres.skipped).some((k) => k.startsWith("text")), `${kinds.join(",")} ${JSON.stringify(sres.skipped)}`);
+const ssk = newSketch("SVG", XY);
+insertShapes(ssk, sres.shapes, { scale: sres.unitScale, place: "file", fixed: true });
+const sSolve = solver.solve(ssk);
+const sRegions = findRegions(ssk);
+const area = (r: (typeof sRegions)[number]) => (r.outer.kind === "path" ? signedArea(sampleSegments(r.outer.segments)) : Math.PI * r.outer.r ** 2);
+const roundRect = 40 * 30 - (4 - Math.PI) * 25;
+check("SVG: two closed regions, the rectangle with its hole", sSolve.ok && sRegions.length === 2 && sRegions.some((r) => r.holes.length === 1 && near(area(r), roundRect, 0.5)), `regions=${sRegions.length} areas=${sRegions.map(area).join(",")}`);
+const ymax = Math.max(...ssk.entities.filter((e): e is SkPoint => e.type === "point" && !e.fixed).map((q) => q.y));
+check("SVG: Y flipped up (the top of the page is the top of the sketch)", near(ymax, -5, 1e-6) || ymax <= 0, String(ymax));
+const sDoc: CadDocument = { format: "touch-cad", version: 1, features: [ssk, { id: "se2", kind: "extrude", name: "SE", sketchId: ssk.id, distance: 1, symmetric: false, op: "add" }] };
+const sBuilt = buildShape(sDoc);
+check("SVG: extrudes (Béziers exact in the kernel)", !sBuilt.errors.se2 && measureVolume(sBuilt.shape!) > roundRect - Math.PI * 16, JSON.stringify(sBuilt.errors));
+const sStep = exportFile(sDoc, "step");
+const sStepText = sStep ? await sStep.text() : "";
+check("SVG: STEP keeps the Béziers as B-spline curves", sStepText.includes("B_SPLINE_CURVE"));
+const px = parseSvg('<svg width="96" height="96"><path d="m0 0 h96"/><path d="M0 10 a5 5 0 016 0"/></svg>');
+check("SVG: px at 96 per inch; compact arc flags", near(px.unitScale, 25.4 / 96) && px.shapes.length === 2 && px.shapes[1].kind === "arc", JSON.stringify(px.shapes.map((x) => x.kind)));
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

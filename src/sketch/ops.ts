@@ -134,6 +134,8 @@ export function mirrorEntities(sk: SketchFeature, ids: string[], axisId: string)
           return { ...e, id: uid(), c: mp(e.c), s: mp(e.e), e: mp(e.s) };
         case "spline":
           return { ...e, id: uid(), pts: e.pts.map(mp) };
+        case "bezier":
+          return { ...e, id: uid(), p0: mp(e.p0), c1: mp(e.c1), c2: mp(e.c2), p3: mp(e.p3) };
       }
     })();
     added.push(copy);

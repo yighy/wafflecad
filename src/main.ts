@@ -7,7 +7,7 @@ import { Viewport, cssVar, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
 import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
-import { SketchView, newSketch, sampleSpline, sketchLineWorld, uid } from "./sketch/model";
+import { SketchView, newSketch, sampleCurve, sketchLineWorld, uid } from "./sketch/model";
 import { openKeypad, setKeypadHost, type KeypadHandle } from "./ui/keypad";
 import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
@@ -15,6 +15,7 @@ import { DistanceHandle, sketchArrow } from "./ui/distanceHandle";
 import { findRegions } from "./sketch/profiles";
 import { HOLE_SIZES, sketchHolePoints } from "./cad/holes";
 import { parseDxf } from "./sketch/dxf";
+import { parseSvg } from "./sketch/svg";
 import { bounds, insertShapes, type ImportOptions } from "./sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D, type EdgeDim } from "./cad/holePlace";
 
@@ -1568,7 +1569,7 @@ function renderTools() {
       );
     }
     el.appendChild(section("Insert"));
-    el.appendChild(toolRow("import", "Import DXF", () => void importDxf()));
+    el.appendChild(toolRow("import", "Import DXF / SVG", () => void importDrawing()));
     el.appendChild(section("Options"));
     el.appendChild(
       toolRow("construction", "Construction", () => {
@@ -2007,8 +2008,8 @@ function appendSketchLines(b: LineBatch, sk: SketchFeature, col: number[]) {
     if (c.construction) continue;
     if (c.type === "line") seg(v.xy(c.p1), v.xy(c.p2));
     else if (c.type === "circle") arc(v.xy(c.c), c.r, 0, 2 * Math.PI);
-    else if (c.type === "spline") {
-      const ps = sampleSpline(v, c);
+    else if (c.type === "spline" || c.type === "bezier") {
+      const ps = sampleCurve(v, c);
       for (let i = 0; i + 1 < ps.length; i++) seg(ps[i], ps[i + 1]);
     } else arc(v.xy(c.c), v.arcRadius(c), ...v.arcAngles(c));
   }
@@ -2083,20 +2084,24 @@ function pickFile(accept: string): Promise<File | null> {
 }
 
 /**
- * Brings a DXF drawing into the open sketch. The keypad sets the scale (millimetres per
+ * Brings a DXF or SVG drawing into the open sketch. The keypad sets the scale (millimetres per
  * drawing unit, read from the file when it says), with placement and fixed/free as choices;
  * the drawing is shown as it will land while these change.
  */
-async function importDxf() {
+async function importDrawing() {
   if (mode.kind !== "sketch") return;
   const ed = mode.editor;
-  const file = await pickFile(".dxf,image/vnd.dxf,application/dxf");
+  const file = await pickFile(".dxf,.svg,image/vnd.dxf,application/dxf,image/svg+xml");
   if (!file || mode.kind !== "sketch" || mode.editor !== ed) return;
+  const text = await file.text();
+  // By extension, else by content (an SVG is XML with an <svg> element).
+  const isSvg = /\.svg$/i.test(file.name) || (!/\.dxf$/i.test(file.name) && /<svg[\s>]/i.test(text));
+  const kind = isSvg ? "SVG" : "DXF";
   let res: ReturnType<typeof parseDxf>;
   try {
-    res = parseDxf(await file.text());
+    res = isSvg ? parseSvg(text) : parseDxf(text);
   } catch (e) {
-    return toast("Cannot read this DXF: " + (e instanceof Error ? e.message : String(e)));
+    return toast(`Cannot read this ${kind}: ` + (e instanceof Error ? e.message : String(e)));
   }
   const skipped = Object.entries(res.skipped)
     .map(([t, n]) => `${n} ${t}`)
@@ -2123,7 +2128,7 @@ async function importDxf() {
   };
   show(true);
   const kp = openKeypad({
-    title: "Import DXF",
+    title: `Import ${kind}`,
     subtitle: `${file.name} · ${res.shapes.length} curves · ${res.unitName}${skipped ? ` · skipped: ${skipped}` : ""}`,
     label: "Scale (mm per drawing unit)",
     value: opt.scale,
