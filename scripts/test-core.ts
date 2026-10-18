@@ -17,6 +17,7 @@ import { hasRef, measure, refGeometry } from "../src/cad/measure";
 import { instanceMatrix, solveMates, worldRef } from "../src/cad/mates";
 import { textShapes } from "../src/sketch/text";
 import { offsetEntities } from "../src/sketch/offset";
+import { entitiesInside, selectionOutlines } from "../src/sketch/selectInside";
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
@@ -990,6 +991,28 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("assembly: a part's bodies inserted apart", r.bodies.length === 2 && near(v[0], 1000, 1e-3) && near(v[1], 400, 1e-3) && near(lidTop, 17, 1e-6), JSON.stringify([v, lidTop, r.errors]));
   const gone = buildShape({ format: "waffle", version: 1, features: [], kind: "assembly", instances: [one("nope")] });
   check("assembly: a body gone from its part is reported", !!gone.errors.nope, JSON.stringify(gone.errors));
+}
+
+// --- Select inside: a plate's outline, a hole and a slot line inside it, things outside or across.
+{
+  const sk = newSketch("Plate", XY);
+  const r = rect(sk, 0, 0, 60, 40);
+  sk.entities.push(
+    { id: "hc", type: "point", x: 10, y: 10 },
+    { id: "hole", type: "circle", c: "hc", r: 3 },
+    { id: "i1", type: "point", x: 20, y: 20 },
+    { id: "i2", type: "point", x: 30, y: 20 },
+    { id: "in", type: "line", p1: "i1", p2: "i2" },
+    { id: "far", type: "point", x: 100, y: 100 },
+    { id: "x1", type: "point", x: 50, y: 30 },
+    { id: "x2", type: "point", x: 70, y: 30 },
+    { id: "across", type: "line", p1: "x1", p2: "x2" },
+  );
+  const outline = new Set(r.lines);
+  const got = new Set(entitiesInside(sk, outline));
+  check("select inside: an outline encloses its hole and lines", ["hole", "hc", "in", "i1", "i2"].every((id) => got.has(id)), JSON.stringify([...got]));
+  check("select inside: not what is outside, across, or the outline's own corners", !got.has("far") && !got.has("across") && !got.has("x1") && !got.has("x2") && r.pts.every((p) => !got.has(p)) && r.lines.every((l) => !got.has(l)), JSON.stringify([...got]));
+  check("select inside: an open selection has no outline", selectionOutlines(sk, new Set(r.lines.slice(0, 3))).length === 0 && selectionOutlines(sk, new Set(["hole"])).length === 1);
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

@@ -7,6 +7,7 @@ import type { PointerTool, Ptr } from "../view/input";
 import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
 import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleEllipse, splineSpans, uid } from "./model";
 import { arcMid, findRegions, loopPolygon, sampleSegments } from "./profiles";
+import { entitiesInside, selectionOutlines } from "./selectInside";
 import { trimPlan, type TrimPlan } from "./trim";
 import { offsetEntities } from "./offset";
 import { cornerLines, filletCorner, groupCentre, groupPoints, mirrorEntities, projectEdge, transformGroup, type GroupTransform } from "./ops";
@@ -740,6 +741,18 @@ export class SketchEditor implements PointerTool {
     this.hooks.changed();
   }
 
+  /** Selects what lies inside the closed outline(s) the selection makes (not the outline itself). */
+  selectInside() {
+    if (!selectionOutlines(this.sk, this.selection).length) return this.hooks.toast("Select a closed outline first");
+    const inside = entitiesInside(this.sk, this.selection);
+    if (!inside.length) return this.hooks.toast("Nothing inside this outline");
+    this.lastTapped = null;
+    this.selection.clear();
+    for (const id of inside) this.selection.add(id);
+    this.render();
+    this.hooks.changed();
+  }
+
   selectAll() {
     this.lastTapped = null;
     for (const e of this.sk.entities) if (!isReference(e) && !(e.type === "point" && isHiddenPoint(e.id))) this.selection.add(e.id);
@@ -1274,6 +1287,7 @@ export class SketchEditor implements PointerTool {
     }
     const all = this.sk.entities.filter((e) => !isReference(e) && !(e.type === "point" && isHiddenPoint(e.id)));
     if (all.length && all.some((e) => !this.selection.has(e.id))) out.push({ id: "selall", label: "▣", title: "Select all", run: () => this.selectAll() });
+    if (selectionOutlines(this.sk, this.selection).length) out.push({ id: "selin", label: "◰", title: "Select inside", run: () => this.selectInside() });
     if (editable.some((e) => e.type !== "point"))
       out.push({ id: "constr", label: "┄", title: "Toggle construction", key: "G", run: () => this.toggleConstruction() });
     if (editable.length || cons.length) out.push({ id: "del", label: "🗑", title: "Delete", key: "Delete", run: () => this.deleteSelection() });
