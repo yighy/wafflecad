@@ -149,6 +149,42 @@ vp.perspective = prefs.perspective;
 vp.setDisplayMode(prefs.display);
 let solver: Solver;
 
+// ---------- Loading screen ----------
+
+/**
+ * Shown from the first paint until the app can be used: the project open, the sketch solver ready
+ * and the model drawn. It never holds the app back for long: past a few seconds of geometry
+ * kernel loading it goes, and the status line keeps telling.
+ */
+const splash = document.getElementById("splash");
+let splashGone = false;
+let solverReady = false;
+let modelShown = false;
+
+function splashStep(text: string, error = false) {
+  if (splashGone || !splash) return;
+  const el = splash.querySelector(".splash-step")!;
+  el.textContent = text;
+  el.classList.toggle("err", error);
+  splash.classList.toggle("failed", error);
+}
+
+function hideSplash() {
+  if (splashGone || !splash) return;
+  splashGone = true;
+  splash.classList.add("gone");
+  setTimeout(() => splash.remove(), 400);
+}
+
+/** Gone once the app can be used: an empty project needs no model to be drawn first. */
+function maybeHideSplash() {
+  if (solverReady && (modelShown || (!doc.features.length && !doc.instances?.length))) hideSplash();
+}
+
+splash?.querySelector("button")?.addEventListener("click", hideSplash);
+// Whatever happens while starting, the app is not hidden for long.
+setTimeout(hideSplash, 12000);
+
 // ---------- Worker ----------
 
 const worker = new Worker(new URL("./cad/worker.ts", import.meta.url), { type: "module" });
@@ -176,10 +212,12 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
   if (m.type === "ready") {
     kernelReady = true;
     kernelMessage = "";
+    if (solverReady) splashStep("Building the model…");
     renderStatus();
     rebuild(true);
   } else if (m.type === "fatal") {
     kernelMessage = "Geometry kernel failed to load: " + m.message;
+    splashStep("The geometry kernel could not load. Sketches still work; solids will not.", true);
     renderStatus();
   } else if (m.type === "built") {
     buildRunning = false;
@@ -200,6 +238,11 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     const first = lastBuild === null;
     lastBuild = m;
     vp.setModel(m, m.preview);
+    if (!modelShown) {
+      modelShown = true;
+      // One frame to draw it, then the loading screen fades over the model.
+      requestAnimationFrame(maybeHideSplash);
+    }
     if (isOperation(mode)) mode.keypad.setNote(m.preview?.error ?? null);
     if ((first || fitNext) && m.mesh) {
       fitNext = false;
@@ -4841,6 +4884,7 @@ async function boot() {
   setupScrollAreas();
   $("#help-close").onclick = () => $("#help").classList.remove("open");
   renderAll();
+  splashStep("Opening your project…");
   await openInitialProject();
   // A tablet can close the app any time it is in the background: write what is pending then.
   document.addEventListener("visibilitychange", () => {
@@ -4848,7 +4892,13 @@ async function boot() {
     captureThumb();
     void flushSave();
   });
+  splashStep("Loading the sketch solver…");
   solver = await Solver.create(planegcsWasm);
+  solverReady = true;
+  splashStep(kernelReady ? "Building the model…" : "Loading the geometry kernel…");
+  maybeHideSplash();
+  // A slow kernel (first visit, slow tablet) does not keep the app hidden: sketching works without it.
+  setTimeout(hideSplash, 5000);
   new InputRouter(vp, $("#view"), {
     is2D: () => mode.kind === "sketch",
     tool: () => (mode.kind === "sketch" ? mode.editor : partTool),
