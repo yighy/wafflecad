@@ -159,6 +159,7 @@ const pendingFiles = new Map<number, (b: Blob | null, err?: string) => void>();
 const pendingRefs = new Map<number, (ref: Omit<MateRef, "part"> | null) => void>();
 const pendingClashes = new Map<number, (c: Clash[], err?: string) => void>();
 const pendingSplits = new Map<number, (parts: string[]) => void>();
+const pendingBodies = new Map<number, (bodies: { id: string; name: string }[]) => void>();
 let buildTimer = 0;
 /** One build at a time: while one runs, later changes wait and go as a single build after it. */
 let buildRunning = false;
@@ -221,6 +222,9 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     measuring.result = m.result;
     renderPanel();
     renderPartOverlays();
+  } else if (m.type === "bodies") {
+    pendingBodies.get(m.reqId)?.(m.bodies);
+    pendingBodies.delete(m.reqId);
   } else if (m.type === "split") {
     pendingSplits.get(m.reqId)?.(m.parts);
     pendingSplits.delete(m.reqId);
@@ -788,10 +792,7 @@ async function showPartPicker() {
     } else thumb.innerHTML = icon("part", 40);
     card.querySelector(".project-name")!.textContent = p.name;
     card.querySelector(".project-date")!.textContent = ago(p.updated);
-    const pick = () => {
-      closeProjects();
-      void insertPart(p);
-    };
+    const pick = () => void pickPart(el, p);
     thumb.onclick = pick;
     card.querySelector<HTMLElement>(".project-info")!.onclick = pick;
     grid.appendChild(card);
@@ -799,12 +800,77 @@ async function showPartPicker() {
   document.body.appendChild(el);
 }
 
-/** Places a part beside the others (its exact place is then set by hand). */
-async function insertPart(p: ProjectMeta, d?: CadDocument) {
+/** The bodies of a part (from the worker). */
+function partBodies(d: CadDocument) {
+  if (!kernelReady) return Promise.resolve([]);
+  const reqId = ++reqCounter;
+  return new Promise<{ id: string; name: string }[]>((resolve) => {
+    pendingBodies.set(reqId, resolve);
+    worker.postMessage({ type: "bodies", reqId, doc: d } satisfies WorkerRequest);
+  });
+}
+
+/** A part chosen in the picker: one with several bodies asks whether to keep them together. */
+async function pickPart(el: HTMLElement, p: ProjectMeta) {
+  const got = await getProject(p.id).catch(() => null);
+  if (!got) return toast("This project could not be read");
+  const d = asDocument(got.doc) ?? emptyDoc();
+  const bodies = await partBodies(d);
+  if (bodies.length < 2) {
+    closeProjects();
+    return insertPart(p, d);
+  }
+  const card = el.querySelector<HTMLElement>(".projects-card")!;
+  card.innerHTML = `<header><h2></h2><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
+    <p class="p-hint"></p><div class="p-actions"></div>`;
+  card.querySelector("h2")!.textContent = p.name;
+  card.querySelector(".p-hint")!.textContent = `This part has ${bodies.length} bodies (${bodies.map((b) => b.name).join(", ")}). Insert them as one part, or each as a part of its own, to move and mate them apart.`;
+  card.querySelector<HTMLElement>(".projects-close")!.onclick = closeProjects;
+  const box = card.querySelector(".p-actions")!;
+  for (const [ic, label, run] of [
+    ["part", "As one part", () => insertPart(p, d)],
+    ["assembly", `Each body apart (${bodies.length})`, () => insertPart(p, d, bodies)],
+  ] as const) {
+    const b = document.createElement("button");
+    b.innerHTML = icon(ic, 20) + "<span></span>";
+    b.querySelector("span")!.textContent = label;
+    b.onclick = () => {
+      closeProjects();
+      void run();
+    };
+    box.appendChild(b);
+  }
+}
+
+/**
+ * Places a part beside the others (its exact place is then set by hand). With `bodies`, each body
+ * becomes a part of its own, all where the part has them.
+ */
+async function insertPart(p: ProjectMeta, d?: CadDocument, bodies?: { id: string; name: string }[]) {
   if (!d) {
     const got = await getProject(p.id).catch(() => null);
     if (!got) return toast("This project could not be read");
     d = asDocument(got.doc) ?? emptyDoc();
+  }
+  if (bodies?.length) {
+    partDocs[p.id] = d;
+    partNames[p.id] = p.name;
+    sendParts();
+    const box = vp.modelBox();
+    const at: Vec3 = box ? [Math.round(box.max.x + 10), 0, 0] : [0, 0, 0];
+    const first = !doc.instances?.length;
+    const taken = (doc.instances ?? []).map((i) => i.name);
+    const made = bodies.map((b, k): PartInstance => {
+      // Bodies the part named keep their name; "Body 2" says which part it comes from.
+      const base = /^Body \d+$/.test(b.name) ? `${p.name} ${b.name.toLowerCase()}` : b.name;
+      const name = taken.includes(base) ? freeName(base, taken) : base;
+      taken.push(name);
+      return { id: uid(), project: p.id, name, at: [...at] as Vec3, rot: [0, 0, 0], body: b.id, fixed: (first && k === 0) || undefined };
+    });
+    doc.instances = [...(doc.instances ?? []), ...made];
+    selectedFeature = made[0].id;
+    fitNext = true;
+    return commit();
   }
   partDocs[p.id] = d;
   partNames[p.id] = p.name;
@@ -3167,7 +3233,7 @@ function renderPanel() {
     }
     const err = lastBuild?.errors[inst.id] ?? lastBuild?.warnings?.[inst.id];
     const where = `${inst.at.map(fmtNum).join(", ")} mm${inst.rot.some((r) => r) ? ` · turned ${inst.rot.map((r) => fmtNum(r) + "°").join(", ")}` : ""}`;
-    head(inst.name, err ?? `${inst.fixed ? "Fixed · " : ""}${partNames[inst.project] ?? "Missing project"} · ${where}`, !!err, true);
+    head(inst.name, err ?? `${inst.fixed ? "Fixed · " : ""}${partNames[inst.project] ?? "Missing project"}${inst.body ? " (one body)" : ""} · ${where}`, !!err, true);
     const hidden = hiddenBodies.has(inst.id);
     const items: [string, string, () => void, string?][] = [
       ["edit", "Position…", () => void placeTool(inst)],

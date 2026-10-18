@@ -2,7 +2,7 @@
 import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
-import { buildResult, buildShape, exportFile, interferences, setPartDocs, splitStep } from "./build";
+import { bodyNames, buildResult, buildShape, exportFile, interferences, setPartDocs, splitStep } from "./build";
 import { measure, refGeometry } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
@@ -56,6 +56,18 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
         errors: { _: String(e) },
       });
     }
+    return;
+  }
+  if (req.type === "bodies") {
+    let bodies: { id: string; name: string }[] = [];
+    try {
+      const ids = buildShape(req.doc).bodies.map((b) => b.id);
+      const names = bodyNames(req.doc, ids);
+      bodies = ids.map((id, i) => ({ id, name: names[i] }));
+    } catch {
+      // Unbuildable: inserted whole.
+    }
+    post({ type: "bodies", reqId: req.reqId, bodies });
     return;
   }
   if (req.type === "split") {

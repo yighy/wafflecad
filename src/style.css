@@ -1418,6 +1418,9 @@ body.busy #status-pill .dot {
   gap: 8px;
   padding: 14px 14px 10px 20px;
 }
+.projects-card > .p-hint {
+  margin: 0 4px 12px;
+}
 .projects-card h2 {
   margin: 0 auto 0 0;
   font-size: 20px;

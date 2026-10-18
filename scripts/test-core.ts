@@ -978,5 +978,19 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("outputs: a single solid is not split", (await splitStep(await exportFile(block(), "step")!.text())).length === 0);
 }
 
+// --- Assembly parts showing one body of a part (a box and its lid, moved apart).
+{
+  const lidSk = newSketch("L", { ...XY, origin: [0, 0, 5] });
+  rect(lidSk, 0, 0, 20, 10);
+  setPartDocs({ p1: block(lidSk, { id: "lid", kind: "extrude", name: "Lid", sketchId: lidSk.id, distance: 2, symmetric: false, op: "add", body: "new" }) });
+  const one = (body: string | undefined, at: [number, number, number] = [0, 0, 0]): PartInstance => ({ id: body ?? "all", project: "p1", name: body ?? "all", at, rot: [0, 0, 0], body });
+  const r = buildShape({ format: "waffle", version: 1, features: [], kind: "assembly", instances: [one("eb"), one("lid", [0, 0, 10])] });
+  const v = r.bodies.map((b) => measureVolume(b.shape));
+  const lidTop = r.bodies[1]?.shape.boundingBox.bounds[1][2];
+  check("assembly: a part's bodies inserted apart", r.bodies.length === 2 && near(v[0], 1000, 1e-3) && near(v[1], 400, 1e-3) && near(lidTop, 17, 1e-6), JSON.stringify([v, lidTop, r.errors]));
+  const gone = buildShape({ format: "waffle", version: 1, features: [], kind: "assembly", instances: [one("nope")] });
+  check("assembly: a body gone from its part is reported", !!gone.errors.nope, JSON.stringify(gone.errors));
+}
+
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
 process.exit(failures ? 1 : 0);

@@ -548,10 +548,16 @@ function assemblyShape(doc: CadDocument) {
       continue;
     }
     if (Object.keys(r.errors).length) warnings[inst.id] = "Some steps of the part fail: open it to fix them";
-    own.set(inst.id, r.shape);
+    // One body of the part, or all of it.
+    const solid = inst.body ? r.bodies.find((b) => b.id === inst.body)?.shape : r.shape;
+    if (!solid) {
+      errors[inst.id] = "Its body is no longer in the part";
+      continue;
+    }
+    own.set(inst.id, solid);
     const key = JSON.stringify([inst.at, inst.rot]);
     let p = placedCache.get(inst.id);
-    if (!p || p.part !== r.shape || p.key !== key) placedCache.set(inst.id, (p = { part: r.shape, key, shape: placeShape(r.shape, inst) }));
+    if (!p || p.part !== solid || p.key !== key) placedCache.set(inst.id, (p = { part: solid, key, shape: placeShape(solid, inst) }));
     bodies.push({ id: inst.id, shape: p.shape });
   }
   // A mate whose face or axis is no longer in its part (the part was changed) still holds the
@@ -669,7 +675,7 @@ function meshShape(shape: Shape3D, draft: boolean): Pick<BuildResult, "mesh" | "
  * The arrays returned are copies, free to be transferred.
  */
 /** Names of the bodies: the ones given, else "Body 1", "Body 2"… in order. */
-function bodyNames(doc: CadDocument, ids: string[]) {
+export function bodyNames(doc: CadDocument, ids: string[]) {
   if (doc.kind === "assembly") return ids.map((id) => doc.instances?.find((i) => i.id === id)?.name ?? "Part");
   return ids.map((id, i) => doc.bodyNames?.[id] ?? `Body ${i + 1}`);
 }
