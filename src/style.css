@@ -129,7 +129,8 @@ button.danger {
   position: fixed;
   left: var(--gap);
   top: var(--gap);
-  bottom: calc(84px + var(--safe-b));
+  /* --cut: shortened so the edge cuts through a tool (ui/scrollHints.ts). */
+  bottom: calc(84px + var(--safe-b) + var(--cut, 0px));
   width: 196px;
   overflow-y: auto;
   scrollbar-width: none;
@@ -660,7 +661,7 @@ body.busy #status-pill .dot {
   top: 50%;
   transform: translateY(-50%);
   width: 272px;
-  max-height: calc(100vh - 2 * var(--gap) - 96px);
+  max-height: calc(100vh - 2 * var(--gap) - 96px - var(--cut, 0px));
   overflow-y: auto;
   scrollbar-width: none;
   z-index: 12;
@@ -1074,32 +1075,6 @@ body.busy #status-pill .dot {
 #chips::-webkit-scrollbar {
   display: none;
 }
-/* The arrow on a column's edge where there is more to scroll (see ui/scrollHints.ts). */
-.scroll-more {
-  position: fixed;
-  left: 0;
-  top: 0;
-  z-index: 13;
-  width: 32px;
-  height: 32px;
-  margin: -16px 0 0 -16px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 50%;
-  background: var(--card);
-  color: var(--text);
-  box-shadow: var(--shadow);
-}
-.scroll-more[hidden] {
-  display: none;
-}
-.scroll-more.up svg {
-  transform: rotate(180deg);
-}
-
 /* Scrollable areas (see ui/scrollHints.ts): the content fades out where there is more. */
 [data-scroll="x"].more-start {
   mask-image: linear-gradient(to right, transparent, #000 32px);
@@ -1653,7 +1628,7 @@ body.busy #status-pill .dot {
     bottom: calc(80px + var(--safe-b));
     transform: none;
     width: auto;
-    max-height: 62vh;
+    max-height: calc(62vh - var(--cut, 0px));
   }
   #panel {
     padding: 10px;

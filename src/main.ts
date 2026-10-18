@@ -4880,9 +4880,9 @@ window.addEventListener("popstate", () => {
  * the first time. The timeline also scrolls sideways with a mouse wheel.
  */
 function setupScrollAreas() {
-  // The arrows sit under the icon column, readable when the labels are folded away too.
-  scrollHints($("#tools"), "y", "tools", { arrowX: 34 });
-  scrollHints($("#panel"), "y", "panel");
+  // Their bottom edge cuts through a tool, a button or a line, never through a gap.
+  scrollHints($("#tools"), "y", "tools", { cutItems: ".tool" });
+  scrollHints($("#panel"), "y", "panel", { cutItems: "button, .p-head, .p-hint, .p-measure > div, .kp-display" });
   const el = $("#chips");
   scrollHints(el, "x", "timeline");
   el.addEventListener(
