@@ -6,8 +6,8 @@ import { DIMENSION_TYPES } from "../types";
 import type { PointerTool, Ptr } from "../view/input";
 import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
 import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleEllipse, splineSpans, uid } from "./model";
-import { arcMid, findRegions, loopPolygon, sampleSegments } from "./profiles";
-import { entitiesInside, selectionOutlines } from "./selectInside";
+import { arcMid, findRegions, loopPolygon, pointInPolygon, sampleSegments } from "./profiles";
+import { type SelectMode, connectedContour, pathTouchesBox, regionAt, samplePoints, selectable } from "./selectModes";
 import { trimPlan, type TrimPlan } from "./trim";
 import { offsetEntities } from "./offset";
 import { cornerLines, filletCorner, groupCentre, groupPoints, mirrorEntities, projectEdge, transformGroup, type GroupTransform } from "./ops";
@@ -97,9 +97,14 @@ export class SketchEditor implements PointerTool {
     group?: { base: Pick<SketchFeature, "entities" | "constraints">; ids: string[] };
   } | null = null;
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null;
+  /** Lasso being drawn (screen points). */
+  private lasso: { x: number; y: number }[] | null = null;
+  /** How the Select tool picks: what a drag on empty space draws, what a tap takes. */
+  selectMode: SelectMode = "box";
   /** Trim tool: the piece that the current press (or hover) would remove. */
   private trimPreview: TrimPlan | null = null;
   private boxEl: HTMLDivElement;
+  private lassoEl: SVGSVGElement;
 
   constructor(
     private vp: Viewport,
@@ -110,12 +115,17 @@ export class SketchEditor implements PointerTool {
     this.boxEl = document.createElement("div");
     this.boxEl.className = "selbox";
     vp.container.appendChild(this.boxEl);
+    this.lassoEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    this.lassoEl.classList.add("sellasso");
+    this.lassoEl.innerHTML = "<path/>";
+    vp.container.appendChild(this.lassoEl);
     this.solve();
     this.render();
   }
 
   dispose() {
     this.boxEl.remove();
+    this.lassoEl.remove();
     this.vp.setSketchLayer([], []);
     this.vp.setFills(null, [], "");
     this.vp.setLabels([]);
@@ -384,6 +394,10 @@ export class SketchEditor implements PointerTool {
         this.box.x1 = p.x;
         this.box.y1 = p.y;
         this.showBox();
+      } else if (this.lasso) {
+        const last = this.lasso[this.lasso.length - 1];
+        if (Math.hypot(p.x - last.x, p.y - last.y) > 4) this.lasso.push({ x: p.x, y: p.y });
+        this.showLasso();
       }
       return;
     }
@@ -410,6 +424,8 @@ export class SketchEditor implements PointerTool {
         this.hooks.commit("Drag");
       } else if (this.box) {
         this.finishBox(p);
+      } else if (this.lasso) {
+        this.finishLasso(p);
       } else {
         this.tapSelect(pr.hit, p);
       }
@@ -432,6 +448,8 @@ export class SketchEditor implements PointerTool {
     this.press = null;
     this.box = null;
     this.boxEl.style.display = "none";
+    this.lasso = null;
+    this.lassoEl.style.display = "none";
     this.render();
   }
 
@@ -737,18 +755,6 @@ export class SketchEditor implements PointerTool {
       this.hooks.commit(titles[kind]);
       if (r.dropped) this.hooks.toast(`${r.dropped} horizontal/vertical constraint${r.dropped > 1 ? "s" : ""} dropped by the turn`);
     }
-    this.render();
-    this.hooks.changed();
-  }
-
-  /** Selects what lies inside the closed outline(s) the selection makes (not the outline itself). */
-  selectInside() {
-    if (!selectionOutlines(this.sk, this.selection).length) return this.hooks.toast("Select a closed outline first");
-    const inside = entitiesInside(this.sk, this.selection);
-    if (!inside.length) return this.hooks.toast("Nothing inside this outline");
-    this.lastTapped = null;
-    this.selection.clear();
-    for (const id of inside) this.selection.add(id);
     this.render();
     this.hooks.changed();
   }
@@ -1063,9 +1069,18 @@ export class SketchEditor implements PointerTool {
   // ---------- Select tool: tap, box, drag ----------
 
   private tapSelect(id: string | null, p: Ptr) {
+    if (!id && this.selectMode === "region") {
+      // Tapping inside a closed area takes it, with all it holds; again, lets it go.
+      const ids = regionAt(this.sk, this.toSketch(p));
+      if (ids.length) return this.toggleGroup(ids, null);
+    }
     if (!id) {
       if (!p.shift && !p.ctrl) this.selection.clear();
       return;
+    }
+    if (this.selectMode === "contour" && this.view.get(id)?.type !== "point") {
+      const ids = connectedContour(this.sk, id);
+      if (ids.length) return this.toggleGroup(ids, id);
     }
     if (this.selection.has(id)) this.selection.delete(id);
     else {
@@ -1074,10 +1089,25 @@ export class SketchEditor implements PointerTool {
     }
   }
 
+  /** Adds the group to the selection, or takes it out when it is all in already. */
+  private toggleGroup(ids: string[], tapped: string | null) {
+    if (ids.every((id) => this.selection.has(id))) for (const id of ids) this.selection.delete(id);
+    else {
+      for (const id of ids) this.selection.add(id);
+      this.lastTapped = tapped;
+    }
+  }
+
   private beginDrag(pr: NonNullable<SketchEditor["press"]>) {
     const v = this.view;
     const e = pr.hit ? v.get(pr.hit) : undefined;
+    if (!e && this.selectMode === "lasso") {
+      this.lasso = [{ x: pr.p.x, y: pr.p.y }];
+      this.showLasso();
+      return;
+    }
     if (!e) {
+      this.boxEl.classList.toggle("crossing", this.selectMode === "crossing");
       this.box = { x0: pr.p.x, y0: pr.p.y, x1: pr.p.x, y1: pr.p.y };
       this.showBox();
       return;
@@ -1147,28 +1177,38 @@ export class SketchEditor implements PointerTool {
     });
   }
 
+  private showLasso() {
+    const pts = this.lasso!;
+    this.lassoEl.style.display = "block";
+    this.lassoEl.firstElementChild!.setAttribute("d", "M" + pts.map((q) => `${q.x} ${q.y}`).join("L") + "Z");
+  }
+
+  /** Box: what lies wholly inside; crossing box: also what it touches. */
   private finishBox(p: Ptr) {
     const b = this.box!;
     this.box = null;
     this.boxEl.style.display = "none";
+    const rect: [number, number, number, number] = [Math.min(b.x0, p.x), Math.min(b.y0, p.y), Math.max(b.x0, p.x), Math.max(b.y0, p.y)];
+    const [xa, ya, xb, yb] = rect;
+    const inside = ([x, y]: P2) => x >= xa && x <= xb && y >= ya && y <= yb;
+    this.pickWhere(p, this.selectMode === "crossing" ? (pts) => pathTouchesBox(pts, rect) : (pts) => pts.every(inside));
+  }
+
+  /** What lies wholly inside the lasso. */
+  private finishLasso(p: Ptr) {
+    const poly = this.lasso!.map((q): P2 => [q.x, q.y]);
+    this.lasso = null;
+    this.lassoEl.style.display = "none";
+    if (poly.length < 3) return;
+    this.pickWhere(p, (pts) => pts.every((q) => pointInPolygon(q, poly)));
+  }
+
+  /** Selects the entities whose outline on screen passes `test` (added to the selection with Shift or Ctrl). */
+  private pickWhere(p: Ptr, test: (screenPts: P2[]) => boolean) {
     this.lastTapped = null;
-    const [xa, xb] = [Math.min(b.x0, p.x), Math.max(b.x0, p.x)];
-    const [ya, yb] = [Math.min(b.y0, p.y), Math.max(b.y0, p.y)];
-    const inside = (xy: P2) => {
-      const [x, y] = this.toScreen(xy);
-      return x >= xa && x <= xb && y >= ya && y <= yb;
-    };
     const v = this.view;
     if (!p.shift && !p.ctrl) this.selection.clear();
-    for (const e of this.sk.entities) {
-      if (isReference(e) || (e.type === "point" && isHiddenPoint(e.id))) continue;
-      let pts: P2[];
-      if (e.type === "circle") {
-        const c = v.xy(e.c);
-        pts = [[c[0] - e.r, c[1]], [c[0] + e.r, c[1]], [c[0], c[1] - e.r], [c[0], c[1] + e.r]];
-      } else pts = v.defPoints(e).map((id) => v.xy(id));
-      if (pts.every(inside)) this.selection.add(e.id);
-    }
+    for (const e of this.sk.entities) if (selectable(e) && test(samplePoints(v, e).map((xy) => this.toScreen(xy)))) this.selection.add(e.id);
   }
 
   // ---------- Solving ----------
@@ -1287,7 +1327,6 @@ export class SketchEditor implements PointerTool {
     }
     const all = this.sk.entities.filter((e) => !isReference(e) && !(e.type === "point" && isHiddenPoint(e.id)));
     if (all.length && all.some((e) => !this.selection.has(e.id))) out.push({ id: "selall", label: "▣", title: "Select all", run: () => this.selectAll() });
-    if (selectionOutlines(this.sk, this.selection).length) out.push({ id: "selin", label: "◰", title: "Select inside", run: () => this.selectInside() });
     if (editable.some((e) => e.type !== "point"))
       out.push({ id: "constr", label: "┄", title: "Toggle construction", key: "G", run: () => this.toggleConstruction() });
     if (editable.length || cons.length) out.push({ id: "del", label: "🗑", title: "Delete", key: "Delete", run: () => this.deleteSelection() });

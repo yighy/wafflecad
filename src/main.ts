@@ -7,6 +7,7 @@ import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewp
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
 import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
+import type { SelectMode } from "./sketch/selectModes";
 import { SketchView, newSketch, sampleCurve, sketchLineWorld, uid } from "./sketch/model";
 import { openKeypad, setKeypadHost, type KeypadHandle, type Segmented } from "./ui/keypad";
 import { icon } from "./ui/icons";
@@ -73,8 +74,10 @@ interface Prefs {
   display: DisplayMode;
   /** The project open last. */
   project: string | null;
+  /** How the sketch Select tool picks. */
+  selectMode: SelectMode;
 }
-const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges", project: null };
+const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges", project: null, selectMode: "box" };
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
 } catch {
@@ -613,6 +616,7 @@ function enterSketch(sk: SketchFeature) {
     toast,
     scope: paramScope,
   });
+  editor.selectMode = prefs.selectMode;
   mode = { kind: "sketch", editor };
   selectedFeature = sk.id;
   vp.setGridPlane(sk.plane);
@@ -3005,6 +3009,62 @@ const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: st
   { tool: "project", icon: "project", label: "Use edges", key: "U" },
 ];
 
+/** The Select tool's ways of picking: [mode, icon, name, how to use it]. */
+const SELECT_MODES: [SelectMode, string, string, string][] = [
+  ["box", "selBox", "Box", "Drag a box: what lies wholly inside is selected"],
+  ["crossing", "selCrossing", "Crossing box", "Drag a box: all it touches is selected"],
+  ["lasso", "selLasso", "Lasso", "Draw around what to select"],
+  ["contour", "selContour", "Contour", "Tap a line: the whole contour it belongs to is selected"],
+  ["region", "selRegion", "Region", "Tap inside a closed shape: it is selected with all it holds"],
+];
+
+/** The menu of selection modes, unfolded beside the Select tool. */
+function toggleSelectModes(anchor: HTMLElement, ed: SketchEditor) {
+  if (closeSelectModes()) return;
+  const el = document.createElement("div");
+  el.id = "select-modes";
+  el.setAttribute("role", "menu");
+  for (const [m, ic, name, how] of SELECT_MODES) {
+    const b = document.createElement("button");
+    b.className = "fly-item" + (m === ed.selectMode ? " on" : "");
+    b.setAttribute("role", "menuitemradio");
+    b.setAttribute("aria-checked", String(m === ed.selectMode));
+    b.innerHTML = `<span class="tile">${icon(ic)}</span><span class="label"></span>`;
+    b.querySelector(".label")!.textContent = name;
+    b.title = how;
+    b.onclick = () => {
+      ed.selectMode = prefs.selectMode = m;
+      savePrefs();
+      closeSelectModes();
+      renderTools();
+      toast(how);
+    };
+    el.appendChild(b);
+  }
+  const r = anchor.getBoundingClientRect();
+  const tools = $("#tools").getBoundingClientRect();
+  el.style.left = `${Math.max(r.right, tools.right) + 8}px`;
+  el.style.top = `${r.top}px`;
+  document.body.appendChild(el);
+  // Below the screen's edge it opens upwards.
+  const h = el.getBoundingClientRect().height;
+  if (r.top + h > innerHeight - 8) el.style.top = `${Math.max(8, innerHeight - 8 - h)}px`;
+  const away = (e: PointerEvent) => {
+    if (el.contains(e.target as Node) || anchor.contains(e.target as Node)) return;
+    closeSelectModes();
+  };
+  setTimeout(() => document.addEventListener("pointerdown", away, true));
+  (el as HTMLElement & { off?: () => void }).off = () => document.removeEventListener("pointerdown", away, true);
+}
+
+function closeSelectModes() {
+  const el = document.getElementById("select-modes") as (HTMLElement & { off?: () => void }) | null;
+  if (!el) return false;
+  el.off?.();
+  el.remove();
+  return true;
+}
+
 /** `disabled`: why the tool cannot be used now; it stays in place, greyed, and tapping it says why. */
 /**
  * `tint`: colour of the icon (the reference planes use their 3D colour); `tag`: a short text
@@ -3098,6 +3158,7 @@ function section(title: string) {
 function renderTools() {
   const el = $("#tools");
   el.replaceChildren();
+  if (mode.kind !== "sketch") closeSelectModes();
   // During an operation everything (confirm, cancel, options) is in the right panel.
   el.hidden = isOperation(mode);
   if (el.hidden) return;
@@ -3121,8 +3182,24 @@ function renderTools() {
     el.appendChild(section("Draw"));
     for (const t of SKETCH_TOOLS) {
       if (t.tool === "trim") el.appendChild(section("Modify"));
+      if (t.tool === "select") {
+        // Select shows its mode; tapped again, it unfolds the other modes.
+        const [, ic, name] = SELECT_MODES.find(([m]) => m === ed.selectMode) ?? SELECT_MODES[0];
+        const label = ed.selectMode === "box" ? t.label : `${t.label} · ${name.replace(" box", "")}`;
+        const b = toolRow(ic, label, () => {
+          if (ed.tool === "select") return toggleSelectModes(b, ed);
+          closeSelectModes();
+          ed.setTool("select");
+          renderAll();
+        }, { active: ed.tool === "select", key: t.key });
+        b.querySelector(".tile")!.classList.add("has-modes");
+        b.title = `${label} (${t.key}) — tap again for other ways to select`;
+        el.appendChild(b);
+        continue;
+      }
       el.appendChild(
         toolRow(t.icon, t.label, () => {
+          closeSelectModes();
           // Tapping the active tool again puts it down.
           ed.setTool(ed.tool === t.tool ? "select" : t.tool);
           renderAll();

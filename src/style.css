@@ -209,6 +209,69 @@ body.collapsed .tools-hint {
   line-height: 1;
   letter-spacing: 0.02em;
 }
+/* A tool with more ways to work (Select): a small corner mark, like other tool bars. */
+.tool .tile.has-modes {
+  position: relative;
+}
+.tool .tile.has-modes::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  border: 3.5px solid transparent;
+  border-right-color: currentColor;
+  border-bottom-color: currentColor;
+  opacity: 0.6;
+}
+#select-modes {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--card2) 92%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow);
+  animation: fly-in 0.16s ease-out;
+}
+@keyframes fly-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+}
+.fly-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 16px 0 4px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+  justify-content: flex-start;
+}
+.fly-item .tile {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card);
+}
+.fly-item.on {
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+.fly-item.on .tile {
+  background: var(--accent);
+  color: var(--on-accent);
+}
 #tool-bubble {
   position: fixed;
   transform: translateY(-50%);
@@ -1366,6 +1429,26 @@ body.busy #status-pill .dot {
   pointer-events: none;
   border: 1px dashed var(--sk-selected);
   background: color-mix(in srgb, var(--sk-selected) 12%, transparent);
+}
+/* Crossing box: green, as in other CAD tools (what it touches is taken). */
+.selbox.crossing {
+  border-color: var(--sk-constrained);
+  background: color-mix(in srgb, var(--sk-constrained) 12%, transparent);
+}
+.sellasso {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  pointer-events: none;
+  overflow: visible;
+}
+.sellasso path {
+  fill: color-mix(in srgb, var(--sk-selected) 12%, transparent);
+  stroke: var(--sk-selected);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
 }
 
 /* ---------- Toast, help ---------- */

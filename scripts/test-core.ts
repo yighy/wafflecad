@@ -17,7 +17,7 @@ import { hasRef, measure, refGeometry } from "../src/cad/measure";
 import { instanceMatrix, solveMates, worldRef } from "../src/cad/mates";
 import { textShapes } from "../src/sketch/text";
 import { offsetEntities } from "../src/sketch/offset";
-import { entitiesInside, selectionOutlines } from "../src/sketch/selectInside";
+import { connectedContour, entitiesInside, pathTouchesBox, regionAt, selectionOutlines } from "../src/sketch/selectModes";
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
@@ -993,7 +993,7 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("assembly: a body gone from its part is reported", !!gone.errors.nope, JSON.stringify(gone.errors));
 }
 
-// --- Select inside: a plate's outline, a hole and a slot line inside it, things outside or across.
+// --- Selection (region, contour, inside an outline): a plate's outline, a hole and a slot line inside it, things outside or across.
 {
   const sk = newSketch("Plate", XY);
   const r = rect(sk, 0, 0, 60, 40);
@@ -1013,6 +1013,17 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("select inside: an outline encloses its hole and lines", ["hole", "hc", "in", "i1", "i2"].every((id) => got.has(id)), JSON.stringify([...got]));
   check("select inside: not what is outside, across, or the outline's own corners", !got.has("far") && !got.has("across") && !got.has("x1") && !got.has("x2") && r.pts.every((p) => !got.has(p)) && r.lines.every((l) => !got.has(l)), JSON.stringify([...got]));
   check("select inside: an open selection has no outline", selectionOutlines(sk, new Set(r.lines.slice(0, 3))).length === 0 && selectionOutlines(sk, new Set(["hole"])).length === 1);
+
+  // Select modes on the same plate.
+  const plate = new Set(regionAt(sk, [40, 5]));
+  check("region: a tap in the plate takes its outline and what it holds", r.lines.every((l) => plate.has(l)) && ["hole", "in"].every((id) => plate.has(id)) && !plate.has("across") && !plate.has("far"), JSON.stringify([...plate]));
+  const hole = regionAt(sk, [10, 10.5]);
+  check("region: a tap in the hole takes the hole only", hole.length === 1 && hole[0] === "hole", JSON.stringify(hole));
+  check("region: a tap outside every outline takes nothing", regionAt(sk, [200, 200]).length === 0);
+  const loop = new Set(connectedContour(sk, r.lines[1]));
+  check("contour: a line brings the lines joined to it", loop.size === 4 && r.lines.every((l) => loop.has(l)), JSON.stringify([...loop]));
+  check("contour: a lone line stays alone", JSON.stringify(connectedContour(sk, "in")) === JSON.stringify(["in"]));
+  check("crossing box: a line through it counts, one beside it not", pathTouchesBox([[0, 5], [10, 5]], [4, 0, 6, 10]) && !pathTouchesBox([[0, 20], [10, 20]], [4, 0, 6, 10]));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");
