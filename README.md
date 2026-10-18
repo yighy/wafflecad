@@ -15,7 +15,7 @@
 
 ## Features
 
-- **Sketches** with constraints and dimensions (FreeCAD's solver): lines, rectangles, circles, arcs, splines,
+- **Sketches** with constraints and dimensions: lines, rectangles, circles, arcs, splines,
   polygons, slots, ellipses, text, offset, trim, fillet, mirror, model edges brought into the sketch, DXF and
   SVG import.
 - **Solids** with OpenCascade: extrude, revolve, Press Pull, shell, fillet / chamfer, metric holes
@@ -35,7 +35,7 @@
 - **Exchange**: STEP import and export for other CAD software (an assembly's parts named and coloured, and
   read back as parts), STL and 3MF (one object per part) for slicers, and a 3MF plate with every part
   laid flat.
-- **Installable** (PWA) and works offline once loaded. A keyboard and a mouse work but are never needed.
+- **Installable** (PWA) and works offline once loaded.
 
 ## Gestures
 
