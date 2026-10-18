@@ -16,8 +16,8 @@ const post = (msg: WorkerResponse, transfer: Transferable[] = []) =>
 async function fetchKernel(): Promise<ArrayBuffer> {
   const res = await fetch(wasmUrl);
   if (!res.ok || !res.body) throw new Error(`download failed (HTTP ${res.status})`);
-  // Compressed in transit, the header gives the compressed size: then the total is unknown.
-  const total = Number(res.headers.get("content-length")) || 0;
+  // What arrives is the file itself, whatever the compression in transit: its size is known.
+  const total = __KERNEL_BYTES__;
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
   let loaded = 0;
@@ -30,7 +30,7 @@ async function fetchKernel(): Promise<ArrayBuffer> {
     const now = performance.now();
     if (now - told > 250) {
       told = now;
-      post({ type: "progress", loaded, total: total >= loaded ? total : 0 });
+      post({ type: "progress", loaded: Math.min(loaded, total), total });
     }
   }
   const out = new Uint8Array(loaded);
