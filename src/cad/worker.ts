@@ -9,8 +9,42 @@ import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 const post = (msg: WorkerResponse, transfer: Transferable[] = []) =>
   (self as unknown as Worker).postMessage(msg, transfer);
 
+/**
+ * The kernel (some 20 MB) is fetched here rather than by OpenCascade's loader, so the app can show
+ * how far the download is, and tell a stalled one from a slow one.
+ */
+async function fetchKernel(): Promise<ArrayBuffer> {
+  const res = await fetch(wasmUrl);
+  if (!res.ok || !res.body) throw new Error(`download failed (HTTP ${res.status})`);
+  // Compressed in transit, the header gives the compressed size: then the total is unknown.
+  const total = Number(res.headers.get("content-length")) || 0;
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  let told = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.length;
+    const now = performance.now();
+    if (now - told > 250) {
+      told = now;
+      post({ type: "progress", loaded, total: total >= loaded ? total : 0 });
+    }
+  }
+  const out = new Uint8Array(loaded);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out.buffer;
+}
+
 const ready = (async () => {
-  const OC = await opencascade({ locateFile: () => wasmUrl });
+  const wasmBinary = await fetchKernel();
+  const OC = await opencascade({ locateFile: () => wasmUrl, wasmBinary } as Parameters<typeof opencascade>[0]);
   setOC(OC);
 })();
 

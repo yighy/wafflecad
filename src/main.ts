@@ -139,6 +139,10 @@ let showParams = false;
 let previewExclude: string | null = null;
 let lastBuild: BuildResult | null = null;
 let kernelMessage = "Loading geometry kernel…";
+/** The kernel could not load: the status line offers to try again. */
+let kernelBroken = false;
+/** When the kernel last showed signs of life while loading (download progress). */
+let kernelAlive = performance.now();
 /** The document without its imported files (they only ever get added, so undo leaves them be). */
 const snapshot = () => JSON.stringify({ ...doc, files: undefined });
 const undoStack: string[] = [snapshot()];
@@ -215,9 +219,15 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     if (solverReady) splashStep("Building the model…");
     renderStatus();
     rebuild(true);
+  } else if (m.type === "progress") {
+    kernelAlive = performance.now();
+    const mb = (b: number) => (b / 1e6).toFixed(b < 1e7 ? 1 : 0);
+    const amount = m.total ? `${Math.floor((m.loaded / m.total) * 100)} %` : `${mb(m.loaded)} MB`;
+    kernelMessage = `Loading geometry kernel… ${amount}`;
+    if (solverReady) splashStep(kernelMessage);
+    renderStatus();
   } else if (m.type === "fatal") {
-    kernelMessage = "Geometry kernel failed to load: " + m.message;
-    splashStep("The geometry kernel could not load. Sketches still work; solids will not.", true);
+    kernelFailed(m.message);
     renderStatus();
   } else if (m.type === "built") {
     buildRunning = false;
@@ -282,6 +292,23 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     pendingFiles.delete(m.reqId);
   }
 };
+
+/** Nothing more will come from the kernel: say so, and offer to try again (a reload). */
+function kernelFailed(why: string) {
+  if (kernelReady || kernelBroken) return;
+  kernelBroken = true;
+  kernelMessage = `Geometry kernel did not load (${why}) · tap here to try again`;
+  splashStep("The geometry kernel could not load. Sketches still work; solids will not.", true);
+  renderStatus();
+}
+
+// The worker itself failing to start (its script not found, out of memory…) sends no message.
+worker.onerror = (e) => kernelFailed(e.message || "the worker stopped");
+// A download that stops moving: the network is gone or stuck.
+const kernelWatch = window.setInterval(() => {
+  if (kernelReady || kernelBroken) return window.clearInterval(kernelWatch);
+  if (performance.now() - kernelAlive > 30000) kernelFailed("the download stalled");
+}, 5000);
 
 function sendBuild(draft = false) {
   if (!kernelReady) return;
@@ -3702,6 +3729,7 @@ function renderStatus() {
         : "Tap a part to place it";
   if (buildSlow) s = s ? `Building… · ${s}` : "Building the model…";
   $("#status").textContent = s;
+  $("#status-pill").classList.toggle("retry", kernelBroken && s === kernelMessage);
 }
 
 // ---------- Display menu: how the solid is drawn, and a section through it ----------
@@ -4869,6 +4897,9 @@ function setupScrollAreas() {
 
 async function boot() {
   setKeypadHost($("#panel"));
+  $("#status-pill").onclick = () => {
+    if (kernelBroken) location.reload();
+  };
   setupPanelDrag();
   placePanel();
   setupMenu();

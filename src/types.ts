@@ -489,6 +489,8 @@ export type WorkerRequest =
 
 export type WorkerResponse =
   | { type: "ready" }
+  /** The geometry kernel's download under way (bytes; total 0 when unknown). */
+  | { type: "progress"; loaded: number; total: number }
   | { type: "fatal"; message: string }
   | ({ type: "built"; reqId: number; preview?: PreviewResult } & BuildResult)
   | { type: "file"; reqId: number; blob: Blob | null; error?: string }

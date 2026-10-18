@@ -418,6 +418,10 @@ body.collapsed #status-pill {
   left: calc(64px + 2 * var(--gap));
   max-width: calc(100vw - 64px - 140px);
 }
+#status-pill.retry {
+  cursor: pointer;
+  color: var(--danger, #e03131);
+}
 #status-pill:has(#status:empty) {
   display: none;
 }
