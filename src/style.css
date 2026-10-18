@@ -357,9 +357,49 @@ body.collapsed .section {
 
 /* ---------- Status pill ---------- */
 
-#status-pill {
+/* Sketch · Part · Assembly: where you are, and the way to the others. */
+#workspace {
   position: fixed;
   top: var(--gap);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 11;
+  display: flex;
+  gap: 3px;
+  padding: 4px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--card2) 88%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow);
+}
+.ws-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 14px;
+  transition:
+    background-color 0.18s,
+    color 0.18s,
+    box-shadow 0.18s;
+}
+.ws-btn.on {
+  background: var(--card);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.ws-btn:disabled {
+  opacity: 0.4;
+}
+#status-pill {
+  position: fixed;
+  top: calc(var(--gap) + 58px);
   left: calc(196px + 2 * var(--gap));
   max-width: calc(100vw - 196px - 140px);
   display: flex;
@@ -1558,6 +1598,22 @@ body.busy #status-pill .dot {
     max-width: calc(100vw - 56px - 90px);
     font-size: 13px;
     padding: 8px 12px;
+    top: calc(var(--gap) + 50px);
+  }
+  /* Beside the tools, clear of the view cube; icons only on the narrowest screens. */
+  #workspace {
+    left: calc(56px + 2 * var(--gap));
+    transform: none;
+  }
+  .ws-btn {
+    min-height: 36px;
+    padding: 0 10px;
+    font-size: 13px;
+  }
+}
+@media (max-width: 440px) {
+  .ws-btn span {
+    display: none;
   }
   /* The panel becomes a bottom sheet above the timeline. */
   #panel {

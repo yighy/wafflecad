@@ -2752,6 +2752,156 @@ function playEnter(slot: string, key: string, el: HTMLElement) {
   el.addEventListener("animationend", () => el.classList.remove("enter"), { once: true });
 }
 
+// ---------- Workspace bar: Sketch · Part · Assembly ----------
+
+type Workspace = "sketch" | "part" | "assembly";
+const WORKSPACES: [Workspace, string, string][] = [
+  ["sketch", "Sketch", "sketch"],
+  ["part", "Part", "extrude"],
+  ["assembly", "Assembly", "assembly"],
+];
+
+function currentWorkspace(): Workspace {
+  return mode.kind === "sketch" || mode.kind === "pickPlane" ? "sketch" : isAssembly() ? "assembly" : "part";
+}
+
+function renderWorkspace() {
+  const el = $("#workspace");
+  el.replaceChildren();
+  const cur = currentWorkspace();
+  // In the middle of a step (keypad open, choosing a mate…), finish it first.
+  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align";
+  const tips: Record<Workspace, string> = {
+    sketch: isAssembly() ? "Open a part in its last sketch" : "Edit the selected sketch, or start one",
+    part: mode.kind === "sketch" ? "Finish the sketch" : isAssembly() ? "Open a part of this assembly" : "The part",
+    assembly: cameFrom ? `Back to ${cameFrom.name}` : isAssembly() ? "The assembly" : "Assemblies using this part",
+  };
+  for (const [w, label, ic] of WORKSPACES) {
+    const b = document.createElement("button");
+    b.className = "ws-btn" + (w === cur ? " on" : "");
+    b.innerHTML = icon(ic, 18) + "<span></span>";
+    b.querySelector("span")!.textContent = label;
+    b.title = tips[w];
+    b.setAttribute("aria-label", label);
+    b.setAttribute("aria-pressed", String(w === cur));
+    b.disabled = busy && w !== cur;
+    b.onclick = () => void goWorkspace(w);
+    el.appendChild(b);
+  }
+}
+
+async function goWorkspace(w: Workspace) {
+  if (w === currentWorkspace()) return;
+  if (measuring) endMeasure();
+  if (w === "sketch") {
+    if (isAssembly()) return openPartOfAssembly(true);
+    // The selected sketch (or the one an extrusion or revolution uses), else a new one.
+    const sel = doc.features.find((f) => f.id === selectedFeature);
+    const id = sel?.kind === "sketch" ? sel.id : sel?.kind === "extrude" || sel?.kind === "revolve" ? sel.sketchId : null;
+    const sk = doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
+    return sk ? enterSketch(sk) : startNewSketch();
+  }
+  if (mode.kind === "sketch") exitSketch();
+  else if (mode.kind === "pickPlane") escape();
+  if (w === "part") return isAssembly() ? openPartOfAssembly(false) : undefined;
+  if (cameFrom) return openProject(cameFrom.id);
+  return chooseAssembly();
+}
+
+/** From an assembly: the selected part's project, or one picked from those it uses. */
+async function openPartOfAssembly(sketch: boolean) {
+  const go = async (id: string) => {
+    if (!project) return;
+    await openProject(id, { id: project.id, name: project.name });
+    if (!sketch) return;
+    const last = [...doc.features].reverse().find((f): f is SketchFeature => f.kind === "sketch");
+    if (last) enterSketch(last);
+    else startNewSketch();
+  };
+  const inst = instanceOf(selectedFeature);
+  if (inst) return partDocs[inst.project] ? go(inst.project) : toast("Its project is no longer there");
+  const ids = [...new Set((doc.instances ?? []).map((i) => i.project))].filter((id) => partDocs[id]);
+  if (!ids.length) return toast("Insert a part first");
+  if (ids.length === 1) return go(ids[0]);
+  const metas = (await listProjects().catch(() => [])).filter((p) => ids.includes(p.id));
+  chooseProject(sketch ? "Sketch in which part?" : "Open which part?", metas, (p) => void go(p.id));
+}
+
+/** From a part: the assemblies that use it, or a new one with it. */
+async function chooseAssembly() {
+  if (!project) return;
+  const here = project;
+  await flushSave();
+  const all = await listProjects().catch(() => []);
+  const using: ProjectMeta[] = [];
+  for (const m of all.filter((p) => p.kind === "assembly")) {
+    const got = await getProject(m.id).catch(() => null);
+    if (got?.doc.instances?.some((i) => i.project === here.id)) using.push(m);
+  }
+  chooseProject(using.length ? `Assemblies using ${here.name}` : `No assembly uses ${here.name} yet`, using, (p) => void openProject(p.id), [
+    "plus",
+    "New assembly with this part",
+    async () => {
+      const names = all.map((p) => p.name);
+      const got = await getProject(here.id).catch(() => null);
+      await createProject(freeName("Assembly", names), { ...emptyDoc(), kind: "assembly", instances: [] });
+      if (!got) return;
+      // The part goes in at once (asking first, if it has several bodies).
+      const el = chooseProject(`Insert ${here.name}`, [], () => {});
+      void pickPart(el, got.meta);
+    },
+  ]);
+}
+
+/** A short list of projects in the gallery's look, to go to one; `extra`: an action below it. */
+function chooseProject(title: string, list: ProjectMeta[], go: (p: ProjectMeta) => void, extra?: [string, string, () => void]) {
+  closeProjects();
+  const el = document.createElement("div");
+  el.id = "projects";
+  el.addEventListener("pointerdown", (e) => {
+    if (e.target === el) closeProjects();
+  });
+  el.innerHTML = `<div class="projects-card"><header><h2></h2><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
+    <div class="projects-grid"></div><div class="p-actions"></div></div>`;
+  el.querySelector("h2")!.textContent = title;
+  el.querySelector<HTMLElement>(".projects-close")!.onclick = closeProjects;
+  const grid = el.querySelector(".projects-grid")!;
+  for (const p of list) {
+    const card = document.createElement("div");
+    card.className = "project-card";
+    card.innerHTML = `<button class="project-thumb"></button><div class="project-row"><div class="project-info"><div class="project-name"></div><div class="project-date"></div></div></div>`;
+    const thumb = card.querySelector<HTMLElement>(".project-thumb")!;
+    if (p.thumb) {
+      const img = document.createElement("img");
+      img.src = p.thumb;
+      img.alt = "";
+      thumb.appendChild(img);
+    } else thumb.innerHTML = icon(p.kind === "assembly" ? "assembly" : "part", 40);
+    card.querySelector(".project-name")!.textContent = p.name;
+    card.querySelector(".project-date")!.textContent = ago(p.updated);
+    const pick = () => {
+      closeProjects();
+      go(p);
+    };
+    thumb.onclick = pick;
+    card.querySelector<HTMLElement>(".project-info")!.onclick = pick;
+    grid.appendChild(card);
+  }
+  if (extra) {
+    const b = document.createElement("button");
+    b.className = "primary";
+    b.innerHTML = icon(extra[0], 20) + "<span></span>";
+    b.querySelector("span")!.textContent = extra[1];
+    b.onclick = () => {
+      closeProjects();
+      extra[2]();
+    };
+    el.querySelector(".p-actions")!.appendChild(b);
+  }
+  document.body.appendChild(el);
+  return el;
+}
+
 function renderAll() {
   document.body.dataset.mode = mode.kind;
   vp.forceOrtho = mode.kind === "sketch";
@@ -2762,6 +2912,7 @@ function renderAll() {
   renderStatus();
   renderViewButtons();
   renderPartOverlays();
+  renderWorkspace();
   syncGizmo();
 }
 
@@ -2945,11 +3096,6 @@ function renderTools() {
       }
     }
   } else {
-    if (cameFrom) {
-      const back = cameFrom;
-      el.appendChild(section("Assembly"));
-      el.appendChild(toolRow("back", `Back to ${back.name}`, () => void openProject(back.id)));
-    }
     el.appendChild(section("Sketch"));
     el.appendChild(toolRow("sketch", "New sketch", startNewSketch, { key: "S" }));
     // Tools appear as the document grows: a sketch brings Extrude and Revolve, a solid brings
