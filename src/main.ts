@@ -1296,7 +1296,9 @@ function endDrag(keep: boolean) {
   dragging = null;
   if (!d) return;
   if (!keep) {
+    // A second finger turned the drag into a camera move: the parts go back, the handles too.
     vp.moveBodies(new Map());
+    renderAll();
     return;
   }
   doc.instances = d.insts;
@@ -1323,7 +1325,8 @@ function fingerMove(p: Ptr) {
   const f = fingerDrag;
   if (!f) return;
   if (!f.moved) {
-    if (Math.hypot(p.x - f.x0, p.y - f.y0) < 8) return;
+    // A finger waits a little longer: a second one may still come and make it a camera move.
+    if (Math.hypot(p.x - f.x0, p.y - f.y0) < (p.kind === "touch" ? 16 : 6)) return;
     f.moved = true;
     selectedFeature = f.id;
     gizmo?.dispose();
@@ -3649,7 +3652,11 @@ function renderStatus() {
   else if (isAssembly() && clashes) s = clashes.running ? "Checking for overlaps…" : "Interference · overlaps in red";
   else if (isAssembly() && explodeTarget) s = "Exploded view · tap it again to put the parts back";
   else if (isAssembly() && !s && !measuring && doc.instances?.length)
-    s = instanceOf(selectedFeature) ? "Drag an arrow to slide the part, a ring to turn it" : "Tap a part to place it";
+    s = instanceOf(selectedFeature)?.fixed
+      ? "This part is fixed: tap Let it move to place it"
+      : instanceOf(selectedFeature)
+        ? "Drag an arrow to slide the part, a ring to turn it"
+        : "Tap a part to place it";
   if (buildSlow) s = s ? `Building… · ${s}` : "Building the model…";
   $("#status").textContent = s;
 }
