@@ -1805,7 +1805,8 @@ function bodySegment(feat: { id: string; op: string; body?: string }): Segmented
 function bodyNote(f: { id: string; op: string; body?: string }) {
   const bodies = lastBuild?.bodies ?? [];
   if (bodies.length < 2) return "";
-  if (f.op === "add") return f.body === "new" ? ` · ${bodyName(f.id)}` : f.body ? ` · into ${bodyName(f.body)}` : "";
+  // A step that starts a body (the first solid too, which has no body setting) is named after it.
+  if (f.op === "add") return f.body === "new" || bodies.some((b) => b.id === f.id) ? ` · ${bodyName(f.id)}` : f.body ? ` · into ${bodyName(f.body)}` : "";
   return f.body && f.body !== "new" ? ` · ${bodyName(f.body)} only` : "";
 }
 
