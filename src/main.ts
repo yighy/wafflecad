@@ -3025,6 +3025,15 @@ function renderAll() {
   renderPartOverlays();
   renderWorkspace();
   syncGizmo();
+  vp.selectBody(selectedBody());
+}
+
+/** The body selected, to mark in the view: an assembly's part, or a part's body when it has several. */
+function selectedBody(): string | null {
+  if (mode.kind !== "part" || !selectedFeature || clashes) return null;
+  const bodies = lastBuild?.bodies ?? [];
+  if (!isAssembly() && bodies.length < 2) return null;
+  return bodies.some((b) => b.id === selectedFeature) ? selectedFeature : null;
 }
 
 const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: string }[] = [

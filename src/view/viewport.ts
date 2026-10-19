@@ -74,6 +74,9 @@ export class Viewport {
   private clashGroup = new THREE.Group();
   private edgeHighlight: THREE.Object3D | null = null;
   private highlight: THREE.Mesh | null = null;
+  /** The selected body (a part's body, an assembly's part), and how it is marked. */
+  private selBody: string | null = null;
+  private bodyMark: THREE.Object3D[] = [];
   private lineMaterials: LineMaterial[] = [];
   private needsRender = true;
   private anim: { t0: number; q0: THREE.Quaternion; q1: THREE.Quaternion; p0: THREE.Vector3; p1: THREE.Vector3; h0: number; h1: number } | null = null;
@@ -463,8 +466,57 @@ export class Viewport {
     // Inside faces seen through a section: drawn as a solid "cap" colour.
     this.capMesh = new THREE.Mesh(this.shownMesh.geometry, new THREE.MeshBasicMaterial({ side: THREE.BackSide }));
     this.modelGroup.add(this.capMesh);
+    this.bodyMark = []; // gone with the model group's children
+    if (!preview?.mesh) this.drawBodyMark();
     this.applyDisplay();
     this.requestRender();
+  }
+
+  /** Marks the selected body: a light tint, and its edges in the accent colour (null: none). */
+  selectBody(id: string | null) {
+    if (id === this.selBody) return;
+    this.selBody = id;
+    this.drawBodyMark();
+  }
+
+  private drawBodyMark() {
+    for (const o of this.bodyMark) {
+      this.modelGroup.remove(o);
+      (o as THREE.Mesh).geometry?.dispose();
+    }
+    this.bodyMark = [];
+    this.requestRender();
+    const r = this.shown.r;
+    const body = r?.bodies?.find((b) => b.id === this.selBody);
+    if (!body || !r?.mesh || !this.mesh || this.hiddenBodies.has(body.id)) return;
+    const accent = cssVar("--accent", "#ffb648");
+    // The tint shares the model's vertices: it follows the body when it is dragged.
+    const src = this.mesh.geometry;
+    const all = src.index!.array as Uint32Array;
+    const faces = new Set(body.faceIds);
+    const tris: number[] = [];
+    for (const g of this.faceGroups) if (faces.has(g.faceId)) for (let k = g.start; k < g.start + g.count; k++) tris.push(all[k]);
+    if (tris.length) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", src.getAttribute("position"));
+      geo.setIndex(new THREE.BufferAttribute(new Uint32Array(tris), 1));
+      const tint = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.18, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
+      );
+      tint.renderOrder = 4;
+      this.bodyMark.push(tint);
+    }
+    const edgeIds = new Set(body.edgeIds);
+    const pos: number[] = [];
+    for (const g of this.edgeGroups) if (edgeIds.has(g.id)) pos.push(...this.edgeLines.slice(g.start * 3, (g.start + g.count) * 3));
+    if (pos.length) {
+      const c = new THREE.Color(accent);
+      const colors: number[] = [];
+      for (let k = 0; k < pos.length / 3; k++) colors.push(c.r, c.g, c.b);
+      this.bodyMark.push(this.makeLines({ positions: pos, colors, width: 3 }));
+    }
+    for (const o of this.bodyMark) this.modelGroup.add(o);
   }
 
   /** Draws the model's edges (in place of those drawn before). */
@@ -546,6 +598,7 @@ export class Viewport {
     g.computeBoundingBox();
     this.edgeLines = edges;
     this.drawEdges(visibleEdges(edges, this.edgeGroups, this.hiddenEdges));
+    this.drawBodyMark();
     this.applyDisplay();
   }
 
