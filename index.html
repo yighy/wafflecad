@@ -151,19 +151,18 @@
 
     <div id="toast" role="status"></div>
 
-    <div id="help">
-      <div class="help-card">
-        <h2>WaffleCAD</h2>
-        <p>A parametric CAD made for fingers and styluses. Keyboard and mouse work too, but are never required.</p>
-        <ul>
-          <li><b>One finger or the stylus</b>: draw, tap to select, drag to move.</li>
-          <li><b>Two fingers</b>: move together to rotate, pinch to zoom (and pan). In a sketch, two fingers pan and zoom.</li>
-          <li><b>Two-finger tap</b>: undo. <b>Three-finger tap</b>: redo.</li>
-          <li><b>Back gesture</b>: cancel / leave the sketch.</li>
-        </ul>
-        <p><b>Workflow</b>: New sketch → pick a plane → draw → select geometry and use the constraints in the right panel → Finish → Extrude.</p>
-        <p>Values are typed on the keypad, which accepts expressions like <code>20*2+3</code>. An extrusion can also be pulled by its handle.</p>
-        <button id="help-close" class="primary">Start</button>
+    <div id="about" role="dialog" aria-modal="true" aria-labelledby="about-name">
+      <div class="about-card">
+        <img src="./icon.svg" alt="" class="about-icon" />
+        <h2 id="about-name">WaffleCAD</h2>
+        <div id="about-version" class="about-version"></div>
+        <p>Parametric 3D CAD made for fingers and styluses, right in the browser. It works offline, and your projects stay on this device.</p>
+        <div class="about-links">
+          <a href="https://github.com/yighy/wafflecad" target="_blank" rel="noopener">Source code</a>
+          <a href="https://github.com/yighy/wafflecad/releases" target="_blank" rel="noopener">What's new</a>
+        </div>
+        <p class="about-credits">Built on OpenCascade (through replicad), the FreeCAD sketch solver (planegcs) and three.js.</p>
+        <button id="about-close" class="primary">Close</button>
       </div>
     </div>
 

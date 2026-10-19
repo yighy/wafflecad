@@ -1559,7 +1559,7 @@ body.busy #status-pill .dot {
   stroke-dasharray: 5 4;
 }
 
-/* ---------- Toast, help ---------- */
+/* ---------- Toast, about ---------- */
 
 #toast {
   position: fixed;
@@ -1584,7 +1584,7 @@ body.busy #status-pill .dot {
   transform: translate(-50%, 0);
 }
 
-#help {
+#about {
   position: fixed;
   inset: 0;
   display: none;
@@ -1594,26 +1594,55 @@ body.busy #status-pill .dot {
   z-index: 60;
   padding: 16px;
 }
-#help.open {
+#about.open {
   display: flex;
 }
-.help-card {
+.about-card {
   background: var(--card);
   border-radius: 18px;
-  padding: 20px 22px;
-  max-width: 480px;
+  padding: 24px 22px 20px;
+  max-width: 400px;
   max-height: 100%;
   overflow-y: auto;
   user-select: text;
   box-shadow: var(--shadow);
+  text-align: center;
 }
-.help-card h2 {
-  margin: 0 0 8px;
+.about-icon {
+  width: 72px;
+  height: 72px;
 }
-.help-card ul {
-  padding-left: 18px;
+.about-card h2 {
+  margin: 8px 0 2px;
 }
-.help-card button {
+.about-version {
+  color: var(--muted);
+  font-size: 13px;
+}
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 14px 0;
+}
+.about-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--card2);
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+  text-decoration: none;
+}
+.about-credits {
+  color: var(--muted);
+  font-size: 12px;
+}
+.about-card button {
   width: 100%;
   margin-top: 8px;
   min-height: 50px;

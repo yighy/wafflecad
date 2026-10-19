@@ -4839,7 +4839,7 @@ function setupMenu() {
     ["Import STEP…", () => void importStep()],
     ["Export", () => {}],
     ["Light / dark theme", () => setTheme(prefs.theme === "light" ? "dark" : "light")],
-    ["Help", () => $("#help").classList.add("open")],
+    ["About", () => $("#about").classList.add("open")],
   ];
   // Export unfolds its formats in place.
   const formats = document.createElement("div");
@@ -5096,7 +5096,11 @@ async function boot() {
   }
   createAxisGizmo($("#gizmo"), vp, 124);
   setupScrollAreas();
-  $("#help-close").onclick = () => $("#help").classList.remove("open");
+  $("#about-version").textContent = `Version ${__APP_VERSION__}`;
+  $("#about-close").onclick = () => $("#about").classList.remove("open");
+  $("#about").addEventListener("pointerdown", (e) => {
+    if (e.target === e.currentTarget) $("#about").classList.remove("open");
+  });
   renderAll();
   splashStep("Opening your project…");
   await openInitialProject();
@@ -5119,7 +5123,6 @@ async function boot() {
     onUndo: undo,
     onRedo: redo,
   });
-  if (!doc.features.length && !isAssembly()) $("#help").classList.add("open");
   if ("serviceWorker" in navigator && import.meta.env.PROD) navigator.serviceWorker.register(`./sw.js?v=${__APP_VERSION__}`);
 }
 
