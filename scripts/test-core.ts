@@ -2,7 +2,7 @@
 import opencascade from "replicad-opencascadejs";
 import { measureVolume, setOC } from "replicad";
 import { Solver } from "../src/sketch/solver";
-import { deleteEntities, mergePoints, newSketch, uid } from "../src/sketch/model";
+import { constraintName, deleteEntities, entityName, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
 import { trimPlan } from "../src/sketch/trim";
 import { parseDxf } from "../src/sketch/dxf";
@@ -1023,6 +1023,9 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   const loop = new Set(connectedContour(sk, r.lines[1]));
   check("contour: a line brings the lines joined to it", loop.size === 4 && r.lines.every((l) => loop.has(l)), JSON.stringify([...loop]));
   check("contour: a lone line stays alone", JSON.stringify(connectedContour(sk, "in")) === JSON.stringify(["in"]));
+  const v = new SketchView(sk);
+  check("names: lines numbered by kind, axes by name", entityName(sk, r.lines[1]) === "Line 2" && entityName(sk, "AX") === "X axis" && entityName(sk, "hole") === "Circle 1", JSON.stringify([entityName(sk, r.lines[1]), entityName(sk, "hole")]));
+  check("names: a distance on one line is its length", constraintName({ id: "k", type: "distance", refs: [r.lines[0]], value: 60 }, v) === "Length" && constraintName({ id: "k", type: "distance", refs: ["i1", "i2"] }, v) === "Distance");
   check("crossing box: a line through it counts, one beside it not", pathTouchesBox([[0, 5], [10, 5]], [4, 0, 6, 10]) && !pathTouchesBox([[0, 20], [10, 20]], [4, 0, 6, 10]));
 }
 

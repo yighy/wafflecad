@@ -1,14 +1,15 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, CadDocument, Clash, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, CadDocument, Clash, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import { DIMENSION_TYPES } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
 import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
 import type { SelectMode } from "./sketch/selectModes";
-import { SketchView, newSketch, sampleCurve, sketchLineWorld, uid } from "./sketch/model";
+import { SketchView, constraintLabel, newSketch, sampleCurve, sketchLineWorld, uid } from "./sketch/model";
 import { openKeypad, setKeypadHost, type KeypadHandle, type Segmented } from "./ui/keypad";
 import { icon } from "./ui/icons";
 import { createAxisGizmo } from "./ui/axisGizmo";
@@ -1463,13 +1464,16 @@ function alignReference(ids: string[]) {
   return ids.find((id) => instanceOf(id)?.fixed) ?? ids[0];
 }
 
-/** Slides parts by the given amounts (fixed ones stay), lets the mates have their say, and saves. */
-function shiftParts(moves: Map<string, THREE.Vector3>) {
+/**
+ * Slides parts by the given amounts (fixed ones stay, unless `rigid`: whole mated pieces moving
+ * as one), lets the mates have their say, and saves.
+ */
+function shiftParts(moves: Map<string, THREE.Vector3>, rigid = false) {
   let held = 0;
   for (const [id, d] of moves) {
     const inst = instanceOf(id);
     if (!inst || d.lengthSq() < 1e-12) continue;
-    if (inst.fixed) {
+    if (inst.fixed && !rigid) {
       held++;
       continue;
     }
@@ -1525,12 +1529,38 @@ function distributeParts(axis: keyof typeof AXIS_INDEX) {
 function dropParts() {
   if (mode.kind !== "align") return;
   const ids = mode.ids.length ? mode.ids : (doc.instances ?? []).map((i) => i.id);
+  // Parts held together by mates go down as one piece (a cube under another stays under it,
+  // fixed one included): only the lowest of them comes to rest on the plate.
   const moves = new Map<string, THREE.Vector3>();
-  for (const id of ids) {
-    const b = alignBox(id);
-    if (b) moves.set(id, new THREE.Vector3(0, 0, -b.min.z));
+  for (const group of matedGroups(ids)) {
+    const box = new THREE.Box3();
+    for (const id of group) {
+      const b = alignBox(id);
+      if (b) box.union(b);
+    }
+    if (box.isEmpty()) continue;
+    for (const id of group) moves.set(id, new THREE.Vector3(0, 0, -box.min.z));
   }
-  shiftParts(moves);
+  shiftParts(moves, true);
+}
+
+/** `ids` split into the sets of parts that mates join (directly or through other parts). */
+function matedGroups(ids: string[]): string[][] {
+  const all = (doc.instances ?? []).map((i) => i.id);
+  const root = new Map(all.map((id) => [id, id]));
+  const find = (id: string): string => {
+    while (root.get(id) !== id) id = root.get(id)!;
+    return id;
+  };
+  for (const m of doc.mates ?? []) if (root.has(m.a.part) && root.has(m.b.part)) root.set(find(m.a.part), find(m.b.part));
+  // A chosen part brings the whole piece it belongs to.
+  const groups = new Map<string, string[]>();
+  for (const id of all) {
+    const r = find(id);
+    groups.set(r, [...(groups.get(r) ?? []), id]);
+  }
+  const chosen = new Set(ids.map(find));
+  return [...groups].filter(([r]) => chosen.has(r)).map(([, g]) => g);
 }
 
 function renderAlignPanel(el: HTMLElement, head: (title: string, sub?: string) => void, actions: (items: [string, string, () => void, string?][]) => void) {
@@ -2881,7 +2911,11 @@ async function goWorkspace(w: Workspace) {
   if (mode.kind === "sketch") exitSketch();
   else if (mode.kind === "pickPlane") escape();
   if (w === "part") return isAssembly() ? openPartOfAssembly(false) : undefined;
-  if (cameFrom) return openProject(cameFrom.id);
+  if (cameFrom) {
+    // The assembly may have been deleted since.
+    if (await getProject(cameFrom.id).catch(() => null)) return openProject(cameFrom.id);
+    cameFrom = null;
+  }
   return chooseAssembly();
 }
 
@@ -3407,6 +3441,8 @@ function renderPanel() {
       grid.className = "p-grid";
       for (const a of acts) grid.appendChild(actionTile(a));
       el.appendChild(grid);
+      const sole = ed.tool === "select" ? ed.soleSelected() : null;
+      if (sole) renderConstraintList(el, ed, sole);
       if (ed.tool === "polygon") {
         const hint = document.createElement("p");
         hint.className = "p-hint";
@@ -3604,6 +3640,39 @@ function renderPanel() {
       ]);
     items.push(["trash", "Delete", () => deleteFeature(f), "danger"]);
     actions(items);
+  }
+}
+
+/** What holds the selected element: tap one to see what it ties it to, ✕ to remove it. */
+function renderConstraintList(el: HTMLElement, ed: SketchEditor, e: SkEntity) {
+  const list = ed.constraintsOn(e);
+  const title = document.createElement("div");
+  title.className = "con-title";
+  title.textContent = list.length ? `Constraints (${list.length})` : "No constraints: it moves freely";
+  el.appendChild(title);
+  for (const { c, name, detail } of list) {
+    const row = document.createElement("div");
+    row.className = "con-row" + (ed.focus === c.id ? " on" : "");
+    row.innerHTML = `<button class="con-main"><span class="con-glyph"></span><span class="con-text"><span class="con-name"></span><span class="con-detail"></span></span></button><button class="con-del" aria-label="Remove">${icon("close", 18)}</button>`;
+    row.querySelector(".con-glyph")!.textContent = DIMENSION_TYPES.includes(c.type) ? (c.type === "angle" ? "∠" : c.type === "radius" ? "R" : c.type === "diameter" ? "⌀" : "↔") : constraintLabel(c);
+    row.querySelector(".con-name")!.textContent = name;
+    row.querySelector(".con-detail")!.textContent = detail;
+    const main = row.querySelector<HTMLElement>(".con-main")!;
+    main.title = DIMENSION_TYPES.includes(c.type) ? "Show it; tap again to change the value" : "Show what it ties";
+    main.onclick = () => {
+      // A dimension already shown opens its value.
+      if (ed.focus === c.id && DIMENSION_TYPES.includes(c.type)) return void ed.editDimension(c);
+      ed.focus = ed.focus === c.id ? null : c.id;
+      ed.render();
+      renderPanel();
+    };
+    const del = row.querySelector<HTMLElement>(".con-del")!;
+    del.title = `Remove ${name}`;
+    del.onclick = () => {
+      ed.removeConstraint(c.id);
+      renderPanel();
+    };
+    el.appendChild(row);
   }
 }
 
@@ -4703,6 +4772,10 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[]) {
   card.querySelector<HTMLElement>('[data-act="delete"]')!.onclick = async () => {
     if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return;
     await deleteProject(p.id).catch(() => toast("Could not delete"));
+    if (p.id === cameFrom?.id) {
+      cameFrom = null; // no way back to it any more
+      renderWorkspace();
+    }
     if (p.id === project?.id) {
       project = null; // nothing left to save there
       const rest = await listProjects().catch(() => []);

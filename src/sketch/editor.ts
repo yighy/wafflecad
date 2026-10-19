@@ -5,7 +5,7 @@ import type { ConstraintType, SkArc, SkConstraint, SkCurve, SkEntity, SkLine, Sk
 import { DIMENSION_TYPES } from "../types";
 import type { PointerTool, Ptr } from "../view/input";
 import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
-import { ORIGIN, SketchView, constraintLabel, deleteEntities, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleEllipse, splineSpans, uid } from "./model";
+import { ORIGIN, SketchView, constraintLabel, constraintName, deleteEntities, entityName, pointRole, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleEllipse, splineSpans, uid } from "./model";
 import { arcMid, findRegions, loopPolygon, pointInPolygon, sampleSegments } from "./profiles";
 import { type SelectMode, connectedContour, pathTouchesBox, regionAt, samplePoints, selectable } from "./selectModes";
 import { trimPlan, type TrimPlan } from "./trim";
@@ -99,6 +99,8 @@ export class SketchEditor implements PointerTool {
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null;
   /** Lasso being drawn (screen points). */
   private lasso: { x: number; y: number }[] | null = null;
+  /** A constraint picked in the panel's list: shown with what it ties (while its element stays selected). */
+  focus: string | null = null;
   /** How the Select tool picks: what a drag on empty space draws, what a tap takes. */
   selectMode: SelectMode = "box";
   /** Trim tool: the piece that the current press (or hover) would remove. */
@@ -1485,6 +1487,46 @@ export class SketchEditor implements PointerTool {
     this.hooks.changed();
   }
 
+  /** The one element selected (a curve or a point, no constraint), if there is just one. */
+  soleSelected(): SkEntity | null {
+    if (this.selection.size !== 1) return null;
+    return this.view.get([...this.selection][0]) ?? null;
+  }
+
+  /**
+   * What holds an element: the constraints on it, or on its own points (`via`: which one, and what
+   * it is to the element), with the other elements each one ties it to.
+   */
+  constraintsOn(e: SkEntity): { c: SkConstraint; name: string; detail: string }[] {
+    const v = this.view;
+    const own = e.type === "point" ? [] : v.defPoints(e);
+    const out: { c: SkConstraint; name: string; detail: string }[] = [];
+    for (const c of this.sk.constraints) {
+      const via = c.refs.includes(e.id) ? null : c.refs.find((r) => own.includes(r));
+      if (!c.refs.includes(e.id) && !via) continue;
+      const others = [...new Set(c.refs.filter((r) => r !== e.id && !own.includes(r)))].map((r) => entityName(this.sk, r));
+      const value = DIMENSION_TYPES.includes(c.type) ? (c.type === "angle" ? `${fmt(Math.abs(c.value ?? 0))}°` : `${fmt(c.value ?? 0)} mm`) : "";
+      const detail = [via ? `its ${pointRole(e, via)}` : "", others.length ? `with ${others.join(", ")}` : "", c.expr ? `= ${c.expr}` : ""].filter(Boolean).join(" · ");
+      out.push({ c, name: value ? `${constraintName(c, v)} ${value}` : constraintName(c, v), detail });
+    }
+    return out;
+  }
+
+  /** The constraint shown from the panel, while the element it was listed for is selected. */
+  private focused(): SkConstraint | null {
+    const e = this.focus ? this.soleSelected() : null;
+    return (e && this.constraintsOn(e).find((x) => x.c.id === this.focus)?.c) ?? null;
+  }
+
+  removeConstraint(id: string) {
+    this.sk.constraints = this.sk.constraints.filter((c) => c.id !== id);
+    if (this.focus === id) this.focus = null;
+    this.solve();
+    this.hooks.commit("Remove constraint");
+    this.render();
+    this.hooks.changed();
+  }
+
   /** Keyboard shortcuts for the contextual actions. */
   runShortcut(key: string): boolean {
     const a = this.actions().find((x) => x.key?.toLowerCase() === key.toLowerCase());
@@ -1534,8 +1576,10 @@ export class SketchEditor implements PointerTool {
     const pts: PointBatch = { positions: [], colors: [], size: 9 };
     const big: PointBatch = { positions: [], colors: [], size: 16 };
     const base = this.dof === 0 ? COLORS.constrained : COLORS.normal;
+    // A constraint picked in the panel: what it ties the selected element to stands out.
+    const tied = new Set(this.focused()?.refs ?? []);
     const colorOf = (id: string, fallback: number[]) =>
-      this.selection.has(id) ? COLORS.selected : this.hoverId === id ? COLORS.hover : fallback;
+      this.selection.has(id) ? COLORS.selected : this.hoverId === id || tied.has(id) ? COLORS.hover : fallback;
 
     const seg = (b: LineBatch, p: P2, q: P2, c: number[]) => {
       b.positions.push(...this.toWorld(p).toArray(), ...this.toWorld(q).toArray());
@@ -1711,6 +1755,10 @@ export class SketchEditor implements PointerTool {
       return arcMid(v, e);
     };
     const isSharp = (id: string) => (v.get(id) as SkPoint | undefined)?.sharp === true;
+    // One element selected: its constraints stand out, the others step back.
+    const sole = this.soleSelected();
+    const related = sole ? new Set(this.constraintsOn(sole).map((x) => x.c.id)) : null;
+    const focus = this.focused()?.id;
     for (const c of this.sk.constraints) {
       const isDim = DIMENSION_TYPES.includes(c.type);
       // A fillet's virtual corner stays on both lines by itself: no glyphs unless it is selected.
@@ -1742,6 +1790,7 @@ export class SketchEditor implements PointerTool {
       const el = document.createElement("button");
       el.className = "sk-label " + (isDim ? "dim" : "glyph");
       if (this.selection.has(c.id)) el.classList.add("sel");
+      if (related) el.classList.add(c.id === focus ? "focus" : related.has(c.id) ? "rel" : "faded");
       el.textContent = isDim ? dimText(c) : constraintLabel(c);
       el.title = c.type;
       el.addEventListener("pointerdown", (e) => e.stopPropagation());

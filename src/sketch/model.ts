@@ -1,5 +1,5 @@
 // Pure helpers over the sketch data model (no DOM, no solver).
-import type { PlaneDef, SkArc, SkBezier, SkConstraint, SkCurve, SkEllipse, SkEntity, SkPoint, SkSpline, SketchFeature, Vec3 } from "../types";
+import type { ConstraintType, PlaneDef, SkArc, SkBezier, SkConstraint, SkCurve, SkEllipse, SkEntity, SkPoint, SkSpline, SketchFeature, Vec3 } from "../types";
 
 export const ORIGIN = "O";
 export const X_AXIS = "AX";
@@ -326,6 +326,52 @@ export function sketchLineWorld(sk: SketchFeature, lineId: string): [Vec3, Vec3]
   const yd: Vec3 = [n[1] * xd[2] - n[2] * xd[1], n[2] * xd[0] - n[0] * xd[2], n[0] * xd[1] - n[1] * xd[0]];
   const w = ([x, y]: [number, number]): Vec3 => [0, 1, 2].map((i) => o[i] + xd[i] * x + yd[i] * y) as Vec3;
   return [w(pt(line.p1)), w(pt(line.p2))];
+}
+
+const CONSTRAINT_NAMES: Record<ConstraintType, string> = {
+  horizontal: "Horizontal",
+  vertical: "Vertical",
+  parallel: "Parallel",
+  perpendicular: "Perpendicular",
+  equal: "Equal",
+  tangent: "Tangent",
+  pointOn: "On curve",
+  midpoint: "Midpoint",
+  symmetric: "Symmetric",
+  fix: "Fixed",
+  distance: "Distance",
+  distanceX: "Horizontal distance",
+  distanceY: "Vertical distance",
+  radius: "Radius",
+  diameter: "Diameter",
+  angle: "Angle",
+};
+
+/** A constraint's name in words ("Length" for a distance on one line). */
+export function constraintName(c: SkConstraint, view: SketchView): string {
+  if (c.type === "distance" && c.refs.length === 1 && view.get(c.refs[0])?.type === "line") return "Length";
+  return CONSTRAINT_NAMES[c.type];
+}
+
+/** What a sketch entity is called in lists: "Line 3", "Point 7", "X axis"… (numbered by kind). */
+export function entityName(sk: SketchFeature, id: string): string {
+  const named: Record<string, string> = { O: "Origin", AX: "X axis", AY: "Y axis" };
+  if (named[id]) return named[id];
+  const e = sk.entities.find((x) => x.id === id);
+  if (!e) return "?";
+  const kind = { point: "Point", line: "Line", circle: "Circle", arc: "Arc", spline: "Spline", bezier: "Curve", ellipse: "Ellipse" }[e.type];
+  const same = sk.entities.filter((x) => x.type === e.type && !isReference(x) && !(x.type === "point" && isHiddenPoint(x.id)));
+  const n = same.indexOf(e);
+  return n < 0 ? kind : `${kind} ${n + 1}`;
+}
+
+/** What a definition point is to its curve: "end", "centre"… */
+export function pointRole(e: SkEntity, p: string): string {
+  if (e.type === "circle" || ((e.type === "arc" || e.type === "ellipse") && e.c === p)) return "centre";
+  if (e.type === "ellipse") return "axis end";
+  if (e.type === "bezier" && (p === e.c1 || p === e.c2)) return "control point";
+  if (e.type === "spline" && p !== e.pts[0] && p !== e.pts[e.pts.length - 1]) return "point";
+  return "end";
 }
 
 export function constraintLabel(c: SkConstraint): string {
