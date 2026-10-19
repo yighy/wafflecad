@@ -836,6 +836,24 @@ body.busy #status-pill .dot {
   text-transform: uppercase;
   color: var(--muted);
 }
+.con-fold {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 2px;
+  margin-bottom: 2px;
+  border: none;
+  background: transparent;
+  justify-content: flex-start;
+}
+.con-fold .ic {
+  transition: transform 0.18s;
+}
+.con-fold.open .ic {
+  transform: rotate(90deg);
+}
 .con-row {
   display: flex;
   align-items: stretch;

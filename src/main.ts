@@ -77,8 +77,10 @@ interface Prefs {
   project: string | null;
   /** How the sketch Select tool picks. */
   selectMode: SelectMode;
+  /** The selected element's constraint list is folded (sketch panel). */
+  constraintsFolded: boolean;
 }
-const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges", project: null, selectMode: "box" };
+const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges", project: null, selectMode: "box", constraintsFolded: false };
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
 } catch {
@@ -3655,10 +3657,30 @@ function renderPanel() {
 /** What holds the selected element: tap one to see what it ties it to, ✕ to remove it. */
 function renderConstraintList(el: HTMLElement, ed: SketchEditor, e: SkEntity) {
   const list = ed.constraintsOn(e);
-  const title = document.createElement("div");
-  title.className = "con-title";
-  title.textContent = list.length ? `Constraints (${list.length})` : "No constraints: it moves freely";
+  if (!list.length) {
+    const none = document.createElement("div");
+    none.className = "con-title";
+    none.textContent = "No constraints: it moves freely";
+    el.appendChild(none);
+    return;
+  }
+  // The heading folds the list away (remembered), leaving room for the actions.
+  const folded = prefs.constraintsFolded;
+  const title = document.createElement("button");
+  title.className = "con-title con-fold" + (folded ? "" : " open");
+  title.innerHTML = `${icon("chevron", 14)}<span></span>`;
+  title.querySelector("span")!.textContent = `Constraints (${list.length})`;
+  title.setAttribute("aria-expanded", String(!folded));
+  title.title = folded ? "Show the constraints" : "Hide the constraints";
+  title.onclick = () => {
+    prefs.constraintsFolded = !folded;
+    savePrefs();
+    if (prefs.constraintsFolded) ed.focus = null;
+    ed.render();
+    renderPanel();
+  };
   el.appendChild(title);
+  if (folded) return;
   for (const { c, name, detail } of list) {
     const row = document.createElement("div");
     row.className = "con-row" + (ed.focus === c.id ? " on" : "");
