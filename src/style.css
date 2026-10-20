@@ -1524,6 +1524,11 @@ body.busy #status-pill .dot {
 .align-row .seg {
   flex: 1;
 }
+.combine-row > span {
+  width: 40px;
+  font-size: 13px;
+  text-align: left;
+}
 .align-row .seg button:disabled {
   opacity: 0.4;
 }

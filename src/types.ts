@@ -286,6 +286,32 @@ export interface ImportFeature {
   body?: BodyTarget;
 }
 
+/**
+ * Parts of an assembly combined into a solid of this part: the target part joined with the tool
+ * parts, cut by them, or cut down to what it shares with them. Read live from the assembly: the
+ * parts and where it places them. The result is in the target part's own coordinates, so it can
+ * take the target's place in the assembly.
+ */
+export interface CombineFeature {
+  id: string;
+  kind: "combine";
+  name: string;
+  /** The assembly project the parts are placed in. */
+  assembly: string;
+  /**
+   * The target: its instance in the assembly (for its place) and the project and body it showed
+   * when combined (kept apart: this part may take that instance's place afterwards).
+   */
+  target: { instance: string; project: string; body?: string };
+  /** The tool parts' instances in the assembly. */
+  tools: string[];
+  op: "add" | "cut" | "intersect";
+  /** Cut: the tools first grow by this much (mm) all around, for a fit with play. */
+  clearance?: number;
+  /** How the result joins the part's bodies (as for an extrusion). */
+  body?: BodyTarget;
+}
+
 export type Feature =
   | SketchFeature
   | ExtrudeFeature
@@ -295,7 +321,8 @@ export type Feature =
   | FilletFeature
   | HoleFeature
   | PatternFeature
-  | ImportFeature;
+  | ImportFeature
+  | CombineFeature;
 
 /** A named value usable in any dimension or feature value. */
 export interface Parameter {
@@ -476,7 +503,7 @@ export type WorkerRequest =
   | { type: "build"; reqId: number; doc: CadDocument; pickExclude?: string; draft?: boolean }
   | { type: "export"; reqId: number; doc: CadDocument; format: ExportFormat; name: string }
   /** The documents of the parts the open assembly uses, by project id (kept until replaced). */
-  | { type: "parts"; parts: Record<string, CadDocument> }
+  | { type: "parts"; parts: Record<string, CadDocument>; open?: string }
   | { type: "measure"; reqId: number; doc: CadDocument; picks: MeasurePick[] }
   /** The bodies of a part (to insert them apart). */
   | { type: "bodies"; reqId: number; doc: CadDocument }

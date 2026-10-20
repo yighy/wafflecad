@@ -775,8 +775,8 @@ export class Viewport {
     this.highlightFaces(faceId == null ? [] : [faceId]);
   }
 
-  /** Tints faces of the model (selection, faces to open…). */
-  highlightFaces(faceIds: number[]) {
+  /** Tints faces of the model (selection, faces to open…), in the accent colour unless told. */
+  highlightFaces(faceIds: number[], color?: string) {
     this.clearHighlight();
     if (!faceIds.length || !this.mesh) return;
     const src = this.mesh.geometry;
@@ -795,7 +795,7 @@ export class Viewport {
       // Depth-tested, pulled slightly towards the eye: only the visible part of the face is tinted
       // (not seen through the walls in front of it), without fighting with the face itself.
       new THREE.MeshBasicMaterial({
-        color: cssVar("--accent", "#ffb648"),
+        color: color ?? cssVar("--accent", "#ffb648"),
         transparent: true,
         opacity: 0.55,
         depthWrite: false,

@@ -1,7 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, CadDocument, Clash, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { DIMENSION_TYPES } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
@@ -118,7 +118,9 @@ type Mode =
   | { kind: "mate"; picks: MatePick[] }
   | { kind: "mateEdit"; feat: Mate; keypad: KeypadHandle }
   /** Lining parts up: the parts chosen, the first one staying put. */
-  | { kind: "align"; ids: string[] };
+  | { kind: "align"; ids: string[] }
+  /** Combining parts into a new part: the one it is made from, and the ones it is joined with or cut by. */
+  | { kind: "combine"; target: string | null; tools: string[]; op: CombineFeature["op"]; clearance: number; replace: boolean };
 
 /** A face or hole chosen for a mate: its plane or axis, and what to highlight. */
 interface MatePick {
@@ -272,6 +274,7 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     renderPartOverlays();
     alignShift.clear();
     if (mode.kind === "align") showAlignPicks();
+    if (mode.kind === "combine") showCombinePicks();
     if (explode > 0) spreadParts(explode);
     syncGizmo();
     if (thumbStale) scheduleThumb();
@@ -452,8 +455,8 @@ async function openProject(id: string, from: { id: string; name: string } | null
   project = p.meta;
   doc = asDocument(p.doc) ?? emptyDoc();
   cameFrom = from;
+  await loadParts();
   if (isAssembly()) {
-    await loadParts();
     // Assemblies made before mates: the first part holds the others.
     if (doc.instances?.length && !doc.instances.some((i) => i.fixed)) doc.instances[0].fixed = true;
     solveState = null;
@@ -668,6 +671,10 @@ function escape(): boolean {
     endAlign();
     return true;
   }
+  if (mode.kind === "combine") {
+    endCombine();
+    return true;
+  }
   if (clashes) {
     clearClashes();
     return true;
@@ -818,20 +825,40 @@ let gizmoFor = "";
 
 /** Reads the parts the assembly uses and hands them to the worker. */
 async function loadParts() {
-  const ids = [...new Set((doc.instances ?? []).map((i) => i.project))];
-  const got = await Promise.all(ids.map((id) => getProject(id).catch(() => null)));
   partDocs = {};
   partNames = {};
-  got.forEach((p, i) => {
-    if (!p) return;
-    partDocs[ids[i]] = asDocument(p.doc) ?? emptyDoc();
-    partNames[ids[i]] = p.meta.name;
-  });
+  await loadLinked(doc);
   sendParts();
 }
 
+/** The projects a document reads: an assembly's parts; a combining part's assembly and target. */
+function linkedProjects(d: CadDocument): string[] {
+  const ids = (d.instances ?? []).map((i) => i.project);
+  for (const f of d.features) if (f.kind === "combine") ids.push(f.assembly, f.target.project);
+  return [...new Set(ids)];
+}
+
+/** Loads every project `d` reads that is not loaded yet, and what those read in turn. */
+async function loadLinked(d: CadDocument) {
+  const tried = new Set(Object.keys(partDocs));
+  let todo = linkedProjects(d).filter((id) => !tried.has(id));
+  while (todo.length) {
+    for (const id of todo) tried.add(id);
+    const got = await Promise.all(todo.map((id) => getProject(id).catch(() => null)));
+    const next: string[] = [];
+    got.forEach((p, i) => {
+      if (!p) return;
+      const pd = asDocument(p.doc) ?? emptyDoc();
+      partDocs[todo[i]] = pd;
+      partNames[todo[i]] = p.meta.name;
+      next.push(...linkedProjects(pd));
+    });
+    todo = [...new Set(next)].filter((id) => !tried.has(id));
+  }
+}
+
 function sendParts() {
-  worker.postMessage({ type: "parts", parts: partDocs } satisfies WorkerRequest);
+  worker.postMessage({ type: "parts", parts: partDocs, open: project?.id } satisfies WorkerRequest);
 }
 
 const instanceOf = (id: string | null) => doc.instances?.find((i) => i.id === id) ?? null;
@@ -932,6 +959,7 @@ async function insertPart(p: ProjectMeta, d?: CadDocument, bodies?: { id: string
   if (bodies?.length) {
     partDocs[p.id] = d;
     partNames[p.id] = p.name;
+    await loadLinked(d);
     sendParts();
     const box = vp.modelBox();
     const at: Vec3 = box ? [Math.round(box.max.x + 10), 0, 0] : [0, 0, 0];
@@ -951,6 +979,7 @@ async function insertPart(p: ProjectMeta, d?: CadDocument, bodies?: { id: string
   }
   partDocs[p.id] = d;
   partNames[p.id] = p.name;
+  await loadLinked(d);
   sendParts();
   const box = vp.modelBox();
   const inst: PartInstance = {
@@ -1608,6 +1637,175 @@ function renderAlignPanel(el: HTMLElement, head: (title: string, sub?: string) =
     ["extrude", ids.length ? "Put them on the plate" : "Put all on the plate", dropParts],
     ["check", "Done", endAlign, "primary"],
   ]);
+}
+
+// ---------- Combine ----------
+
+const COMBINE_OPS: [CombineFeature["op"], string][] = [
+  ["cut", "Cut"],
+  ["add", "Join"],
+  ["intersect", "Intersect"],
+];
+/** Play offered for a cut (mm): none, or the usual fits of 3D printed parts. */
+const COMBINE_PLAY = [0, 0.1, 0.2, 0.3, 0.5];
+
+function startCombine() {
+  if (isOperation(mode)) return;
+  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if (mode.kind === "combine") return endCombine();
+  if (measuring) endMeasure();
+  if (clashes) clearClashes();
+  if (mode.kind === "align") endAlign();
+  // The selected part, if any, is the one the new part is made from.
+  mode = { kind: "combine", target: instanceOf(selectedFeature)?.id ?? null, tools: [], op: "cut", clearance: 0, replace: false };
+  selectedFeature = null;
+  showCombinePicks();
+  renderAll();
+}
+
+function endCombine() {
+  mode = { kind: "part" };
+  vp.highlightFaces([]);
+  renderAll();
+}
+
+/** The first part tapped is the target; the next ones are tools. Tapping one again lets it go. */
+function toggleCombinePart(id: string) {
+  if (mode.kind !== "combine") return;
+  if (mode.target === id) mode.target = null;
+  else if (mode.tools.includes(id)) mode.tools = mode.tools.filter((t) => t !== id);
+  else if (!mode.target) mode.target = id;
+  else mode.tools.push(id);
+  showCombinePicks();
+  renderAll();
+}
+
+/** The target is marked as a selected body; the tools take the colour of what they do to it. */
+function showCombinePicks() {
+  if (mode.kind !== "combine") return;
+  const tools = new Set(mode.tools);
+  const colour = mode.op === "cut" ? cssVar("--danger", "#c92a2a") : mode.op === "add" ? cssVar("--accent", "#dc4c12") : cssVar("--sk-selected", "#1971c2");
+  vp.highlightFaces((lastBuild?.bodies ?? []).filter((b) => tools.has(b.id)).flatMap((b) => b.faceIds), colour);
+}
+
+function renderCombinePanel(el: HTMLElement, head: (title: string, sub?: string) => void, actions: (items: [string, string, () => void, string?][]) => void) {
+  if (mode.kind !== "combine") return;
+  const m = mode;
+  const n = m.tools.length;
+  head(
+    "Combine",
+    !m.target ? "Tap the part to make the new part from" : `${partLabel(m.target)} · ${n ? `${n} part${n > 1 ? "s" : ""} to ${m.op === "cut" ? "cut away" : m.op === "add" ? "join" : "keep the overlap with"}` : "now tap the other parts"}`,
+  );
+  combineRows(el, m, () => {
+    showCombinePicks();
+    renderPanel();
+  });
+  // The new part can take the target's place here (same place, same mates).
+  const then = document.createElement("div");
+  then.className = "align-row combine-row";
+  then.innerHTML = `<span>Then</span><div class="seg"><button>Keep both</button><button>Replace it</button></div>`;
+  then.querySelectorAll("button").forEach((b, i) => {
+    b.classList.toggle("on", m.replace === (i === 1));
+    b.onclick = () => {
+      m.replace = i === 1;
+      renderPanel();
+    };
+  });
+  el.appendChild(then);
+  const hint = document.createElement("p");
+  hint.className = "p-hint";
+  hint.textContent =
+    m.op === "cut"
+      ? "The other parts are cut out of it where the assembly places them, grown by the play for a fit. The result is a new part, kept up to date with the assembly."
+      : m.op === "add"
+        ? "The parts become one solid, as the assembly places them. The result is a new part, kept up to date with the assembly."
+        : "Only what it shares with the other parts is kept. The result is a new part, kept up to date with the assembly.";
+  el.appendChild(hint);
+  actions([
+    ["close", "Cancel", endCombine],
+    ["check", "Create the part", () => void createCombined(), "primary"],
+  ]);
+}
+
+/** The operation and, for a cut, the play: segmented rows that change `c` and call `changed`. */
+function combineRows(el: HTMLElement, c: { op: CombineFeature["op"]; clearance?: number }, changed: () => void) {
+  const row = (label: string, buttons: [string, boolean, () => void][]) => {
+    const r = document.createElement("div");
+    r.className = "align-row combine-row";
+    r.innerHTML = "<span></span>";
+    r.querySelector("span")!.textContent = label;
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    for (const [text, on, run] of buttons) {
+      const b = document.createElement("button");
+      b.textContent = text;
+      b.classList.toggle("on", on);
+      b.onclick = () => {
+        run();
+        changed();
+      };
+      seg.appendChild(b);
+    }
+    r.appendChild(seg);
+    el.appendChild(r);
+  };
+  row(
+    "Do",
+    COMBINE_OPS.map(([op, text]) => [text, c.op === op, () => (c.op = op)]),
+  );
+  if (c.op === "cut") row("Play", COMBINE_PLAY.map((p) => [p ? `${p}` : "None", (c.clearance ?? 0) === p, () => (c.clearance = p)]));
+}
+
+/** Names of a combine step's parts, as the assembly calls them. */
+function combineNames(f: CombineFeature) {
+  const asm = partDocs[f.assembly];
+  const name = (id: string) => asm?.instances?.find((i) => i.id === id)?.name ?? "?";
+  return { target: name(f.target.instance), tools: f.tools.map(name), assembly: partNames[f.assembly] ?? "a deleted assembly" };
+}
+
+/** Saves the combination as a new part project, and offers to open it. */
+async function createCombined() {
+  if (mode.kind !== "combine" || !project) return;
+  const target = instanceOf(mode.target);
+  if (!target) return toast("Tap the part to make the new part from");
+  if (!mode.tools.length) return toast("Tap at least one other part");
+  const here = { id: project.id, name: project.name };
+  await flushSave();
+  const word = { cut: "cut", add: "joined", intersect: "overlap" }[mode.op];
+  const names = (await listProjects().catch(() => [])).map((p) => p.name);
+  const name = freeName(`${partNames[target.project] ?? target.name} (${word})`, names);
+  const feat: CombineFeature = {
+    id: uid(),
+    kind: "combine",
+    name: { cut: "Cut", add: "Join", intersect: "Intersect" }[mode.op],
+    assembly: here.id,
+    target: { instance: target.id, project: target.project, body: target.body },
+    tools: [...mode.tools],
+    op: mode.op,
+    clearance: mode.op === "cut" && mode.clearance ? mode.clearance : undefined,
+  };
+  const now = Date.now();
+  const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now };
+  const made: CadDocument = { ...emptyDoc(), features: [feat] };
+  try {
+    await putProject(meta, made);
+  } catch {
+    return toast("Could not save in this browser");
+  }
+  const replace = mode.replace;
+  endCombine();
+  if (replace) {
+    // The new part goes where the target was: its origin is the target's, so its place and mates hold.
+    partDocs[meta.id] = made;
+    partNames[meta.id] = name;
+    target.project = meta.id;
+    delete target.body;
+    sendParts();
+    commit();
+    selectedFeature = target.id;
+    renderAll();
+  }
+  chooseProject(replace ? `${name} took the place of ${target.name}` : `${name} is ready`, [meta], (p) => void openProject(p.id, here));
 }
 
 // ---------- Exploded view ----------
@@ -2821,7 +3019,7 @@ function renderParamsPanel(el: HTMLElement) {
 
 /** The selected sketch, or the last sketch not yet used by a feature. */
 const NEED_SOLID = "Make a solid first (Sketch, then Extrude)";
-const hasSolid = () => doc.features.some((f) => f.kind === "extrude" || f.kind === "revolve");
+const hasSolid = () => doc.features.some((f) => f.kind === "extrude" || f.kind === "revolve" || f.kind === "import" || f.kind === "combine");
 
 function pickSketchForExtrude(): SketchFeature | null {
   if (mode.kind === "sketch") return mode.editor.sk;
@@ -2880,7 +3078,7 @@ function renderWorkspace() {
   el.replaceChildren();
   const cur = currentWorkspace();
   // In the middle of a step (keypad open, choosing a mate…), finish it first.
-  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align";
+  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align" || mode.kind === "combine";
   const tips: Record<Workspace, string> = {
     sketch: isAssembly() ? "Open a part in its last sketch" : "Edit the selected sketch, or start one",
     part: mode.kind === "sketch" ? "Finish the sketch" : isAssembly() ? "Open a part of this assembly" : "The part",
@@ -3033,6 +3231,7 @@ function renderAll() {
 
 /** The body selected, to mark in the view: an assembly's part, or a part's body when it has several. */
 function selectedBody(): string | null {
+  if (mode.kind === "combine") return mode.target;
   if (mode.kind !== "part" || !selectedFeature || clashes) return null;
   const bodies = lastBuild?.bodies ?? [];
   if (!isAssembly() && bodies.length < 2) return null;
@@ -3280,6 +3479,7 @@ function renderTools() {
     el.appendChild(toolRow("import", "Import STEP", () => void importStep()));
     if ((doc.instances?.length ?? 0) > 1 || mode.kind === "mate") {
       el.appendChild(toolRow("align", "Align", startAlign, { active: mode.kind === "align", key: "A" }));
+      el.appendChild(toolRow("combine", "Combine", startCombine, { active: mode.kind === "combine", key: "B" }));
       el.appendChild(section("Mates"));
       el.appendChild(toolRow("mate", "Mate", startMate, { active: mode.kind === "mate", key: "M" }));
     }
@@ -3298,7 +3498,7 @@ function renderTools() {
     // the rest. From then on the layout stays put; a tool unavailable for a moment is greyed.
     const anySketch = doc.features.some((f) => f.kind === "sketch");
     const solid = hasSolid();
-    if (!anySketch) {
+    if (!anySketch && !solid) {
       const hint = document.createElement("p");
       hint.className = "tools-hint";
       hint.textContent = "Start with a sketch: tap New sketch, then a plane.";
@@ -3484,6 +3684,7 @@ function renderPanel() {
     return;
   }
   if (mode.kind === "align") return renderAlignPanel(el, head, actions);
+  if (mode.kind === "combine") return renderCombinePanel(el, head, actions);
   if (mode.kind === "mate") {
     const n = mode.picks.length;
     head("New mate", n ? `On ${partLabel(mode.picks[0].ref.part)} · now the other part` : "Tap a face or a hole of a part");
@@ -3613,6 +3814,18 @@ function renderPanel() {
     const err = lastBuild?.errors[f.id] ?? lastBuild?.warnings?.[f.id];
     head(f.name, err ?? featureDetail(f), !!err, true);
     const items: [string, string, () => void, string?][] = [];
+    if (f.kind === "combine") {
+      // Changing what it does is a tap: no keypad to open.
+      combineRows(el, f, () => {
+        if (f.op !== "cut") delete f.clearance;
+        else if (!f.clearance) delete f.clearance;
+        // A name the user gave stays; the default one follows the operation.
+        if (["Cut", "Join", "Intersect"].includes(f.name)) f.name = { cut: "Cut", add: "Join", intersect: "Intersect" }[f.op];
+        commit();
+        renderAll();
+      });
+      if (partDocs[f.assembly]) items.push(["assembly", `Open ${partNames[f.assembly]}`, () => void openProject(f.assembly)]);
+    }
     if (f.kind === "sketch") {
       items.push(["edit", "Edit sketch", () => enterSketch(f)]);
     } else if (f.kind === "extrude") items.push(["edit", "Edit", () => void extrude(f)]);
@@ -3631,7 +3844,7 @@ function renderPanel() {
           renderAll();
         },
       ]);
-    else items.push(["edit", "Edit", () => void shell(f)]);
+    else if (f.kind === "shell") items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
     if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "import") && lastBuild?.bodies?.some((b) => b.id === f.id) && lastBuild.bodies.length > 1) {
       items.push(["rename", "Rename body", () => renameBody(f.id)]);
@@ -3743,6 +3956,12 @@ function featureDetail(f: Feature) {
     return `${f.size} ${n}${head} · ${f.depth > 0 ? `${fmtNum(f.depth)} mm deep` : "through"}`;
   }
   if (f.kind === "import") return `${f.op === "add" ? "Join" : "Cut"} · STEP file${bodyNote(f)}`;
+  if (f.kind === "combine") {
+    const n = combineNames(f);
+    const tools = n.tools.join(", ");
+    const what = f.op === "add" ? `${n.target} joined with ${tools}` : f.op === "cut" ? `${n.target} minus ${tools}` : `${n.target} overlap with ${tools}`;
+    return `${what}${f.op === "cut" && f.clearance ? ` · ${fmtNum(f.clearance)} mm play` : ""} · from ${n.assembly}${bodyNote(f)}`;
+  }
   if (f.kind === "fillet")
     return `${f.mode === "fillet" ? "Radius" : "Chamfer"} ${fmtNum(f.radius)} mm · ${f.edges.length} edge${f.edges.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
@@ -3758,6 +3977,7 @@ function featureIcon(f: Feature) {
   if (f.kind === "pattern") return f.type;
   if (f.kind === "revolve") return "revolve";
   if (f.kind === "import") return "import";
+  if (f.kind === "combine") return "combine";
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
 }
 
@@ -3826,6 +4046,9 @@ function renderPartList(el: HTMLElement) {
     if (mode.kind === "align") {
       if (inst.id === alignReference(mode.ids)) b.classList.add("sel");
       else if (mode.ids.includes(inst.id)) b.classList.add("picked");
+    } else if (mode.kind === "combine") {
+      if (inst.id === mode.target) b.classList.add("sel");
+      else if (mode.tools.includes(inst.id)) b.classList.add("picked");
     } else if (inst.id === current) b.classList.add("sel");
     if (lastBuild?.errors[inst.id]) b.classList.add("error");
     else if (lastBuild?.warnings?.[inst.id]) b.classList.add("warn");
@@ -3834,6 +4057,7 @@ function renderPartList(el: HTMLElement) {
     b.querySelector("span")!.textContent = inst.name;
     b.onclick = () => {
       if (mode.kind === "align") return toggleAlignPart(inst.id);
+      if (mode.kind === "combine") return toggleCombinePart(inst.id);
       if (mode.kind !== "part") return toast("Finish the current step first");
       if (measuring) endMeasure();
       selectedFeature = selectedFeature === inst.id ? null : inst.id;
@@ -3895,6 +4119,7 @@ function renderStatus() {
   else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
   else if (mode.kind === "place") s = `${mode.feat.name} · choose a value and type it`;
   else if (mode.kind === "align") s = mode.ids.length < 2 ? "Align · tap the parts to line up" : "Align · choose an axis and where to line them up";
+  else if (mode.kind === "combine") s = !mode.target ? "Combine · tap the part to make the new part from" : "Combine · tap the parts to join or cut it with";
   else if (mode.kind === "mate") s = mode.picks.length ? "Mate · now the face or hole on the other part" : "Mate · tap a flat face, a hole or a round edge of a part";
   else if (mode.kind === "mateEdit") s = `${mode.feat.name} · facing, flush or at an angle; type the gap, or limits`;
   else if (isAssembly() && clashes) s = clashes.running ? "Checking for overlaps…" : "Interference · overlaps in red";
@@ -4230,9 +4455,9 @@ const partTool: PointerTool = {
     if (mode.kind === "pickPlane") return pickPlaneAt(p);
     if (mode.kind === "mate") return void mateTap(p);
     const face = vp.pickFace(p.x, p.y);
-    if (mode.kind === "align") {
+    if (mode.kind === "align" || mode.kind === "combine") {
       const body = face == null ? null : lastBuild?.bodies?.find((b) => b.faceIds.includes(face));
-      if (body) toggleAlignPart(body.id);
+      if (body) (mode.kind === "align" ? toggleAlignPart : toggleCombinePart)(body.id);
       return;
     }
     if (mode.kind === "shell") {
@@ -5020,6 +5245,10 @@ window.addEventListener("keydown", (e) => {
   }
   if (mode.kind === "align") {
     if (k.toLowerCase() === "a") endAlign();
+    return;
+  }
+  if (mode.kind === "combine") {
+    if (k.toLowerCase() === "b") endCombine();
     return;
   }
   if (mode.kind === "mate") {

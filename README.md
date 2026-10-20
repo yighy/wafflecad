@@ -28,6 +28,9 @@
   Drag a part with a finger and its mates follow (a lid swings, a drawer slides); check for overlaps
   between parts, or spread them in an exploded view. A part changed in its own project is updated in
   every assembly that uses it.
+- **Combine** parts of an assembly into a new part: cut one with the others (with play for a printed fit,
+  such as a pocket for a magnet or a bearing), join them, or keep their overlap. The new part follows the
+  assembly as it changes, and can take the original's place in it.
 - **Measure** faces, edges and corners: lengths, radii, distances, angles.
 - **Display**: shaded, wireframe, X-ray, technical lines, and a section view sliding through the part.
 - **Parameters**: name a value (`wall = 2`) and use it in any dimension (`width - 2*wall`).

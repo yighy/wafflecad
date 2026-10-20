@@ -21,7 +21,7 @@ import { connectedContour, entitiesInside, pathTouchesBox, regionAt, selectionOu
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
 import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
-import type { CadDocument, Mate, MateRef, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
+import type { CadDocument, CombineFeature, Mate, MateRef, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
 setOC(await opencascade());
 const solver = await Solver.create();
@@ -991,6 +991,46 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("assembly: a part's bodies inserted apart", r.bodies.length === 2 && near(v[0], 1000, 1e-3) && near(v[1], 400, 1e-3) && near(lidTop, 17, 1e-6), JSON.stringify([v, lidTop, r.errors]));
   const gone = buildShape({ format: "waffle", version: 1, features: [], kind: "assembly", instances: [one("nope")] });
   check("assembly: a body gone from its part is reported", !!gone.errors.nope, JSON.stringify(gone.errors));
+}
+
+// --- Combine: parts of an assembly joined, cut or intersected into a new part (20 × 10 × 5 blocks).
+{
+  const place = (id: string, project: string, at: [number, number, number], rot: [number, number, number] = [0, 0, 0]): PartInstance => ({ id, project, name: id, at, rot });
+  const asm = (...instances: PartInstance[]): CadDocument => ({ format: "waffle", version: 1, features: [], kind: "assembly", instances });
+  const derived = (f: Partial<CombineFeature>): CadDocument => ({
+    format: "waffle",
+    version: 1,
+    features: [{ id: "cb", kind: "combine", name: "Combine", assembly: "a1", target: { instance: "t", project: "p1" }, tools: ["u"], op: "cut", ...f }],
+  });
+  const vol = (d: CadDocument) => {
+    const r = buildShape(d);
+    return { v: r.shape ? measureVolume(r.shape) : 0, r };
+  };
+  setPartDocs({ p1: block(), a1: asm(place("t", "p1", [0, 0, 0]), place("u", "p1", [10, 0, 0])) });
+  const j = vol(derived({ op: "add" }));
+  const c = vol(derived({ op: "cut" }));
+  const x = vol(derived({ op: "intersect" }));
+  check("combine: join, cut and intersect two overlapping blocks", near(j.v, 1500, 1e-3) && near(c.v, 500, 1e-3) && near(x.v, 500, 1e-3), JSON.stringify([j.v, c.v, x.v, j.r.errors, c.r.errors]));
+  const play = vol(derived({ op: "cut", clearance: 0.5 }));
+  check("combine: cut with play takes the tool grown all around", near(play.v, 475, 1e-2), JSON.stringify([play.v, play.r.errors]));
+
+  // A turned and moved target: the result is in the target's own coordinates.
+  setPartDocs({ p1: block(), a1: asm(place("t", "p1", [100, 0, 0], [0, 0, 90]), place("u", "p1", [95, 0, 0])) });
+  const turned = vol(derived({ op: "cut" }));
+  const [lo, hi] = turned.r.shape?.boundingBox.bounds ?? [[0, 0, 0], [0, 0, 0]];
+  check("combine: a placed target keeps its own coordinates", near(turned.v, 750, 1e-3) && near(lo[0], 0, 1e-6) && near(hi[0], 20, 1e-6) && near(hi[1], 10, 1e-6), JSON.stringify([turned.v, lo, hi, turned.r.errors]));
+
+  const gone = vol(derived({ tools: ["nope"] }));
+  check("combine: a part removed from the assembly is reported", !!gone.r.errors.cb, JSON.stringify(gone.r.errors));
+  setPartDocs({ p1: block(), a1: asm(place("t", "p1", [0, 0, 0]), place("u", "p1", [50, 0, 0])) });
+  const apart = vol(derived({ op: "intersect" }));
+  check("combine: parts that do not overlap have nothing to intersect", !!apart.r.errors.cb, JSON.stringify(apart.r.errors));
+  // The combining part placed in the assembly it reads, as one of its own tools: a loop.
+  const self = derived({ op: "add", tools: ["d"] });
+  setPartDocs({ p1: block(), d: self, a1: asm(place("t", "p1", [0, 0, 0]), place("d", "d", [5, 0, 0])) });
+  const loop = vol(self);
+  check("combine: a part that uses itself is reported, not looped", !!loop.r.errors.cb, JSON.stringify(loop.r.errors));
+  setPartDocs({});
 }
 
 // --- Selection (region, contour, inside an outline): a plate's outline, a hole and a slot line inside it, things outside or across.

@@ -70,6 +70,7 @@ const P: Record<string, string> = {
   selLasso: '<path d="M12 3.5c5 0 9 2.6 9 6.2s-4 6.2-9 6.2-9-2.6-9-6.2 4-6.2 9-6.2z" stroke-dasharray="3 2.6" fill="currentColor" fill-opacity=".14"/><path d="M7.5 15.3c-1.6 1.8-.8 4.2 1.8 5.2"/>',
   selContour: '<path d="M4 19 6 8l7-4 7 6-3 9" stroke-width="2.4"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="17" cy="19" r="1.6" fill="currentColor" stroke="none"/>',
   selRegion: '<path d="M4 9c0-3.5 4-5 8-4.2S20 4 20 9s-1.5 9.5-7.5 10S4 15 4 9z" fill="currentColor" fill-opacity=".3"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/>',
+  combine: '<rect x="3" y="7" width="11" height="11" rx="1.5" fill="currentColor" fill-opacity=".14"/><circle cx="15" cy="10" r="6" fill="currentColor" fill-opacity=".14"/>',
   chevron: '<path d="M9 6l7 6-7 6z" fill="currentColor" fill-opacity=".14"/>',
   backspace: '<path d="M8 5h12v14H8l-6-7z" fill="currentColor" fill-opacity=".14"/><path d="M11 9l6 6M17 9l-6 6"/>',
   plus: '<circle cx="12" cy="12" r="9" fill="currentColor" fill-opacity=".14"/><path d="M12 8v8M8 12h8"/>',

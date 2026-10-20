@@ -1,7 +1,7 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
-import type { Axis, BuildResult, CadDocument, Clash, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeOffset, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
+import type { Axis, BuildResult, CadDocument, Clash, CombineFeature, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
 import { hasRef } from "./measure";
@@ -381,8 +381,22 @@ export function readStep(text: string): Shape3D {
 }
 
 /** Replays the features (from the cache where possible); a failing feature is skipped and reported. */
-export function buildShape(doc: CadDocument) {
+export function buildShape(doc: CadDocument): ReturnType<typeof replay> {
   if (doc.kind === "assembly") return assemblyShape(doc);
+  // A part that combines parts of an assembly may end up using itself (through that assembly).
+  if (building.has(doc)) throw new Error("A part cannot use itself");
+  building.add(doc);
+  try {
+    return replay(doc);
+  } finally {
+    building.delete(doc);
+  }
+}
+
+/** Documents being built, the one asking for the next: a part reached again is a loop. */
+const building = new Set<CadDocument>();
+
+function replay(doc: CadDocument) {
   const names = new Map(doc.features.map((f) => [f.id, f.name]));
   const keys: string[] = [];
   let key = "";
@@ -391,7 +405,8 @@ export function buildShape(doc: CadDocument) {
     const t = doc.files?.[id] ?? "";
     return `${t.length}:${hash(t.slice(0, 4096) + t.slice(-4096))}`;
   };
-  for (const f of doc.features) keys.push((key = hash(key + JSON.stringify(f) + (f.kind === "import" ? fileKey(f.fileId) : ""))));
+  for (const f of doc.features)
+    keys.push((key = hash(key + JSON.stringify(f) + (f.kind === "import" ? fileKey(f.fileId) : f.kind === "combine" ? linkKey(f) : ""))));
   // Start after the longest run of steps already built.
   let start = keys.length;
   while (start > 0 && !stepCache.has(keys[start - 1])) start--;
@@ -440,6 +455,9 @@ export function buildShape(doc: CadDocument) {
         const text = doc.files?.[f.fileId];
         if (!text) throw new Error("The imported file is missing");
         solidStep(f, readStep(text));
+      } else if (f.kind === "combine") {
+        // The combined parts come in as material of this part (a body of their own at first).
+        solidStep({ id: f.id, op: "add", body: f.body }, combineSolid(f));
       } else if (f.kind === "hole") {
         // Holes go through every body in their way (a lid and its box, drilled together).
         if (!shape) throw new Error("There is no solid yet");
@@ -500,10 +518,103 @@ export function buildShape(doc: CadDocument) {
 
 // ---------- Assemblies ----------
 
-/** Documents of the parts the open assembly uses, by project id (sent by the app). */
+/**
+ * Documents of other projects, by project id (sent by the app): the parts the open assembly uses,
+ * or the assemblies and parts a combining part reads.
+ */
 let partDocs: Record<string, CadDocument> = {};
-export function setPartDocs(parts: Record<string, CadDocument>) {
+/** The open project (the app sends its document with each request: it changes as it is edited). */
+let openId: string | null = null;
+let openDoc: CadDocument | null = null;
+export function setPartDocs(parts: Record<string, CadDocument>, open?: string) {
   partDocs = parts;
+  openId = open ?? null;
+}
+export function setOpenDocument(doc: CadDocument) {
+  openDoc = doc;
+}
+/** A project's document: the open one as it is now, the others as last saved. */
+const docOf = (id: string): CadDocument | undefined => (id === openId && openDoc) || partDocs[id];
+
+/** The inverse of placeShape: from where the assembly put it back to the part's own coordinates. */
+function unplaceShape(s: Shape3D, p: Pick<PartInstance, "at" | "rot">): Shape3D {
+  const [rx, ry, rz] = p.rot;
+  if (p.at.some((v) => v !== 0)) s = s.translate(p.at.map((v) => -v) as Vec3);
+  if (rx) s = s.rotate(-rx, [0, 0, 0], [1, 0, 0]);
+  if (ry) s = s.rotate(-ry, [0, 0, 0], [0, 1, 0]);
+  if (rz) s = s.rotate(-rz, [0, 0, 0], [0, 0, 1]);
+  return s;
+}
+
+/** A project's solid (one body of it, or all), built from its document as the app sent it. */
+function projectSolid(id: string, body?: string): Shape3D {
+  const part = docOf(id);
+  if (!part) throw new Error("A part it uses is no longer there");
+  if (part.kind === "assembly") throw new Error("An assembly cannot be combined into a part");
+  if (building.has(part)) throw new Error("A part cannot use itself");
+  const r = buildShape(part);
+  const solid = body ? r.bodies.find((b) => b.id === body)?.shape : r.shape;
+  if (!solid) throw new Error(body ? "A body it uses is no longer in its part" : "A part it uses has no solid yet");
+  return solid;
+}
+
+/**
+ * Combine: the target part, in its own coordinates, with the tool parts where the assembly puts
+ * them relative to it. Cut takes each tool away (grown by the clearance first); Join adds them;
+ * Intersect keeps what the target shares with any of them.
+ */
+function combineSolid(f: CombineFeature): Shape3D {
+  const asm = docOf(f.assembly);
+  if (!asm || asm.kind !== "assembly") throw new Error("Its assembly is no longer there");
+  const placed = (id: string) => asm.instances?.find((i) => i.id === id);
+  const target = placed(f.target.instance);
+  if (!target) throw new Error("Its part was removed from the assembly");
+  if (!f.tools.length) throw new Error("Choose at least one part to combine with");
+  let tools = f.tools.map((id) => {
+    const t = placed(id);
+    if (!t) throw new Error("A part it uses was removed from the assembly");
+    return unplaceShape(placeShape(projectSolid(t.project, t.body), t), target);
+  });
+  if (f.op === "cut" && f.clearance) {
+    const c = f.clearance;
+    tools = tools.map((t) => {
+      try {
+        return makeOffset(t as unknown as Face, c);
+      } catch {
+        throw new Error("The play could not be added around a part: try a smaller one");
+      }
+    });
+  }
+  let s = projectSolid(f.target.project, f.target.body);
+  if (f.op === "intersect") {
+    const all = tools.reduce((a, b) => a.fuse(b));
+    s = s.intersect(all);
+  } else for (const t of tools) s = f.op === "add" ? s.fuse(t) : s.cut(t);
+  if (!s.faces.length) throw new Error(f.op === "intersect" ? "The parts do not overlap" : "Nothing is left");
+  return s;
+}
+
+/**
+ * What a combine step reads besides itself: the places of its parts in the assembly and their
+ * documents (and, for a part combining others, what those read in turn).
+ */
+function linkKey(f: CombineFeature, seen = new Set<string>()): string {
+  const asm = docOf(f.assembly);
+  const ids = [f.target.instance, ...f.tools];
+  const places = (asm?.instances ?? []).filter((i) => ids.includes(i.id));
+  const projects = new Set([f.target.project, ...places.map((i) => i.project)]);
+  let k = JSON.stringify(places);
+  for (const id of projects) {
+    const d = docOf(id);
+    if (!d || seen.has(id)) {
+      k += `|${id}:-`;
+      continue;
+    }
+    seen.add(id);
+    k += `|${id}:${hash(JSON.stringify(d))}`;
+    for (const g of d.features) if (g.kind === "combine") k += linkKey(g, seen);
+  }
+  return hash(k);
 }
 
 /** A part's solid turned and moved into place (a copy: the part's own solid stays as it is). */
@@ -533,7 +644,7 @@ function assemblyShape(doc: CadDocument) {
   /** Each part's solid in its own coordinates (to check the faces mates use). */
   const own = new Map<string, Shape3D>();
   for (const inst of doc.instances ?? []) {
-    const part = partDocs[inst.project];
+    const part = docOf(inst.project);
     if (!part) {
       errors[inst.id] = "Its project is no longer there";
       continue;

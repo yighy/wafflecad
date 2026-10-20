@@ -2,7 +2,7 @@
 import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
-import { bodyNames, buildResult, buildShape, exportFile, interferences, setPartDocs, splitStep } from "./build";
+import { bodyNames, buildResult, buildShape, exportFile, interferences, setOpenDocument, setPartDocs, splitStep } from "./build";
 import { measure, refGeometry } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
@@ -57,9 +57,11 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   await ready;
   const req = ev.data;
   if (req.type === "parts") {
-    setPartDocs(req.parts);
+    setPartDocs(req.parts, req.open);
     return;
   }
+  // The open project as it is now (a part combining it reads its latest places).
+  if (req.type === "build" || req.type === "export" || req.type === "measure" || req.type === "clash" || req.type === "ref") setOpenDocument(req.doc);
   if (req.type === "build") {
     try {
       const ex = req.pickExclude;
