@@ -256,6 +256,10 @@ check("circular pattern runs (copies outside the block are no-ops)", !ps.errors.
 const whole = buildShape(block({ id: "mw", kind: "pattern", name: "MW", type: "mirror", featureIds: [], axis: "X", count: 1, spacing: 0, axis2: "Y", count2: 1, spacing2: 0, angle: 360, offset: 0 }));
 const wb = whole.shape!.boundingBox.bounds;
 check("mirror the whole solid about YZ", !whole.errors.mw && near(wb[0][0], -20) && near(measureVolume(whole.shape!), 2000, 1e-3), JSON.stringify(wb));
+ps = pat({ featureIds: ["h1", "eb"], count: 2, spacing: 30 });
+check("block and its hole repeated, picked hole first", !ps.errors.pt && near(measureVolume(ps.shape!), 2000 - 2 * holeVol, 1e-2), `vol=${ps.shape && measureVolume(ps.shape)}`);
+ps = pat({ featureIds: [], count: 2, spacing: 30 });
+check("linear pattern of the whole solid", !ps.errors.pt && near(ps.shape!.boundingBox.bounds[1][0], 50) && near(measureVolume(ps.shape!), 2000 - 2 * holeVol, 1e-2), `vol=${ps.shape && measureVolume(ps.shape)}`);
 const shellPat = buildShape(block({ id: "sh", kind: "shell", name: "SH", faces: [topRef], thickness: 1 }, { id: "pp", kind: "pattern", name: "PP", type: "linear", featureIds: ["sh"], axis: "X", count: 2, spacing: 30, axis2: "Y", count2: 1, spacing2: 0, angle: 360, offset: 0 }));
 check("shell cannot be repeated", !!shellPat.errors.pp, JSON.stringify(shellPat.errors));
 

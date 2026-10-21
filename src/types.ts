@@ -253,7 +253,7 @@ export type Axis = "X" | "Y" | "Z";
 
 /**
  * Repeats earlier features (their added or removed material) by translation, rotation or
- * mirror. A mirror with no feature chosen mirrors the whole solid.
+ * mirror. With no feature chosen, the whole solid (each of its bodies) is repeated.
  */
 export interface PatternFeature {
   id: string;

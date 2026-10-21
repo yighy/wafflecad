@@ -46,6 +46,8 @@ export interface KeypadHandle {
   setSubtitle(text: string): void;
   /** A warning under the title (null clears it). */
   setNote(text: string | null): void;
+  /** Redraws the segments (what they show was changed from outside). */
+  refresh(): void;
   close(): void;
 }
 
@@ -229,6 +231,7 @@ export function openKeypad(opt: KeypadOptions): KeypadHandle {
     setSubtitle(text) {
       root.querySelector(".kp-sub")!.textContent = text;
     },
+    refresh: renderSegs,
     close: () => finish(null),
   };
   target.appendChild(root);

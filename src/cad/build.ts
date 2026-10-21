@@ -255,18 +255,21 @@ function fuseAll(parts: Shape3D[]): Shape3D {
 }
 
 /**
- * Repeats the chosen steps' material into the bodies it went into. A mirror with no step chosen
- * mirrors every body onto itself.
+ * Repeats the chosen steps' material into the bodies it went into. With no step chosen, every
+ * body is repeated as a whole, into itself.
  */
 function pattern(bodies: Bodies, f: PatternFeature, tools: Map<string, Tool>, names: Map<string, string>): Tool | null {
-  if (f.type === "mirror" && !f.featureIds.length) {
-    for (const [id, b] of bodies) bodies.set(id, b.fuse(b.clone().mirror(MIRROR_PLANE[f.axis], scale(AXIS[f.axis], f.offset))).simplify());
+  if (!f.featureIds.length) {
+    for (const [id, b] of bodies) bodies.set(id, fuseAll([b, ...patternCopies(b, f)]).simplify());
     return null;
   }
-  if (!f.featureIds.length) throw new Error("Choose the features to repeat");
   const made: Record<"add" | "cut", Shape3D[]> = { add: [], cut: [] };
   const into = new Set<string | undefined>();
-  for (const id of f.featureIds) {
+  // In the timeline's order, whatever order they were picked in: a cut repeated before the block it
+  // cuts would be filled again by the block's copies.
+  const order = [...tools.keys()];
+  const rank = (id: string) => (order.includes(id) ? order.indexOf(id) : Infinity);
+  for (const id of [...f.featureIds].sort((a, b) => rank(a) - rank(b))) {
     const t = tools.get(id);
     if (!t) throw new Error(`${names.get(id) ?? "This feature"} cannot be repeated (only extrusions, Press Pull, holes and patterns)`);
     made[t.op].push(t.solid);

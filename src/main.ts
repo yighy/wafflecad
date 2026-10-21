@@ -2620,7 +2620,7 @@ const FIELD_LABEL: Record<PatternField, [string, string]> = {
 
 function patternSummary(f: PatternFeature) {
   const n = f.featureIds.length;
-  const what = n ? `${n} feature${n > 1 ? "s" : ""}` : f.type === "mirror" ? "whole solid" : "no feature yet";
+  const what = n ? `${n} feature${n > 1 ? "s" : ""}` : "whole solid";
   if (f.type === "mirror") return `${what} · ${{ X: "YZ", Y: "XZ", Z: "XY" }[f.axis]} plane at ${fmtNum(f.offset)} mm`;
   if (f.type === "circular") return `${what} · ${f.count} around ${f.axis} · ${fmtNum(f.angle)}°`;
   const second = f.count2 > 1 ? ` × ${f.count2} along ${f.axis2}` : "";
@@ -2672,8 +2672,28 @@ async function patternTool(type: PatternFeature["type"], existing?: PatternFeatu
       kp.setLabel(...FIELD_LABEL[field]);
     },
   });
-  const segments =
-    type === "mirror"
+  // What is repeated: the steps tapped in the timeline, or the whole solid when none is.
+  let picked = [...feat.featureIds];
+  const whatSeg = {
+    options: [
+      { value: "steps", label: "Chosen steps" },
+      { value: "whole", label: "Whole solid" },
+    ],
+    get: () => (feat.featureIds.length ? "steps" : "whole"),
+    set: (v: string) => {
+      if (v === "whole") {
+        if (feat.featureIds.length) picked = [...feat.featureIds];
+        feat.featureIds = [];
+      } else if (!feat.featureIds.length) {
+        if (picked.length) feat.featureIds = [...picked];
+        else toast("Tap the features to repeat in the timeline");
+      }
+      update();
+    },
+  };
+  const segments: Segmented[] = [whatSeg];
+  segments.push(
+    ...(type === "mirror"
       ? [axisSeg(() => feat.axis, (a) => (feat.axis = a), ["YZ plane", "XZ plane", "XY plane"])]
       : type === "circular"
         ? [fieldSeg(["count", "angle"], ["Count", "Angle"]), axisSeg(() => feat.axis, (a) => (feat.axis = a), ["X axis", "Y axis", "Z axis"])]
@@ -2681,7 +2701,8 @@ async function patternTool(type: PatternFeature["type"], existing?: PatternFeatu
             fieldSeg(["count", "spacing", "count2", "spacing2"], ["Count", "Spacing", "Count 2", "Spacing 2"]),
             axisSeg(() => feat.axis, (a) => (feat.axis = a), ["Along X", "Along Y", "Along Z"]),
             axisSeg(() => feat.axis2, (a) => (feat.axis2 = a), ["2nd X", "2nd Y", "2nd Z"]),
-          ];
+          ]),
+  );
   const setField = (v: number) => {
     feat[field] = field === "count" || field === "count2" ? Math.max(1, Math.round(v)) : v;
   };
@@ -2709,9 +2730,7 @@ async function patternTool(type: PatternFeature["type"], existing?: PatternFeatu
 
   const res = await kp.result;
   mode = { kind: "part" };
-  const needsFeatures = feat.type !== "mirror" && !feat.featureIds.length;
-  if (res === null || needsFeatures) {
-    if (res !== null) toast("Tap the features to repeat in the timeline");
+  if (res === null) {
     if (existing) Object.assign(feat, before);
     else {
       doc.features = doc.features.filter((x) => x !== feat);
@@ -2733,7 +2752,10 @@ function togglePatternFeature(feat: PatternFeature, f: Feature) {
   const i = feat.featureIds.indexOf(f.id);
   if (i >= 0) feat.featureIds.splice(i, 1);
   else feat.featureIds.push(f.id);
-  if (mode.kind === "pattern") mode.keypad.setSubtitle(patternSummary(feat));
+  if (mode.kind === "pattern") {
+    mode.keypad.setSubtitle(patternSummary(feat));
+    mode.keypad.refresh();
+  }
   renderTimeline();
   renderStatus();
   rebuild();
@@ -4111,7 +4133,7 @@ function renderStatus() {
   else if (mode.kind === "revolve") s = "Revolve · tap a line of the sketch to use it as the axis";
   else if (mode.kind === "pattern") {
     const f = mode.feat;
-    s = f.featureIds.length || f.type === "mirror" ? `${f.name} · tap timeline steps to add or remove them` : `${f.name} · tap the features to repeat in the timeline`;
+    s = f.featureIds.length ? `${f.name} · tap timeline steps to add or remove them` : `${f.name} · the whole solid, or tap the steps to repeat in the timeline`;
   } else if (mode.kind === "hole") {
     const f = mode.feat;
     s = f.sketchId ? `Hole · ${f.size} at the sketch points` : `Hole · ${f.size} × ${f.points?.length ?? 0} · tap to add, drag a hole to move it`;
