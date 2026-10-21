@@ -81,7 +81,10 @@ export class Viewport {
   private lineMaterials: LineMaterial[] = [];
   private needsRender = true;
   private anim: { t0: number; q0: THREE.Quaternion; q1: THREE.Quaternion; p0: THREE.Vector3; p1: THREE.Vector3; h0: number; h1: number } | null = null;
-  private labels: { el: HTMLElement; at: THREE.Vector3; dx: number; dy: number }[] = [];
+  private labels: Label[] = [];
+  /** Points the labels keep off (a symbol must not hide a point), and the arrows of labels set apart. */
+  private keepClear: THREE.Vector3[] = [];
+  private leaders: SVGSVGElement;
   private gridPlane: PlaneDef | null = null;
   private dotTexture = makeDotTexture();
 
@@ -106,6 +109,10 @@ export class Viewport {
     this.overlay = document.createElement("div");
     this.overlay.className = "overlay";
     container.appendChild(this.overlay);
+    this.leaders = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    this.leaders.classList.add("leaders");
+    this.leaders.innerHTML = `<defs><marker id="leader-tip" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 8 4 0 8z"/></marker></defs><g></g>`;
+    this.overlay.appendChild(this.leaders);
 
     this.scene.background = new THREE.Color();
     this.applyThemeColors();
@@ -1008,7 +1015,11 @@ export class Viewport {
   // ---------- Sketch layer ----------
 
   setSketchLayer(lines: LineBatch[], points: PointBatch[]) {
+    // The fills stay: they are redone only when the geometry changes (setFills).
+    const fills = this.sketchGroup.getObjectByName("fills");
+    if (fills) this.sketchGroup.remove(fills);
     disposeChildren(this.sketchGroup);
+    if (fills) this.sketchGroup.add(fills);
     this.lineMaterials = this.lineMaterials.filter((m) => !m.userData.sketch);
     for (const b of lines) {
       if (!b.positions.length) continue;
@@ -1084,20 +1095,80 @@ export class Viewport {
 
   // ---------- HTML labels anchored to 3D points ----------
 
-  setLabels(items: { el: HTMLElement; at: THREE.Vector3; dx?: number; dy?: number }[]) {
+  /**
+   * HTML labels pinned to points. `avoid`: the label moves round its point when it would cover one
+   * of `clear` (or another such label); `leader`: an arrow joins it to its point. A label away from
+   * its usual place always gets the arrow, so what it belongs to stays clear.
+   */
+  setLabels(items: LabelItem[], clear: THREE.Vector3[] = []) {
     for (const l of this.labels) l.el.remove();
-    this.labels = items.map((i) => ({ el: i.el, at: i.at, dx: i.dx ?? 0, dy: i.dy ?? 0 }));
+    this.labels = items.map((i) => ({ el: i.el, at: i.at, dx: i.dx ?? 0, dy: i.dy ?? 0, leader: !!i.leader, avoid: !!i.avoid }));
+    this.keepClear = clear;
     for (const l of this.labels) this.overlay.appendChild(l.el);
     this.placeLabels();
   }
 
+  /** Puts a label at a new offset from its point (a symbol being slid), with its arrow. */
+  moveLabel(el: HTMLElement, dx: number, dy: number) {
+    const l = this.labels.find((x) => x.el === el);
+    if (!l) return;
+    Object.assign(l, { dx, dy, leader: true, avoid: false });
+    this.placeLabels();
+  }
+
   private placeLabels() {
+    const clear = this.keepClear.map((p) => this.toScreen(p));
+    const taken: [number, number][] = [];
+    const lines: [number, number, number, number][] = [];
+    // Far enough from a point's centre that the point shows whole; labels apart from each other.
+    const free = (x: number, y: number) => clear.every(([px, py]) => Math.hypot(px - x, py - y) > 15) && taken.every(([tx, ty]) => Math.hypot(tx - x, ty - y) > 20);
     for (const l of this.labels) {
-      const [x, y] = this.toScreen(l.at);
-      l.el.style.transform = `translate(${x + l.dx}px, ${y + l.dy}px) translate(-50%, -50%)`;
+      const [ax, ay] = this.toScreen(l.at);
+      let { dx, dy } = l;
+      let apart = l.leader;
+      if (l.avoid) {
+        if (!free(ax + dx, ay + dy)) {
+          // Round its point, nearest angles first, then further out.
+          const r0 = Math.max(Math.hypot(dx, dy), 18);
+          const a0 = Math.atan2(dy, dx);
+          search: for (const r of [r0, r0 + 14, r0 + 28, r0 + 44])
+            for (let k = 1; k < 16; k++) {
+              const a = a0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 8);
+              if (free(ax + Math.cos(a) * r, ay + Math.sin(a) * r)) {
+                [dx, dy, apart] = [Math.cos(a) * r, Math.sin(a) * r, true];
+                break search;
+              }
+            }
+        }
+        taken.push([ax + dx, ay + dy]);
+      }
+      l.el.style.transform = `translate(${ax + dx}px, ${ay + dy}px) translate(-50%, -50%)`;
+      l.el.dataset.dx = String(dx);
+      l.el.dataset.dy = String(dy);
+      if (apart) lines.push([ax + dx, ay + dy, ax, ay]);
     }
+    // Arrows from the label's edge to just short of its point.
+    const g = this.leaders.lastElementChild!;
+    g.innerHTML = lines
+      .map(([x1, y1, x2, y2]) => {
+        const len = Math.hypot(x2 - x1, y2 - y1);
+        if (len < 22) return "";
+        const [ux, uy] = [(x2 - x1) / len, (y2 - y1) / len];
+        return `<line x1="${x1 + ux * 11}" y1="${y1 + uy * 11}" x2="${x2 - ux * 5}" y2="${y2 - uy * 5}" marker-end="url(#leader-tip)"/>`;
+      })
+      .join("");
   }
 }
+
+interface LabelItem {
+  el: HTMLElement;
+  at: THREE.Vector3;
+  dx?: number;
+  dy?: number;
+  leader?: boolean;
+  avoid?: boolean;
+}
+type Label = Required<LabelItem>;
 
 export function gridStep(viewHeight: number) {
   const raw = viewHeight / 12;

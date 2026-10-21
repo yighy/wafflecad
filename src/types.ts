@@ -126,6 +126,8 @@ export interface SkConstraint {
   expr?: string;
   /** Not labelled on the sketch unless what it holds is selected (imported drawings: many of them). */
   quiet?: boolean;
+  /** Where its symbol was slid by hand: screen pixels from the element it holds. */
+  glyphAt?: [number, number];
 }
 
 export interface SketchFeature {

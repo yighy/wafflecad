@@ -79,8 +79,10 @@ interface Prefs {
   selectMode: SelectMode;
   /** The selected element's constraint list is folded (sketch panel). */
   constraintsFolded: boolean;
+  /** Which constraint symbols a sketch shows. */
+  glyphs: SketchEditor["glyphs"];
 }
-const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges", project: null, selectMode: "box", constraintsFolded: false };
+const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges", project: null, selectMode: "box", constraintsFolded: false, glyphs: "all" };
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
 } catch {
@@ -623,6 +625,7 @@ function enterSketch(sk: SketchFeature) {
     scope: paramScope,
   });
   editor.selectMode = prefs.selectMode;
+  editor.glyphs = prefs.glyphs;
   mode = { kind: "sketch", editor };
   selectedFeature = sk.id;
   vp.setGridPlane(sk.plane);
@@ -4322,8 +4325,19 @@ function renderViewButtons() {
     renderViewButtons();
   }, vp.isGridVisible);
   if (mode.kind === "sketch") {
-    const plane = mode.editor.sk.plane;
+    const ed = mode.editor;
+    const plane = ed.sk.plane;
     add("lookAt", "Look at sketch", () => vp.viewNormalTo(plane));
+    // Constraint symbols: all, those of the selection, or none (a crowded sketch stays readable).
+    const next = { all: "selection", selection: "none", none: "all" } as const;
+    const said = { all: "all constraint symbols", selection: "the selection's constraint symbols", none: "no constraint symbols" };
+    add("glyphs", `Showing ${said[ed.glyphs]} (tap: ${said[next[ed.glyphs]]})`, () => {
+      ed.glyphs = prefs.glyphs = next[ed.glyphs];
+      savePrefs();
+      ed.render();
+      renderViewButtons();
+      toast(`Showing ${said[ed.glyphs]}`);
+    }, ed.glyphs !== "all");
   }
 }
 

@@ -99,6 +99,10 @@ export class SketchEditor implements PointerTool {
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null;
   /** Lasso being drawn (screen points). */
   private lasso: { x: number; y: number }[] | null = null;
+  /** Which constraint symbols show: all, those of the selection, or none (dimensions always show). */
+  glyphs: "all" | "selection" | "none" = "all";
+  /** The symbol tapped last and when, to tell a double tap (which puts a slid symbol back). */
+  private lastGlyphTap: { id: string; t: number } | null = null;
   /** A constraint picked in the panel's list: shown with what it ties (while its element stays selected). */
   focus: string | null = null;
   /** How the Select tool picks: what a drag on empty space draws, what a tap takes. */
@@ -1736,7 +1740,7 @@ export class SketchEditor implements PointerTool {
   }
 
   private renderLabels(v: SketchView) {
-    const items: { el: HTMLElement; at: THREE.Vector3; dx?: number; dy?: number }[] = [];
+    const items: { el: HTMLElement; at: THREE.Vector3; dx?: number; dy?: number; leader?: boolean; avoid?: boolean }[] = [];
     const perEntity = new Map<string, number>();
     const mid = (p: P2, q: P2, t = 0.5): P2 => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
     const anchorOf = (id: string): P2 | null => {
@@ -1764,6 +1768,10 @@ export class SketchEditor implements PointerTool {
       // A fillet's virtual corner stays on both lines by itself: no glyphs unless it is selected.
       if (c.type === "pointOn" && isSharp(c.refs[0]) && !this.selection.has(c.refs[0]) && !this.selection.has(c.id)) continue;
       if (c.quiet && !c.refs.some((r) => this.selection.has(r)) && !this.selection.has(c.id)) continue;
+      if (!isDim && this.glyphs !== "all") {
+        const own = c.refs.some((r) => this.selection.has(r)) || this.selection.has(c.id) || !!related?.has(c.id);
+        if (this.glyphs === "none" || !own) continue;
+      }
       /** Screen push for a radius label: outwards along the radius, off the curve. */
       let out: [number, number] | null = null;
       let at: P2 | null = null;
@@ -1794,8 +1802,19 @@ export class SketchEditor implements PointerTool {
       el.textContent = isDim ? dimText(c) : constraintLabel(c);
       el.title = c.type;
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
+      if (!isDim) this.slideGlyph(el, c);
       el.addEventListener("click", (e) => {
         e.stopPropagation();
+        // The end of a slide is not a tap.
+        if (el.dataset.slid) return void delete el.dataset.slid;
+        // A quick second tap on a slid symbol puts it back in its place.
+        const now = performance.now();
+        const again = this.lastGlyphTap?.id === c.id && now - this.lastGlyphTap.t < 350;
+        this.lastGlyphTap = { id: c.id, t: now };
+        if (again && c.glyphAt) {
+          delete c.glyphAt;
+          this.hooks.commit("Symbol back in place");
+        }
         if (isDim && !this.selection.size) return void this.editDimension(c);
         if (this.selection.has(c.id)) this.selection.delete(c.id);
         else this.selection.add(c.id);
@@ -1814,7 +1833,9 @@ export class SketchEditor implements PointerTool {
         dx = 14 + (k - 1) * 22;
         dy = -14;
       }
-      items.push({ el, at: this.toWorld(at), dx, dy });
+      // A symbol slid by hand stays where it was put, with its arrow; the others keep off the points.
+      if (!isDim && c.glyphAt) items.push({ el, at: this.toWorld(at), dx: c.glyphAt[0], dy: c.glyphAt[1], leader: true });
+      else items.push({ el, at: this.toWorld(at), dx, dy, avoid: !isDim });
     }
     if (this.hvHint && this.cursor) {
       const el = document.createElement("div");
@@ -1822,7 +1843,44 @@ export class SketchEditor implements PointerTool {
       el.textContent = this.hvHint === "horizontal" ? "H" : "V";
       items.push({ el, at: this.toWorld(this.cursor.at), dx: 22, dy: -22 });
     }
-    this.vp.setLabels(items);
+    // The points the symbols keep off: the ones drawn.
+    const hidden = this.hiddenControls(v);
+    const clear = v
+      .points()
+      .filter((p) => !hidden.has(p.id) && (!p.sharp || this.selection.has(p.id)))
+      .map((p) => this.toWorld([p.x, p.y]));
+    this.vp.setLabels(items, clear);
+  }
+
+  /**
+   * A constraint symbol held and slid goes where it is dropped (kept with the constraint, in pixels
+   * from what it holds, so it stays as near at any zoom); an arrow then shows what it belongs to.
+   */
+  private slideGlyph(el: HTMLElement, c: SkConstraint) {
+    el.addEventListener("pointerdown", (e) => {
+      const from = { x: e.clientX, y: e.clientY, dx: Number(el.dataset.dx ?? 0), dy: Number(el.dataset.dy ?? 0) };
+      let sliding = false;
+      el.setPointerCapture(e.pointerId);
+      const move = (m: PointerEvent) => {
+        const [ddx, ddy] = [m.clientX - from.x, m.clientY - from.y];
+        if (!sliding && Math.hypot(ddx, ddy) < 8) return;
+        sliding = true;
+        this.vp.moveLabel(el, from.dx + ddx, from.dy + ddy);
+      };
+      const up = (u: PointerEvent) => {
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", up);
+        el.removeEventListener("pointercancel", up);
+        if (!sliding || u.type === "pointercancel") return;
+        el.dataset.slid = "1";
+        c.glyphAt = [Math.round(from.dx + u.clientX - from.x), Math.round(from.dy + u.clientY - from.y)];
+        this.hooks.commit("Move symbol");
+        this.render();
+      };
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up);
+      el.addEventListener("pointercancel", up);
+    });
   }
 }
 

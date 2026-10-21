@@ -1367,6 +1367,24 @@ body.busy #status-pill .dot {
   pointer-events: none;
   overflow: hidden;
 }
+/* Arrows from a constraint symbol set apart to what it holds. */
+.leaders {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.leaders line {
+  stroke: var(--muted);
+  stroke-width: 1.2;
+}
+.leaders marker path {
+  fill: var(--muted);
+}
+.sk-label.glyph {
+  touch-action: none;
+}
 .sk-label {
   position: absolute;
   left: 0;
