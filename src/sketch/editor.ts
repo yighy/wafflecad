@@ -1802,7 +1802,7 @@ export class SketchEditor implements PointerTool {
       el.textContent = isDim ? dimText(c) : constraintLabel(c);
       el.title = c.type;
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
-      if (!isDim) this.slideGlyph(el, c);
+      this.slideGlyph(el, c);
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         // The end of a slide is not a tap.
@@ -1814,6 +1814,7 @@ export class SketchEditor implements PointerTool {
         if (again && c.glyphAt) {
           delete c.glyphAt;
           this.hooks.commit("Symbol back in place");
+          if (isDim) return void this.render();
         }
         if (isDim && !this.selection.size) return void this.editDimension(c);
         if (this.selection.has(c.id)) this.selection.delete(c.id);
@@ -1833,9 +1834,9 @@ export class SketchEditor implements PointerTool {
         dx = 14 + (k - 1) * 22;
         dy = -14;
       }
-      // A symbol slid by hand stays where it was put, with its arrow; the others keep off the points.
-      if (!isDim && c.glyphAt) items.push({ el, at: this.toWorld(at), dx: c.glyphAt[0], dy: c.glyphAt[1], leader: true });
-      else items.push({ el, at: this.toWorld(at), dx, dy, avoid: !isDim });
+      // A label slid by hand stays where it was put, with its arrow; the others keep off the points.
+      if (c.glyphAt) items.push({ el, at: this.toWorld(at), dx: c.glyphAt[0], dy: c.glyphAt[1], leader: true });
+      else items.push({ el, at: this.toWorld(at), dx, dy, avoid: true });
     }
     if (this.hvHint && this.cursor) {
       const el = document.createElement("div");

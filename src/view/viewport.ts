@@ -1102,9 +1102,11 @@ export class Viewport {
    */
   setLabels(items: LabelItem[], clear: THREE.Vector3[] = []) {
     for (const l of this.labels) l.el.remove();
-    this.labels = items.map((i) => ({ el: i.el, at: i.at, dx: i.dx ?? 0, dy: i.dy ?? 0, leader: !!i.leader, avoid: !!i.avoid }));
+    this.labels = items.map((i) => ({ el: i.el, at: i.at, dx: i.dx ?? 0, dy: i.dy ?? 0, leader: !!i.leader, avoid: !!i.avoid, w: 0, h: 0 }));
     this.keepClear = clear;
     for (const l of this.labels) this.overlay.appendChild(l.el);
+    // Measured once: a long dimension ("width / 2 = 20") keeps off the points along all its length.
+    for (const l of this.labels) [l.w, l.h] = [l.el.offsetWidth, l.el.offsetHeight];
     this.placeLabels();
   }
 
@@ -1118,43 +1120,51 @@ export class Viewport {
 
   private placeLabels() {
     const clear = this.keepClear.map((p) => this.toScreen(p));
-    const taken: [number, number][] = [];
-    const lines: [number, number, number, number][] = [];
-    // Far enough from a point's centre that the point shows whole; labels apart from each other.
-    const free = (x: number, y: number) => clear.every(([px, py]) => Math.hypot(px - x, py - y) > 15) && taken.every(([tx, ty]) => Math.hypot(tx - x, ty - y) > 20);
+    const taken: [number, number, number, number][] = [];
+    const lines: [number, number, number, number, number, number][] = [];
     for (const l of this.labels) {
       const [ax, ay] = this.toScreen(l.at);
+      const [hw, hh] = [l.w / 2, l.h / 2];
       let { dx, dy } = l;
       let apart = l.leader;
       if (l.avoid) {
+        // Its box keeps far enough from a point's centre that the point shows whole, and off the
+        // other labels.
+        const free = (x: number, y: number) =>
+          clear.every(([px, py]) => Math.abs(px - x) > hw + 5 || Math.abs(py - y) > hh + 5) &&
+          taken.every(([tx, ty, tw, th]) => Math.abs(tx - x) > hw + tw + 2 || Math.abs(ty - y) > hh + th + 2);
         if (!free(ax + dx, ay + dy)) {
-          // Round its point, nearest angles first, then further out.
+          // Round its point, nearest angles first (from above when it sits on the point), then
+          // further out; a wide label goes round on a wider path.
           const r0 = Math.max(Math.hypot(dx, dy), 18);
-          const a0 = Math.atan2(dy, dx);
+          const a0 = dx || dy ? Math.atan2(dy, dx) : -Math.PI / 2;
+          const [ex, ey] = [Math.max(hw - 11, 0), Math.max(hh - 11, 0)];
           search: for (const r of [r0, r0 + 14, r0 + 28, r0 + 44])
-            for (let k = 1; k < 16; k++) {
+            for (let k = 0; k < 16; k++) {
               const a = a0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 8);
-              if (free(ax + Math.cos(a) * r, ay + Math.sin(a) * r)) {
-                [dx, dy, apart] = [Math.cos(a) * r, Math.sin(a) * r, true];
+              const [x, y] = [Math.cos(a) * (r + ex), Math.sin(a) * (r + ey)];
+              if (free(ax + x, ay + y)) {
+                [dx, dy, apart] = [x, y, true];
                 break search;
               }
             }
         }
-        taken.push([ax + dx, ay + dy]);
+        taken.push([ax + dx, ay + dy, hw, hh]);
       }
       l.el.style.transform = `translate(${ax + dx}px, ${ay + dy}px) translate(-50%, -50%)`;
       l.el.dataset.dx = String(dx);
       l.el.dataset.dy = String(dy);
-      if (apart) lines.push([ax + dx, ay + dy, ax, ay]);
+      if (apart) lines.push([ax + dx, ay + dy, ax, ay, hw, hh]);
     }
     // Arrows from the label's edge to just short of its point.
     const g = this.leaders.lastElementChild!;
     g.innerHTML = lines
-      .map(([x1, y1, x2, y2]) => {
+      .map(([x1, y1, x2, y2, hw, hh]) => {
         const len = Math.hypot(x2 - x1, y2 - y1);
-        if (len < 22) return "";
         const [ux, uy] = [(x2 - x1) / len, (y2 - y1) / len];
-        return `<line x1="${x1 + ux * 11}" y1="${y1 + uy * 11}" x2="${x2 - ux * 5}" y2="${y2 - uy * 5}" marker-end="url(#leader-tip)"/>`;
+        const edge = Math.min(hw / Math.max(Math.abs(ux), 1e-6), hh / Math.max(Math.abs(uy), 1e-6)) + 2;
+        if (len - edge < 12) return "";
+        return `<line x1="${x1 + ux * edge}" y1="${y1 + uy * edge}" x2="${x2 - ux * 5}" y2="${y2 - uy * 5}" marker-end="url(#leader-tip)"/>`;
       })
       .join("");
   }
@@ -1168,7 +1178,7 @@ interface LabelItem {
   leader?: boolean;
   avoid?: boolean;
 }
-type Label = Required<LabelItem>;
+type Label = Required<LabelItem> & { w: number; h: number };
 
 export function gridStep(viewHeight: number) {
   const raw = viewHeight / 12;

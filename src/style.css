@@ -1445,7 +1445,8 @@ body.busy #status-pill .dot {
 .leaders marker path {
   fill: var(--muted);
 }
-.sk-label.glyph {
+.sk-label.glyph,
+.sk-label.dim {
   touch-action: none;
 }
 .sk-label {
