@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.webp" width="900" alt="WaffleCAD in the dark theme: a filleted bracket with a pocket, a parameter being edited on the keypad, under the Sketch, Part and Assembly bar">
+  <img src="docs/screenshot.webp" width="900" alt="WaffleCAD in the dark theme: a filleted link with two rings joined by a ribbed web, a new parameter typed on the keypad, the tools in one card per section and the history in one bar">
 </p>
 
 ## Features
