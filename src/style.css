@@ -1392,7 +1392,7 @@ body.busy #status-pill .dot {
   min-height: 46px;
   font-size: 15px;
 }
-/* Export: its formats unfold under it. */
+/* New, Export: their choices unfold under them. */
 .menu .menu-fold {
   justify-content: space-between;
 }
@@ -1779,6 +1779,40 @@ body.busy #status-pill .dot {
 }
 .projects-card header button {
   gap: 6px;
+}
+.projects-new-wrap {
+  position: relative;
+}
+.projects-new .ic:last-child {
+  transform: rotate(90deg);
+  transition: transform 0.2s;
+}
+.projects-new-wrap.open .projects-new .ic:last-child {
+  transform: rotate(-90deg);
+}
+.projects-new-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 2;
+  display: none;
+  flex-direction: column;
+  min-width: 100%;
+  padding: 6px;
+  background: var(--card);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  animation: rise 0.15s ease-out;
+}
+.projects-new-wrap.open .projects-new-menu {
+  display: flex;
+}
+.projects-card header .projects-new-menu button {
+  justify-content: flex-start;
+  background: transparent;
+  border: none;
+  min-height: 44px;
+  white-space: nowrap;
 }
 .projects-close {
   border: none;

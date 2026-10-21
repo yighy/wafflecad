@@ -4985,10 +4985,15 @@ async function showProjects() {
     document.body.appendChild(el);
   }
   el.innerHTML = `<div class="projects-card">
-    <header><h2>Projects</h2><button class="projects-open">${icon("folder", 20)}<span>Open file</span></button><button class="projects-asm">${icon("assembly", 20)}<span>New assembly</span></button><button class="primary projects-new">${icon("plus", 20)}<span>New project</span></button><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
+    <header><h2>Projects</h2><button class="projects-open">${icon("folder", 20)}<span>Open file</span></button><div class="projects-new-wrap"><button class="primary projects-new">${icon("plus", 20)}<span>New</span>${icon("chevron", 16)}</button><div class="projects-new-menu"><button data-new="project">${icon("extrude", 20)}<span>Project</span></button><button data-new="assembly">${icon("assembly", 20)}<span>Assembly</span></button></div></div><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
     <div class="projects-grid"></div></div>`;
-  el.querySelector<HTMLElement>(".projects-new")!.onclick = () => void newProject();
-  el.querySelector<HTMLElement>(".projects-asm")!.onclick = () => void newAssembly();
+  // New: a project or an assembly, chosen in a small list under the button.
+  const wrap = el.querySelector<HTMLElement>(".projects-new-wrap")!;
+  wrap.querySelector<HTMLElement>(".projects-new")!.onclick = () => wrap.classList.toggle("open");
+  for (const b of wrap.querySelectorAll<HTMLElement>("[data-new]")) b.onclick = () => void (b.dataset.new === "assembly" ? newAssembly() : newProject());
+  el.querySelector(".projects-card")!.addEventListener("pointerdown", (e) => {
+    if (!wrap.contains(e.target as Node)) wrap.classList.remove("open");
+  });
   el.querySelector<HTMLElement>(".projects-open")!.onclick = openFile;
   el.querySelector<HTMLElement>(".projects-close")!.onclick = closeProjects;
   const grid = el.querySelector(".projects-grid")!;
@@ -5091,52 +5096,60 @@ function setTheme(theme: Prefs["theme"]) {
 
 function setupMenu() {
   const menu = $("#menu-panel");
-  const items: [string, () => void][] = [
+  type Item = [string, () => void];
+  // An entry with a list unfolds its choices in place.
+  const items: [string, (() => void) | Item[]][] = [
     ["Projects", () => void showProjects()],
-    ["New project", () => void newProject()],
-    ["New assembly", () => void newAssembly()],
+    [
+      "New",
+      [
+        ["Project", () => void newProject()],
+        ["Assembly", () => void newAssembly()],
+      ],
+    ],
     ["Open file…", openFile],
     ["Save file (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`)],
     ["Import STEP…", () => void importStep()],
-    ["Export", () => {}],
+    [
+      "Export",
+      (
+        [
+          ["step", "STEP"],
+          ["stl", "STL"],
+          ["3mf", "3MF"],
+          ["plate", "3MF plate"],
+        ] as const
+      ).map(([format, label]): Item => [label, () => exportFile(format)]),
+    ],
     ["Light / dark theme", () => setTheme(prefs.theme === "light" ? "dark" : "light")],
     ["About", () => $("#about").classList.add("open")],
   ];
-  // Export unfolds its formats in place.
-  const formats = document.createElement("div");
-  formats.className = "menu-sub";
-  const inner = document.createElement("div");
-  for (const [format, label] of [
-    ["step", "STEP"],
-    ["stl", "STL"],
-    ["3mf", "3MF"],
-    ["plate", "3MF plate"],
-  ] as const) {
+  const run = (fn: () => void) => () => {
+    menu.classList.remove("open");
+    fn();
+  };
+  for (const [label, act] of items) {
     const b = document.createElement("button");
     b.textContent = label;
-    b.onclick = () => {
-      menu.classList.remove("open");
-      formats.classList.remove("open");
-      exportFile(format);
-    };
-    inner.appendChild(b);
-  }
-  formats.appendChild(inner);
-  for (const [label, run] of items) {
-    const b = document.createElement("button");
-    b.textContent = label;
-    if (label === "Export") {
-      b.classList.add("menu-fold");
-      b.innerHTML = `<span>Export</span>${icon("chevron", 18)}`;
-      b.onclick = () => b.classList.toggle("open", formats.classList.toggle("open"));
-      menu.append(b, formats);
+    if (typeof act === "function") {
+      b.onclick = run(act);
+      menu.appendChild(b);
       continue;
     }
-    b.onclick = () => {
-      menu.classList.remove("open");
-      run();
-    };
-    menu.appendChild(b);
+    const sub = document.createElement("div");
+    sub.className = "menu-sub";
+    const inner = document.createElement("div");
+    for (const [l, fn] of act) {
+      const c = document.createElement("button");
+      c.textContent = l;
+      c.onclick = run(fn);
+      inner.appendChild(c);
+    }
+    sub.appendChild(inner);
+    b.classList.add("menu-fold");
+    b.innerHTML = `<span>${label}</span>${icon("chevron", 18)}`;
+    b.onclick = () => b.classList.toggle("open", sub.classList.toggle("open"));
+    menu.append(b, sub);
   }
   const version = document.createElement("div");
   version.className = "menu-version";
@@ -5147,8 +5160,7 @@ function setupMenu() {
   btn.onclick = (e) => {
     e.stopPropagation();
     // Opens folded again.
-    formats.classList.remove("open");
-    menu.querySelector(".menu-fold")?.classList.remove("open");
+    for (const el of menu.querySelectorAll(".menu-fold, .menu-sub")) el.classList.remove("open");
     menu.classList.toggle("open");
   };
   document.addEventListener("pointerdown", (e) => {
