@@ -29,6 +29,7 @@
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 4px 14px rgba(16, 24, 40, 0.08);
   --radius: 14px;
   --tap: 52px;
+  --tools-w: 236px;
   --gap: 12px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   color-scheme: light;
@@ -131,7 +132,8 @@ button.danger {
   top: var(--gap);
   /* --cut: shortened so the edge cuts through a tool (ui/scrollHints.ts). */
   bottom: calc(84px + var(--safe-b) + var(--cut, 0px));
-  width: 196px;
+  /* An icon, the gap and the longest label (170px), with room for the cards' shadow. */
+  width: var(--tools-w);
   overflow-y: auto;
   scrollbar-width: none;
   display: flex;
@@ -327,21 +329,44 @@ body.collapsed .tools-hint {
 .tool:active .label {
   filter: brightness(0.94);
 }
-/* A section's icons sit in one shared card (drawn by ::before); each keeps its full-height
-   cell. Labels stay separate cards, a little shorter than the row so they don't touch. */
+/* A section's icons sit in one shared card (drawn by ::before), and its labels in another
+   beside it (::after), as wide as the longest; each row keeps its full height. */
 .tool-group {
   position: relative;
   flex: none;
+  max-width: calc(100% - 6px);
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
+  align-self: flex-start;
+}
+.tool-group::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--tap) + 6px);
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--card);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  transition:
+    opacity 0.2s ease,
+    transform 0.28s ease;
+  transform-origin: left center;
+}
+body.collapsed .tool-group::after {
+  opacity: 0;
+  transform: translateX(-16px) scaleX(0.5);
 }
 #tools > .tool-group {
   pointer-events: none;
 }
 .tool-group > .tool {
   position: relative;
+  z-index: 1;
   pointer-events: auto;
+  align-self: stretch;
 }
 .tool-group::before {
   content: "";
@@ -369,7 +394,39 @@ body.collapsed .tools-hint {
   background: var(--line);
 }
 .tool-group .tool .label {
-  height: calc(100% - 6px);
+  flex: 1 1 auto;
+  background: transparent;
+  box-shadow: none;
+}
+/* Thin lines between the labels, as between the icons. */
+.tool-group .tool + .tool::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--tap) + 18px);
+  right: 12px;
+  top: 0;
+  height: 1px;
+  background: var(--line);
+  transition: opacity 0.2s;
+}
+body.collapsed .tool-group .tool + .tool::after {
+  opacity: 0;
+}
+/* The active tool's label: a dark chip inside the shared card. */
+.tool-group .tool.active .label {
+  background: var(--dark);
+  box-shadow: inset 0 0 0 4px var(--card);
+}
+.tool-group .tool:active .label {
+  background: var(--line);
+  box-shadow: inset 0 0 0 4px var(--card);
+}
+.tool-group .tool.disabled .label {
+  box-shadow: none;
+}
+.tool-group .tool.active + .tool::after,
+.tool-group .tool.active::after {
+  display: none;
 }
 /* Active and toggled icons: an inset chip inside the shared card. */
 .tool-group .tool.active .tile {
@@ -464,8 +521,8 @@ body.collapsed .section {
 #status-pill {
   position: fixed;
   top: calc(var(--gap) + 58px);
-  left: calc(196px + 2 * var(--gap));
-  max-width: calc(100vw - 196px - 140px);
+  left: calc(var(--tools-w) + 2 * var(--gap));
+  max-width: calc(100vw - var(--tools-w) - 140px);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1221,11 +1278,13 @@ body.busy #status-pill .dot {
 #chips {
   flex: 0 1 auto;
   min-width: 0;
-  padding: 8px 4px;
-  margin: -8px 0;
+  padding: 4px;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  background: var(--card);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
   overflow-x: auto;
   overscroll-behavior-x: contain;
   touch-action: pan-x;
@@ -1260,18 +1319,18 @@ body.busy #status-pill .dot {
   color: var(--muted);
   font-size: 13px;
   padding: 6px 12px;
-  background: var(--card);
-  border-radius: 999px;
-  box-shadow: var(--shadow);
 }
+/* A step: a cell of the bar; the selected one is a dark chip in it. */
 .chip {
   flex: none;
-  height: 48px;
+  height: 40px;
   border: none;
-  box-shadow: var(--shadow);
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
   font-weight: 600;
   font-size: 14px;
-  padding: 0 14px;
+  padding: 0 12px;
 }
 .chip.sel {
   background: var(--dark);
@@ -1292,7 +1351,11 @@ body.busy #status-pill .dot {
   flex: none;
   color: var(--muted);
   display: flex;
-  filter: drop-shadow(0 0 2px var(--card));
+  opacity: 0.5;
+}
+.chip-sep .ic {
+  width: 12px;
+  height: 12px;
 }
 .menu-wrap {
   position: relative;
