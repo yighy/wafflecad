@@ -4,7 +4,7 @@ import * as THREE from "three";
 import type { ConstraintType, SkArc, SkConstraint, SkCurve, SkEntity, SkLine, SkPoint, SketchFeature } from "../types";
 import { DIMENSION_TYPES } from "../types";
 import type { PointerTool, Ptr } from "../view/input";
-import { V, cssVar, gridStep, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
+import { V, cssVar, gridStep, type DimLine, type LineBatch, type PointBatch, type Viewport } from "../view/viewport";
 import { ORIGIN, SketchView, constraintLabel, constraintName, deleteEntities, entityName, pointRole, fmt, isHiddenPoint, isReference, mergePoints, sampleBezier, sampleCurve, sampleEllipse, splineSpans, uid } from "./model";
 import { arcMid, findRegions, loopPolygon, pointInPolygon, sampleSegments } from "./profiles";
 import { type SelectMode, connectedContour, pathTouchesBox, regionAt, samplePoints, selectable } from "./selectModes";
@@ -1740,7 +1740,7 @@ export class SketchEditor implements PointerTool {
   }
 
   private renderLabels(v: SketchView) {
-    const items: { el: HTMLElement; at: THREE.Vector3; dx?: number; dy?: number; leader?: boolean; avoid?: boolean }[] = [];
+    const items: { el: HTMLElement; at: THREE.Vector3; dx?: number; dy?: number; leader?: boolean; avoid?: boolean; dim?: DimLine }[] = [];
     const perEntity = new Map<string, number>();
     const mid = (p: P2, q: P2, t = 0.5): P2 => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
     const anchorOf = (id: string): P2 | null => {
@@ -1763,6 +1763,9 @@ export class SketchEditor implements PointerTool {
     const sole = this.soleSelected();
     const related = sole ? new Set(this.constraintsOn(sole).map((x) => x.c.id)) : null;
     const focus = this.focused()?.id;
+    // Linear dimensions go on the outer side of the drawing by default.
+    const pts = v.points();
+    const centre: P2 = pts.length ? [pts.reduce((t, p) => t + p.x, 0) / pts.length, pts.reduce((t, p) => t + p.y, 0) / pts.length] : [0, 0];
     for (const c of this.sk.constraints) {
       const isDim = DIMENSION_TYPES.includes(c.type);
       // A fillet's virtual corner stays on both lines by itself: no glyphs unless it is selected.
@@ -1775,9 +1778,17 @@ export class SketchEditor implements PointerTool {
       /** Screen push for a radius label: outwards along the radius, off the curve. */
       let out: [number, number] | null = null;
       let at: P2 | null = null;
+      /** A linear dimension: the two points it measures between, and along which direction. */
+      let span: { p: P2; q: P2; dir: P2 } | null = null;
+      const along = (p: P2, q: P2, axis?: P2) => {
+        const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        const dir: P2 | null = axis ?? (len > 1e-9 ? [(q[0] - p[0]) / len, (q[1] - p[1]) / len] : null);
+        if (dir) span = { p, q, dir };
+        return mid(p, q);
+      };
       if (isDim) {
         const [a, b] = c.refs.map((r) => v.get(r));
-        if (c.type === "distance" && a?.type === "line" && !b) at = mid(v.xy(a.p1), v.xy(a.p2));
+        if (c.type === "distance" && a?.type === "line" && !b) at = along(v.xy(a.p1), v.xy(a.p2));
         else if (c.type === "angle" && a?.type === "line" && b?.type === "line")
           at = mid(mid(v.xy(a.p1), v.xy(a.p2)), mid(v.xy(b.p1), v.xy(b.p2)));
         else if ((c.type === "radius" || c.type === "diameter") && (a?.type === "circle" || a?.type === "arc")) {
@@ -1789,8 +1800,9 @@ export class SketchEditor implements PointerTool {
           out = len > 1e-6 ? [(mx - cx) / len, (my - cy) / len] : [0.7071, -0.7071];
         } else if (a?.type === "point" && b?.type === "line") {
           const proj = this.project({ ...b, axis: true }, v.xy(a.id), v);
-          if (proj) at = mid(v.xy(a.id), proj);
-        } else if (a?.type === "point" && b?.type === "point") at = mid(v.xy(a.id), v.xy(b.id));
+          if (proj) at = along(v.xy(a.id), proj);
+        } else if (a?.type === "point" && b?.type === "point")
+          at = along(v.xy(a.id), v.xy(b.id), c.type === "distanceX" ? [1, 0] : c.type === "distanceY" ? [0, 1] : undefined);
       } else {
         at = anchorOf(c.refs[0]);
       }
@@ -1811,8 +1823,9 @@ export class SketchEditor implements PointerTool {
         const now = performance.now();
         const again = this.lastGlyphTap?.id === c.id && now - this.lastGlyphTap.t < 350;
         this.lastGlyphTap = { id: c.id, t: now };
-        if (again && c.glyphAt) {
+        if (again && (c.glyphAt || c.dimOff !== undefined)) {
           delete c.glyphAt;
+          delete c.dimOff;
           this.hooks.commit("Symbol back in place");
           if (isDim) return void this.render();
         }
@@ -1834,8 +1847,20 @@ export class SketchEditor implements PointerTool {
         dx = 14 + (k - 1) * 22;
         dy = -14;
       }
+      const sp = span as { p: P2; q: P2; dir: P2 } | null;
+      if (sp) {
+        // Drawn as on a drawing, away from what it measures (where it was slid, or outwards).
+        const side: P2 = [-sp.dir[1], sp.dir[0]];
+        const m = mid(sp.p, sp.q);
+        const outwards = (m[0] - centre[0]) * side[0] + (m[1] - centre[1]) * side[1] >= 0 ? 1 : -1;
+        const w = (p: P2) => this.toWorld(p);
+        const a = w(sp.p);
+        const dir = w([sp.p[0] + sp.dir[0], sp.p[1] + sp.dir[1]]).sub(a).normalize();
+        const sideW = w([sp.p[0] + side[0], sp.p[1] + side[1]]).sub(a).normalize();
+        items.push({ el, at: this.toWorld(at), dim: { a, b: w(sp.q), dir, side: sideW, off: c.dimOff ?? 24 * outwards } });
+      }
       // A label slid by hand stays where it was put, with its arrow; the others keep off the points.
-      if (c.glyphAt) items.push({ el, at: this.toWorld(at), dx: c.glyphAt[0], dy: c.glyphAt[1], leader: true });
+      else if (c.glyphAt) items.push({ el, at: this.toWorld(at), dx: c.glyphAt[0], dy: c.glyphAt[1], leader: true });
       else items.push({ el, at: this.toWorld(at), dx, dy, avoid: true });
     }
     if (this.hvHint && this.cursor) {
@@ -1860,13 +1885,17 @@ export class SketchEditor implements PointerTool {
   private slideGlyph(el: HTMLElement, c: SkConstraint) {
     el.addEventListener("pointerdown", (e) => {
       const from = { x: e.clientX, y: e.clientY, dx: Number(el.dataset.dx ?? 0), dy: Number(el.dataset.dy ?? 0) };
+      // A linear dimension slides across what it measures: its line comes nearer or goes further.
+      const across = el.dataset.nx !== undefined ? { nx: Number(el.dataset.nx), ny: Number(el.dataset.ny), off: Number(el.dataset.off) } : null;
+      const offAt = (m: PointerEvent) => across!.off + (m.clientX - from.x) * across!.nx + (m.clientY - from.y) * across!.ny;
       let sliding = false;
       el.setPointerCapture(e.pointerId);
       const move = (m: PointerEvent) => {
         const [ddx, ddy] = [m.clientX - from.x, m.clientY - from.y];
         if (!sliding && Math.hypot(ddx, ddy) < 8) return;
         sliding = true;
-        this.vp.moveLabel(el, from.dx + ddx, from.dy + ddy);
+        if (across) this.vp.setDimOffset(el, offAt(m));
+        else this.vp.moveLabel(el, from.dx + ddx, from.dy + ddy);
       };
       const up = (u: PointerEvent) => {
         el.removeEventListener("pointermove", move);
@@ -1874,8 +1903,9 @@ export class SketchEditor implements PointerTool {
         el.removeEventListener("pointercancel", up);
         if (!sliding || u.type === "pointercancel") return;
         el.dataset.slid = "1";
-        c.glyphAt = [Math.round(from.dx + u.clientX - from.x), Math.round(from.dy + u.clientY - from.y)];
-        this.hooks.commit("Move symbol");
+        if (across) c.dimOff = Math.round(offAt(u));
+        else c.glyphAt = [Math.round(from.dx + u.clientX - from.x), Math.round(from.dy + u.clientY - from.y)];
+        this.hooks.commit(across ? "Move dimension" : "Move symbol");
         this.render();
       };
       el.addEventListener("pointermove", move);

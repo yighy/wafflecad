@@ -1380,6 +1380,9 @@ body.busy #status-pill .dot {
   stroke: var(--muted);
   stroke-width: 1.2;
 }
+.leaders line.dim {
+  stroke-width: 1;
+}
 .leaders marker path {
   fill: var(--muted);
 }
@@ -1409,7 +1412,9 @@ body.busy #status-pill .dot {
   box-shadow: var(--shadow);
 }
 .sk-label.glyph {
-  background: var(--card2);
+  background: var(--card);
+  border-color: var(--line);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
   color: var(--text);
   font-size: 11px;
   padding: 2px 5px;

@@ -111,7 +111,7 @@ export class Viewport {
     container.appendChild(this.overlay);
     this.leaders = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     this.leaders.classList.add("leaders");
-    this.leaders.innerHTML = `<defs><marker id="leader-tip" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 8 4 0 8z"/></marker></defs><g></g>`;
+    this.leaders.innerHTML = `<defs><marker id="leader-tip" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 8 4 0 8z"/></marker><marker id="dim-tip" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0.5 8 4 0 7.5z"/></marker></defs><g></g>`;
     this.overlay.appendChild(this.leaders);
 
     this.scene.background = new THREE.Color();
@@ -1098,11 +1098,12 @@ export class Viewport {
   /**
    * HTML labels pinned to points. `avoid`: the label moves round its point when it would cover one
    * of `clear` (or another such label); `leader`: an arrow joins it to its point. A label away from
-   * its usual place always gets the arrow, so what it belongs to stays clear.
+   * its usual place always gets the arrow, so what it belongs to stays clear. `dim`: the label is a
+   * linear dimension's value, drawn as on a drawing (see `DimLine`).
    */
   setLabels(items: LabelItem[], clear: THREE.Vector3[] = []) {
     for (const l of this.labels) l.el.remove();
-    this.labels = items.map((i) => ({ el: i.el, at: i.at, dx: i.dx ?? 0, dy: i.dy ?? 0, leader: !!i.leader, avoid: !!i.avoid, w: 0, h: 0 }));
+    this.labels = items.map((i) => ({ el: i.el, at: i.at, dx: i.dx ?? 0, dy: i.dy ?? 0, leader: !!i.leader, avoid: !!i.avoid, dim: i.dim ?? null, w: 0, h: 0 }));
     this.keepClear = clear;
     for (const l of this.labels) this.overlay.appendChild(l.el);
     // Measured once: a long dimension ("width / 2 = 20") keeps off the points along all its length.
@@ -1118,13 +1119,29 @@ export class Viewport {
     this.placeLabels();
   }
 
+  /** Moves a dimension line nearer to or further from what it measures (a dimension being slid). */
+  setDimOffset(el: HTMLElement, off: number) {
+    const l = this.labels.find((x) => x.el === el);
+    if (!l?.dim) return;
+    l.dim.off = off;
+    this.placeLabels();
+  }
+
   private placeLabels() {
     const clear = this.keepClear.map((p) => this.toScreen(p));
     const taken: [number, number, number, number][] = [];
     const lines: [number, number, number, number, number, number][] = [];
-    for (const l of this.labels) {
-      const [ax, ay] = this.toScreen(l.at);
+    const dims: string[] = [];
+    // Dimensions first: the symbols then keep off their values too.
+    for (const l of [...this.labels].sort((p, q) => Number(!!q.dim) - Number(!!p.dim))) {
       const [hw, hh] = [l.w / 2, l.h / 2];
+      if (l.dim) {
+        const [x, y] = this.placeDim(l.dim, hw, hh, dims);
+        l.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+        taken.push([x, y, hw, hh]);
+        continue;
+      }
+      const [ax, ay] = this.toScreen(l.at);
       let { dx, dy } = l;
       let apart = l.leader;
       if (l.avoid) {
@@ -1166,8 +1183,75 @@ export class Viewport {
         if (len - edge < 12) return "";
         return `<line x1="${x1 + ux * edge}" y1="${y1 + uy * edge}" x2="${x2 - ux * 5}" y2="${y2 - uy * 5}" marker-end="url(#leader-tip)"/>`;
       })
-      .join("");
+      .join("") + dims.join("");
   }
+
+  /**
+   * Draws a linear dimension as on a drawing: extension lines from the two points measured, and
+   * across them, `off` pixels away, a line with arrows broken by the value. Returns where the
+   * value goes, and keeps the screen direction a slide moves the line along on the label.
+   */
+  private placeDim(d: DimLine, hw: number, hh: number, out: string[]): [number, number] {
+    const unit = (v: THREE.Vector3, from: [number, number]): [number, number] => {
+      const [x, y] = this.toScreen(v);
+      const len = Math.hypot(x - from[0], y - from[1]) || 1;
+      return [(x - from[0]) / len, (y - from[1]) / len];
+    };
+    const A = this.toScreen(d.a);
+    const B = this.toScreen(d.b);
+    const u = unit(d.a.clone().add(d.dir), A);
+    const n = unit(d.a.clone().add(d.side), A);
+    const dot = (p: [number, number], v: [number, number]) => p[0] * v[0] + p[1] * v[1];
+    const [dA, dB] = [dot(A, n), dot(B, n)];
+    // Past the furthest of the two points (for a horizontal or vertical distance), then the offset.
+    const s = (d.off >= 0 ? Math.max(dA, dB) : Math.min(dA, dB)) + d.off;
+    const A2: [number, number] = [A[0] + n[0] * (s - dA), A[1] + n[1] * (s - dA)];
+    const B2: [number, number] = [B[0] + n[0] * (s - dB), B[1] + n[1] * (s - dB)];
+    const line = (p: [number, number], q: [number, number], extra = "") =>
+      `<line class="dim" x1="${p[0]}" y1="${p[1]}" x2="${q[0]}" y2="${q[1]}"${extra}/>`;
+    // Extension lines: from just off the point to a little past the dimension line.
+    for (const [P, P2, dP] of [
+      [A, A2, s - dA],
+      [B, B2, s - dB],
+    ] as const) {
+      if (Math.abs(dP) < 6) continue;
+      const k = Math.sign(dP);
+      out.push(line([P[0] + n[0] * k * 4, P[1] + n[1] * k * 4], [P2[0] + n[0] * k * 5, P2[1] + n[1] * k * 5]));
+    }
+    const M: [number, number] = [(A2[0] + B2[0]) / 2, (A2[1] + B2[1]) / 2];
+    const len = Math.hypot(B2[0] - A2[0], B2[1] - A2[1]);
+    // The value breaks the line; too short for that, the value sits beside it instead.
+    const gap = hw * Math.abs(u[0]) + hh * Math.abs(u[1]) + 4;
+    const tip = ' marker-start="url(#dim-tip)"';
+    let at = M;
+    if (len > 2 * gap + 16) {
+      const dirAB: [number, number] = [(B2[0] - A2[0]) / len, (B2[1] - A2[1]) / len];
+      out.push(line(A2, [M[0] - dirAB[0] * gap, M[1] - dirAB[1] * gap], tip));
+      out.push(line(B2, [M[0] + dirAB[0] * gap, M[1] + dirAB[1] * gap], tip));
+    } else {
+      out.push(line(A2, B2, `${tip} marker-end="url(#dim-tip)"`));
+      const k = d.off >= 0 ? 1 : -1;
+      const push = hw * Math.abs(n[0]) + hh * Math.abs(n[1]) + 6;
+      at = [M[0] + n[0] * k * push, M[1] + n[1] * k * push];
+    }
+    const el = this.labels.find((l) => l.dim === d)!.el;
+    el.dataset.nx = String(n[0]);
+    el.dataset.ny = String(n[1]);
+    el.dataset.off = String(d.off);
+    return at;
+  }
+}
+
+/**
+ * A linear dimension between the points `a` and `b` (world), measured along `dir`; its line runs
+ * `off` screen pixels along `side` (in the sketch plane, across `dir`) past the points.
+ */
+export interface DimLine {
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  dir: THREE.Vector3;
+  side: THREE.Vector3;
+  off: number;
 }
 
 interface LabelItem {
@@ -1177,8 +1261,9 @@ interface LabelItem {
   dy?: number;
   leader?: boolean;
   avoid?: boolean;
+  dim?: DimLine;
 }
-type Label = Required<LabelItem> & { w: number; h: number };
+type Label = Required<Omit<LabelItem, "dim">> & { dim: DimLine | null; w: number; h: number };
 
 export function gridStep(viewHeight: number) {
   const raw = viewHeight / 12;

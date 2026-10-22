@@ -128,6 +128,8 @@ export interface SkConstraint {
   quiet?: boolean;
   /** Where its symbol (or a dimension's label) was slid by hand: screen pixels from the element it holds. */
   glyphAt?: [number, number];
+  /** A linear dimension's line, slid by hand: screen pixels past what it measures (negative: the other side). */
+  dimOff?: number;
 }
 
 export interface SketchFeature {
