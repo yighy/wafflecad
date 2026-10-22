@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.webp" width="900" alt="WaffleCAD in the dark theme: a filleted link with two rings joined by a ribbed web, a new parameter typed on the keypad, the tools in one card per section and the history in one bar">
+  <img src="docs/screenshot.webp" width="900" alt="WaffleCAD in the Papier Nuit theme: a filleted link with two rings joined by a ribbed web, a new parameter typed on the keypad, the tools in one card per section and the history in one bar">
 </p>
 
 ## Features
