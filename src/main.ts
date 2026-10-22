@@ -1,3 +1,4 @@
+import "@fontsource-variable/dm-sans/wght.css";
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
@@ -98,7 +99,7 @@ function savePrefs() {
 function applyPrefs() {
   document.documentElement.dataset.theme = prefs.theme;
   document.body.classList.toggle("collapsed", prefs.collapsed);
-  $<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", cssVar("--bg3d", "#e4e7eb"));
+  $<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", cssVar("--bg3d", "#efebe3"));
 }
 applyPrefs();
 

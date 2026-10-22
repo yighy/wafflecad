@@ -1,63 +1,69 @@
 /* ---------- Theme ---------- */
 
 :root {
-  --bg3d: #e4e7eb;
-  --card: #ffffff;
-  --card2: #f1f3f5;
-  --line: #dde1e6;
-  --text: #16181d;
-  --muted: #6b7280;
-  --accent: #dc4c12;
-  --accent-soft: #fde7dc;
+  /* "Papier": warm paper, fir green, very round cards. */
+  --bg3d: #efebe3;
+  --card: #fbf9f5;
+  --card2: #ece7dc;
+  --line: #e2dcd0;
+  --text: #23211d;
+  --muted: #6b655a;
+  --accent: #1f7a5a;
+  --accent-soft: #dcede4;
   --on-accent: #ffffff;
-  --dark: #16181d;
-  --on-dark: #ffffff;
-  --danger: #c92a2a;
-  --model: #eef0f3;
-  --edge: #22262d;
-  --grid: #7d8794;
-  --sk-line: #1c2128;
-  --sk-constrained: #2b8a3e;
-  --sk-construction: #c2701f;
-  --sk-selected: #1971c2;
-  --sk-hover: #e8590c;
-  --sk-origin: #e8590c;
-  --sk-fill: #4dabf7;
-  --axis-x: #e03131;
-  --axis-y: #2f9e44;
-  --axis-z: #1c7ed6;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 4px 14px rgba(16, 24, 40, 0.08);
-  --radius: 14px;
+  --dark: #23211d;
+  --on-dark: #fbf9f5;
+  --danger: #b4412e;
+  --model: #e4ddcd;
+  --edge: #4a443a;
+  --grid: #8f8573;
+  --sk-line: #23211d;
+  --sk-constrained: #2e7d46;
+  --sk-construction: #b8742a;
+  --sk-selected: #2f6fb8;
+  --sk-hover: #d9622b;
+  --sk-origin: #d9622b;
+  --sk-fill: #5b9bd5;
+  /* Y is a yellower green than the accent, so an active tool never reads as the Y axis. */
+  --axis-x: #d9382f;
+  --axis-y: #6a9a1f;
+  --axis-z: #2f6fe4;
+  --shadow: 0 1px 2px rgba(60, 50, 30, 0.06), 0 6px 20px rgba(60, 50, 30, 0.11);
+  --radius: 22px;
   --tap: 52px;
   --tools-w: 236px;
   --gap: 12px;
   --safe-b: env(safe-area-inset-bottom, 0px);
+  --font: "DM Sans Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color-scheme: light;
 }
 
+/* "Papier Nuit": warm charcoal, mint green. */
 :root[data-theme="dark"] {
-  --bg3d: #1b1e24;
-  --card: #262a32;
-  --card2: #30353f;
-  --line: #3a404b;
-  --text: #e9ecf1;
-  --muted: #9aa3b0;
-  --accent: #f76b2a;
-  --accent-soft: #4a2a1c;
-  --dark: #e9ecf1;
-  --on-dark: #16181d;
-  --danger: #ff6b6b;
-  --model: #9fb0c6;
-  --edge: #0e1013;
-  --grid: #8892a0;
-  --sk-line: #e8eef5;
-  --sk-constrained: #8ce08c;
+  --bg3d: #1b1a17;
+  --card: #26241f;
+  --card2: #36332b;
+  --line: #3b3830;
+  --text: #f3eee4;
+  --muted: #b5ad9c;
+  --accent: #4fc79a;
+  --accent-soft: #1f3a2f;
+  --on-accent: #08261b;
+  --dark: #f3eee4;
+  --on-dark: #1b1a17;
+  --danger: #f07a62;
+  --model: #cbc2ae;
+  --edge: #12110e;
+  --grid: #a39a86;
+  --sk-line: #f3eee4;
+  --sk-constrained: #86d993;
   --sk-construction: #e0a35a;
-  --sk-selected: #4cc3ff;
+  --sk-selected: #6cb8ff;
   --sk-hover: #ffb648;
   --sk-origin: #ffd43b;
-  --sk-fill: #4cc3ff;
-  --shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  --sk-fill: #6cb8ff;
+  --axis-y: #8cbf3a;
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 10px 28px rgba(0, 0, 0, 0.4);
   color-scheme: dark;
 }
 
@@ -73,7 +79,7 @@ body {
   overflow: hidden;
   background: var(--bg3d);
   color: var(--text);
-  font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 15px/1.35 var(--font);
   user-select: none;
   -webkit-user-select: none;
   overscroll-behavior: none;
@@ -84,7 +90,7 @@ button {
   color: inherit;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 16px;
   min-height: 44px;
   min-width: 44px;
   padding: 0 12px;
@@ -191,7 +197,7 @@ body.collapsed .tools-hint {
 .tool .tile,
 .tool .label {
   height: 100%;
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--card);
   box-shadow: var(--shadow);
   display: flex;
@@ -251,7 +257,7 @@ body.collapsed .tools-hint {
   height: 48px;
   padding: 0 16px 0 4px;
   border: none;
-  border-radius: 10px;
+  border-radius: 16px;
   background: transparent;
   color: var(--text);
   font-weight: 600;
@@ -260,7 +266,7 @@ body.collapsed .tools-hint {
 .fly-item .tile {
   width: 40px;
   height: 40px;
-  border-radius: 10px;
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -278,7 +284,7 @@ body.collapsed .tools-hint {
   position: fixed;
   transform: translateY(-50%);
   padding: 8px 12px;
-  border-radius: 10px;
+  border-radius: 16px;
   background: var(--dark);
   color: var(--on-dark);
   font-size: 14px;
@@ -349,29 +355,15 @@ body.collapsed .tools-hint {
   pointer-events: auto;
   align-self: stretch;
   gap: 0;
-  border-radius: 14px;
+  border-radius: 22px;
 }
 .tool-group::before {
   content: "";
   position: absolute;
   inset: 0;
   background: var(--card);
-  border-radius: 14px;
+  border-radius: 22px;
   box-shadow: var(--shadow);
-}
-/* A thin line between the icons and the names; it goes when the panel folds. */
-.tool-group::after {
-  content: "";
-  position: absolute;
-  left: var(--tap);
-  top: 12px;
-  bottom: 12px;
-  width: 1px;
-  background: var(--line);
-  transition: opacity 0.2s ease;
-}
-body.collapsed .tool-group::after {
-  opacity: 0;
 }
 .tool-group .tool .tile,
 .tool-group .tool .label {
@@ -382,31 +374,15 @@ body.collapsed .tool-group::after {
   flex: 1 1 auto;
   padding: 0 16px 0 12px;
 }
-/* Thin lines between the tools, across the whole row. */
-.tool-group .tool + .tool::before {
-  content: "";
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  top: 0;
-  height: 1px;
-  background: var(--line);
-}
-/* Not across the line between icons and names. */
-.tool-group .tool + .tool:not(.active)::before {
-  background: linear-gradient(to right, var(--line) calc(var(--tap) - 16px), transparent calc(var(--tap) - 16px) calc(var(--tap) - 8px), var(--line) calc(var(--tap) - 8px));
-}
-body.collapsed .tool-group .tool + .tool::before {
-  background: var(--line);
-}
-/* The active tool: one dark chip over its icon and name, inside the shared card. */
+/* The active tool: one accent chip over its icon and name, inside the shared card. */
 .tool-group .tool.active {
-  background: var(--dark);
+  background: var(--accent);
   box-shadow: inset 0 0 0 4px var(--card);
 }
-.tool-group .tool.active .tile {
+.tool-group .tool.active .tile,
+.tool-group .tool.active .label {
   background: transparent;
-  color: var(--on-dark);
+  color: var(--on-accent);
 }
 .tool-group .tool:active {
   background: var(--line);
@@ -420,10 +396,6 @@ body.collapsed .tool-group .tool + .tool::before {
 .tool-group .tool.on .tile {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 4px var(--card);
-}
-.tool-group .tool.active + .tool::before,
-.tool-group .tool.active::before {
-  display: none;
 }
 #collapse {
   flex: none;
@@ -468,7 +440,7 @@ body.collapsed .section {
   display: flex;
   gap: 3px;
   padding: 4px;
-  border-radius: 14px;
+  border-radius: 22px;
   background: color-mix(in srgb, var(--card2) 88%, transparent);
   backdrop-filter: blur(8px);
   box-shadow: var(--shadow);
@@ -480,7 +452,7 @@ body.collapsed .section {
   min-height: 40px;
   padding: 0 16px;
   border: none;
-  border-radius: 10px;
+  border-radius: 16px;
   background: transparent;
   color: var(--muted);
   font-weight: 600;
@@ -590,7 +562,7 @@ body.busy #status-pill .dot {
   stroke-width: 2;
 }
 .gizmo-bubble text {
-  font: 700 13px system-ui, sans-serif;
+  font: 700 13px var(--font);
   pointer-events: none;
 }
 .gizmo-bubble.pos circle {
@@ -611,7 +583,7 @@ body.busy #status-pill .dot {
 #timeline .history {
   display: flex;
   background: var(--card);
-  border-radius: 14px;
+  border-radius: 22px;
   box-shadow: var(--shadow);
 }
 #view-buttons {
@@ -626,24 +598,6 @@ body.busy #status-pill .dot {
   border: none;
   background: transparent;
   box-shadow: none;
-}
-#view-buttons button + button::before,
-#timeline .history button + button::before {
-  content: "";
-  position: absolute;
-  background: var(--line);
-}
-#view-buttons button + button::before {
-  left: 10px;
-  right: 10px;
-  top: 0;
-  height: 1px;
-}
-#timeline .history button + button::before {
-  top: 10px;
-  bottom: 10px;
-  left: 0;
-  width: 1px;
 }
 #view-buttons button:active,
 #timeline .history button:active {
@@ -665,7 +619,7 @@ body.busy #status-pill .dot {
   flex-direction: column;
   gap: 4px;
   background: var(--card);
-  border-radius: 16px;
+  border-radius: 20px;
   box-shadow: var(--shadow);
   z-index: 25;
   transform-origin: top right;
@@ -699,7 +653,7 @@ body.busy #status-pill .dot {
   left: 0;
   right: 0;
   top: 0;
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--accent-soft);
   transition:
     transform 0.24s cubic-bezier(0.3, 1.25, 0.5, 1),
@@ -766,7 +720,7 @@ body.busy #status-pill .dot {
   scrollbar-width: none;
   z-index: 12;
   background: var(--card);
-  border-radius: 18px;
+  border-radius: 26px;
   box-shadow: var(--shadow);
   padding: 14px;
 }
@@ -839,7 +793,7 @@ body.busy #status-pill .dot {
   justify-content: space-between;
   gap: 12px;
   padding: 7px 10px;
-  border-radius: 10px;
+  border-radius: 16px;
   background: var(--card2);
   font-size: 14px;
 }
@@ -853,7 +807,7 @@ body.busy #status-pill .dot {
   margin: 0 0 8px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--card2);
   color: var(--text);
   font: inherit;
@@ -896,7 +850,7 @@ body.busy #status-pill .dot {
   align-items: stretch;
   gap: 4px;
   margin-bottom: 4px;
-  border-radius: 10px;
+  border-radius: 16px;
   background: var(--card2);
 }
 .con-row.on {
@@ -1031,12 +985,14 @@ body.busy #status-pill .dot {
 .kp-note:empty {
   display: none;
 }
+/* The value being typed: the keypad's screen, a filled field with the value in the accent. */
 .kp-display {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border: 1.5px solid var(--line);
-  border-radius: 12px;
+  background: var(--card2);
+  border: none;
+  border-radius: 16px;
   padding: 10px 14px;
   min-height: 62px;
 }
@@ -1046,13 +1002,15 @@ body.busy #status-pill .dot {
   font-weight: 600;
 }
 .kp-value {
-  font: 600 30px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--accent);
+  font: 600 34px/1 var(--font);
+  font-variant-numeric: tabular-nums;
   display: flex;
   align-items: baseline;
   gap: 6px;
 }
 .kp-expr.fresh {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: 4px;
 }
 .kp-unit {
@@ -1090,7 +1048,7 @@ body.busy #status-pill .dot {
 }
 .kp-keys button {
   height: 52px;
-  font: 500 22px ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font: 500 22px var(--font);
   background: var(--card2);
   border: none;
 }
@@ -1106,7 +1064,7 @@ body.busy #status-pill .dot {
 .seg {
   display: flex;
   background: var(--card2);
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 3px;
   gap: 3px;
 }
@@ -1263,7 +1221,7 @@ body.busy #status-pill .dot {
   align-items: center;
   gap: 2px;
   background: var(--card);
-  border-radius: 14px;
+  border-radius: 22px;
   box-shadow: var(--shadow);
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -1305,7 +1263,7 @@ body.busy #status-pill .dot {
   flex: none;
   height: 40px;
   border: none;
-  border-radius: 10px;
+  border-radius: 16px;
   background: transparent;
   box-shadow: none;
   font-weight: 600;
@@ -1350,7 +1308,7 @@ body.busy #status-pill .dot {
   min-width: 230px;
   padding: 6px;
   background: var(--card);
-  border-radius: 14px;
+  border-radius: 22px;
   box-shadow: var(--shadow);
   z-index: 30;
 }
@@ -1563,7 +1521,7 @@ body.busy #status-pill .dot {
   top: 0;
   translate: -50% 0;
   padding: 4px 10px;
-  border-radius: 10px;
+  border-radius: 16px;
   background: var(--card);
   box-shadow: var(--shadow);
   font-size: 13px;
@@ -1636,7 +1594,7 @@ body.busy #status-pill .dot {
   background: var(--dark);
   color: var(--on-dark);
   padding: 10px 16px;
-  border-radius: 12px;
+  border-radius: 16px;
   opacity: 0;
   pointer-events: none;
   transition:
@@ -1666,7 +1624,7 @@ body.busy #status-pill .dot {
 }
 .about-card {
   background: var(--card);
-  border-radius: 18px;
+  border-radius: 26px;
   padding: 24px 22px 20px;
   max-width: 400px;
   max-height: 100%;
@@ -1698,7 +1656,7 @@ body.busy #status-pill .dot {
   align-items: center;
   min-height: 40px;
   padding: 0 14px;
-  border-radius: 10px;
+  border-radius: 16px;
   background: var(--card2);
   color: var(--text);
   font-weight: 600;
@@ -1739,7 +1697,7 @@ body.busy #status-pill .dot {
   width: min(920px, 100%);
   max-height: 100%;
   background: var(--card);
-  border-radius: 18px;
+  border-radius: 26px;
   box-shadow: var(--shadow);
   animation: rise 0.18s ease-out;
   overflow: hidden;
@@ -1780,7 +1738,7 @@ body.busy #status-pill .dot {
   min-width: 100%;
   padding: 6px;
   background: var(--card);
-  border-radius: 14px;
+  border-radius: 22px;
   box-shadow: var(--shadow);
   animation: rise 0.15s ease-out;
 }
@@ -1810,7 +1768,7 @@ body.busy #status-pill .dot {
 .project-card {
   display: flex;
   flex-direction: column;
-  border-radius: 14px;
+  border-radius: 22px;
   background: var(--card2);
   overflow: hidden;
 }
