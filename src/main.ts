@@ -3313,8 +3313,10 @@ function toggleSelectModes(anchor: HTMLElement, ed: SketchEditor) {
     el.appendChild(b);
   }
   const r = anchor.getBoundingClientRect();
-  const tools = $("#tools").getBoundingClientRect();
-  el.style.left = `${Math.max(r.right, tools.right) + 8}px`;
+  // Just past the card of Select's section, folded or not (the column itself is wider).
+  const card = (anchor.closest(".tool-group") ?? anchor).getBoundingClientRect();
+  el.style.left = `${Math.max(r.right, card.right) + 8}px`;
+  // Its first row level with the Select tool.
   el.style.top = `${r.top}px`;
   document.body.appendChild(el);
   // Below the screen's edge it opens upwards.

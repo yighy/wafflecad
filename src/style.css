@@ -239,11 +239,9 @@ body.collapsed .tools-hint {
   z-index: 30;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px;
+  padding: 0;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--card2) 92%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--card);
   box-shadow: var(--shadow);
   animation: fly-in 0.16s ease-out;
 }
@@ -253,35 +251,34 @@ body.collapsed .tools-hint {
     transform: translateX(-6px);
   }
 }
+/* The modes: rows of one card, as in the tool column; the current one is an accent chip. */
 .fly-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 48px;
-  padding: 0 16px 0 4px;
+  gap: 0;
+  height: var(--tap);
+  padding: 0 18px 0 0;
   border: none;
-  border-radius: 16px;
+  border-radius: 22px;
   background: transparent;
   color: var(--text);
   font-weight: 600;
   justify-content: flex-start;
 }
 .fly-item .tile {
-  width: 40px;
-  height: 40px;
-  border-radius: 16px;
+  width: var(--tap);
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--card);
+}
+.fly-item .label {
+  padding-left: 2px;
 }
 .fly-item.on {
-  background: var(--card);
-  box-shadow: var(--shadow);
-}
-.fly-item.on .tile {
   background: var(--accent);
   color: var(--on-accent);
+  box-shadow: inset 0 0 0 4px var(--card);
 }
 #tool-bubble {
   position: fixed;
