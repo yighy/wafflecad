@@ -726,9 +726,11 @@ body.busy #status-pill .dot {
 }
 /* Grab bar: the panel (and its keypad) can be dragged anywhere. */
 .panel-grip {
-  height: 22px;
-  margin: -8px -8px 6px;
+  height: 26px;
+  margin: -8px -8px 4px;
   display: flex;
+  flex-direction: column;
+  gap: 4px;
   align-items: center;
   justify-content: center;
   cursor: grab;
@@ -741,11 +743,45 @@ body.busy #status-pill .dot {
   border-radius: 3px;
   background: var(--line);
 }
+/* A small chevron under the bar: the panel folds (up) or unfolds (down) with a tap there. */
+.panel-grip::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border: solid var(--line);
+  border-width: 1.5px 1.5px 0 0;
+  transform: translateY(1px) rotate(-45deg);
+  transition: transform 0.2s ease;
+}
+#panel.folded .panel-grip::after {
+  border-color: var(--muted);
+  opacity: 0.7;
+  transform: translateY(-2px) rotate(135deg);
+}
 #panel.dragging {
   opacity: 0.92;
 }
 #panel.dragging .panel-grip {
   cursor: grabbing;
+}
+#panel {
+  transition: opacity 0.15s ease;
+}
+/* A press held on the view: the panel fades and lets it through. */
+#panel.see-through {
+  opacity: 0.2;
+  pointer-events: none;
+}
+/* Folded: only the title, and the value with Cancel / Confirm while an operation runs. */
+#panel.folded #panel-content > :not(.p-head),
+#panel.folded .keypad > :not(.kp-head, .kp-display, .kp-foot) {
+  display: none !important;
+}
+#panel.folded .kp-display {
+  margin-bottom: 10px;
+}
+#panel.folded .panel-grip::before {
+  background: var(--accent);
 }
 #panel:has(#panel-content:empty):not(.keypad-open) {
   display: none;

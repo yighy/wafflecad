@@ -72,6 +72,10 @@ interface Prefs {
   collapsed: boolean;
   /** Where the user dragged the side panel (top-left corner, CSS px); null = default place. */
   panelPos: { x: number; y: number } | null;
+  /** The side panel is folded to its title (and its Cancel / Confirm). */
+  panelFolded: boolean;
+  /** How to unfold the panel was said once, the first time it was folded. */
+  panelFoldTold: boolean;
   perspective: boolean;
   display: DisplayMode;
   /** The project open last. */
@@ -83,7 +87,7 @@ interface Prefs {
   /** Which constraint symbols a sketch shows. */
   glyphs: SketchEditor["glyphs"];
 }
-const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, perspective: false, display: "shaded-edges", project: null, selectMode: "box", constraintsFolded: false, glyphs: "all" };
+const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, panelFolded: false, panelFoldTold: false, perspective: false, display: "shaded-edges", project: null, selectMode: "box", constraintsFolded: false, glyphs: "all" };
 try {
   Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
 } catch {
@@ -1416,8 +1420,11 @@ function endDrag(keep: boolean) {
   commit();
 }
 
-/** A finger on a part (not a fixed one) drags it across the view. */
-let fingerDrag: { id: string; plane: THREE.Plane; last: THREE.Vector3; x0: number; y0: number; moved: boolean } | null = null;
+/**
+ * A finger on a part (not a fixed one) slides it across the table: it keeps its height (Z), which
+ * only the gizmo's Z arrow or the keypad change.
+ */
+let fingerDrag: { id: string; plane: THREE.Plane; flat: boolean; last: THREE.Vector3; x0: number; y0: number; moved: boolean } | null = null;
 
 function fingerDown(p: Ptr) {
   fingerDrag = null;
@@ -1428,7 +1435,12 @@ function fingerDown(p: Ptr) {
   if (!hit || !inst || inst.fixed) return;
   const at = new THREE.Vector3(...hit.point);
   const toEye = vp.camera.getWorldDirection(new THREE.Vector3()).negate();
-  fingerDrag = { id: inst.id, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(toEye, at), last: at, x0: p.x, y0: p.y, moved: false };
+  // On a level plane through the point touched, so the part follows the finger exactly; seen
+  // nearly edge-on that plane would make small moves jump far, so then on an upright plane facing
+  // the eye, its height change dropped.
+  const flat = Math.abs(toEye.z) > 0.26;
+  const normal = flat ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(toEye.x, toEye.y, 0).normalize();
+  fingerDrag = { id: inst.id, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, at), flat, last: at, x0: p.x, y0: p.y, moved: false };
 }
 
 function fingerMove(p: Ptr) {
@@ -1446,7 +1458,9 @@ function fingerMove(p: Ptr) {
   }
   const to = vp.ray(p.x, p.y).ray.intersectPlane(f.plane, new THREE.Vector3());
   if (!to) return;
-  dragBy(new THREE.Matrix4().makeTranslation(to.clone().sub(f.last)));
+  const step = to.clone().sub(f.last);
+  if (!f.flat) step.z = 0;
+  dragBy(new THREE.Matrix4().makeTranslation(step));
   f.last = to;
 }
 
@@ -5195,9 +5209,10 @@ function placePanel() {
 function setupPanelDrag() {
   const panel = $("#panel");
   const grip = panel.querySelector<HTMLElement>(".panel-grip")!;
-  let drag: { id: number; dx: number; dy: number } | null = null;
+  // A tap on the bar folds the panel to its title, or unfolds it; dragging the bar moves it.
+  panel.classList.toggle("folded", prefs.panelFolded);
+  let drag: { id: number; dx: number; dy: number; x: number; y: number; moved: boolean } | null = null;
   grip.addEventListener("pointerdown", (e) => {
-    if (narrow.matches) return;
     e.preventDefault();
     try {
       grip.setPointerCapture(e.pointerId);
@@ -5205,22 +5220,65 @@ function setupPanelDrag() {
       // Synthetic pointer.
     }
     const r = panel.getBoundingClientRect();
-    drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
-    panel.classList.add("dragging");
+    drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top, x: e.clientX, y: e.clientY, moved: false };
   });
   grip.addEventListener("pointermove", (e) => {
     if (!drag || drag.id !== e.pointerId) return;
+    if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 8) return;
+    // Phones show the panel as a bottom sheet: it folds, but stays in place.
+    if (narrow.matches) return;
+    drag.moved = true;
+    panel.classList.add("dragging");
     prefs.panelPos = { x: e.clientX - drag.dx, y: e.clientY - drag.dy };
     placePanel();
   });
-  const end = () => {
+  const end = (e: PointerEvent) => {
     if (!drag) return;
+    const tap = !drag.moved && e.type === "pointerup";
     drag = null;
     panel.classList.remove("dragging");
+    if (tap) {
+      prefs.panelFolded = !prefs.panelFolded;
+      panel.classList.toggle("folded", prefs.panelFolded);
+      if (prefs.panelFolded && !prefs.panelFoldTold) {
+        prefs.panelFoldTold = true;
+        toast("Panel folded: tap the bar to unfold it");
+      }
+    }
     savePrefs();
   };
   grip.addEventListener("pointerup", end);
   grip.addEventListener("pointercancel", end);
+  // While a finger or the pen is held on the view (a handle dragged, a face pulled, a part moved,
+  // a line drawn, a box swept, the view turned), the panel fades and lets the press through, so
+  // what lies under it shows. Caught on the way down: handles stop the press from bubbling.
+  const view = $("#view");
+  let held: { id: number; x: number; y: number; timer: number } | null = null;
+  const seeThrough = (on: boolean) => panel.classList.toggle("see-through", on);
+  view.addEventListener(
+    "pointerdown",
+    (e) => {
+      if ((e.target as HTMLElement).closest("button") || held) return;
+      held = { id: e.pointerId, x: e.clientX, y: e.clientY, timer: window.setTimeout(() => seeThrough(true), 250) };
+    },
+    true,
+  );
+  // Moves and the release are caught on the way down too, for the same reason.
+  window.addEventListener(
+    "pointermove",
+    (e) => {
+      if (held?.id === e.pointerId && Math.hypot(e.clientX - held.x, e.clientY - held.y) > 6) seeThrough(true);
+    },
+    true,
+  );
+  const release = (e: PointerEvent) => {
+    if (held?.id !== e.pointerId) return;
+    clearTimeout(held.timer);
+    held = null;
+    seeThrough(false);
+  };
+  window.addEventListener("pointerup", release, true);
+  window.addEventListener("pointercancel", release, true);
   // Double tap on the bar puts the panel back in its default place.
   grip.addEventListener("dblclick", () => {
     prefs.panelPos = null;
