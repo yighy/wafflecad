@@ -3195,8 +3195,12 @@ const EXPORTS: [ExportFormat, string][] = [
   ["plate", "3MF plate"],
 ];
 
+/** Downloads a copy of the project, dated so copies never take each other's name and sort in order. */
 function saveFile() {
-  download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`);
+  const t = new Date();
+  const two = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${t.getFullYear()}-${two(t.getMonth() + 1)}-${two(t.getDate())}_${two(t.getHours())}${two(t.getMinutes())}`;
+  download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}_${stamp}.waffle.json`);
 }
 
 function renderWorkspace() {
@@ -5116,7 +5120,9 @@ function openFile() {
     try {
       const d = asDocument(JSON.parse(await f.text()));
       if (!d) throw new Error("not a WaffleCAD file");
-      await createProject(f.name.replace(/(\.waffle)?\.(json|waffle|tcad)$/i, "") || "Model", d);
+      // A copy's date ("Model 1_2026-10-25_1842") is not part of the project's name.
+      const name = f.name.replace(/(\.waffle)?\.(json|waffle|tcad)$/i, "").replace(/[ _]\d{4}-\d{2}-\d{2}[ _]\d{4}$/, "");
+      await createProject(name || "Model", d);
       closeProjects();
     } catch (e) {
       toast("Cannot open this file: " + (e instanceof Error ? e.message : e));
