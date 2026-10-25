@@ -3,7 +3,7 @@
 :root {
   /* "Papier": warm paper, fir green, very round cards. */
   --bg3d: #efebe3;
-  --card: #fbf9f5;
+  --card: #f6f2ea;
   --card2: #ece7dc;
   --line: #e2dcd0;
   --text: #23211d;
@@ -30,7 +30,8 @@
   --axis-x: #d9382f;
   --axis-y: #6a9a1f;
   --axis-z: #2f6fe4;
-  --shadow: 0 1px 2px rgba(60, 50, 30, 0.06), 0 6px 20px rgba(60, 50, 30, 0.11);
+  /* A hairline edge first: the cards are close to the paper, so it keeps them crisp. */
+  --shadow: 0 0 0 1px rgba(35, 33, 29, 0.08), 0 1px 2px rgba(60, 50, 30, 0.06), 0 6px 20px rgba(60, 50, 30, 0.1);
   --radius: 22px;
   --tap: 52px;
   --tools-w: 236px;
@@ -430,6 +431,52 @@ body.collapsed .section {
 
 /* ---------- Status pill ---------- */
 
+/* The top bar: the file actions, as icons. */
+#workspace .ws-btn {
+  color: var(--text);
+  padding: 0 12px;
+  gap: 2px;
+}
+/* Icons only: the name shows as the button's tip. */
+#workspace .ws-btn span {
+  display: none;
+}
+#workspace .ws-btn.has-list {
+  position: relative;
+}
+#workspace .ws-btn.has-list::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  bottom: 7px;
+  border: 3px solid transparent;
+  border-right-color: currentColor;
+  border-bottom-color: currentColor;
+  opacity: 0.5;
+}
+#bar-menu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 6px;
+  border-radius: 20px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  animation: rise 0.15s ease-out;
+}
+#bar-menu button {
+  justify-content: flex-start;
+  border: none;
+  background: transparent;
+  min-height: 44px;
+  border-radius: 14px;
+  font-weight: 600;
+}
+#bar-menu button:active {
+  background: var(--card2);
+}
 /* Sketch · Part · Assembly: where you are, and the way to the others. */
 #workspace {
   position: fixed;
@@ -441,8 +488,7 @@ body.collapsed .section {
   gap: 3px;
   padding: 4px;
   border-radius: 22px;
-  background: color-mix(in srgb, var(--card2) 88%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--card);
   box-shadow: var(--shadow);
 }
 .ws-btn {
@@ -1817,6 +1863,7 @@ body.busy #status-pill .dot {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 .project-thumb {
+  position: relative;
   aspect-ratio: 32 / 22;
   width: 100%;
   padding: 0;
@@ -1825,6 +1872,21 @@ body.busy #status-pill .dot {
   background: var(--bg3d, var(--card2));
   color: var(--muted);
   overflow: hidden;
+}
+.project-kind {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 6px;
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
 }
 .project-thumb img {
   width: 100%;
@@ -1852,6 +1914,32 @@ body.busy #status-pill .dot {
 .project-date {
   font-size: 12px;
   color: var(--muted);
+}
+/* The parts an assembly uses, or the assemblies a part is in: each name opens it. */
+/* One line of text (no flex, so the names cannot squeeze onto each other), cut by "…". */
+.project-links {
+  display: block;
+  margin: -6px 12px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-links .ic {
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+.project-links button {
+  display: inline;
+  min-height: 0;
+  min-width: 0;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
 }
 .project-rename {
   width: 100%;

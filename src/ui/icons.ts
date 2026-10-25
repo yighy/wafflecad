@@ -75,6 +75,8 @@ const P: Record<string, string> = {
   chevron: '<path d="M9 6l7 6-7 6z" fill="currentColor" fill-opacity=".14"/>',
   backspace: '<path d="M8 5h12v14H8l-6-7z" fill="currentColor" fill-opacity=".14"/><path d="M11 9l6 6M17 9l-6 6"/>',
   plus: '<circle cx="12" cy="12" r="9" fill="currentColor" fill-opacity=".14"/><path d="M12 8v8M8 12h8"/>',
+  save: '<path d="M5 3h11l3 3v13.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19.5z" fill="currentColor" fill-opacity=".14"/><path d="M8 3v5h7V3M8 21v-6h8v6"/>',
+  export: '<path d="M6 3h8l4 4v14H6z" fill="currentColor" fill-opacity=".14"/><path d="M14 3v4h4"/><path d="M12 17v-7M9 13l3-3 3 3"/>',
   info: '<circle cx="12" cy="12" r="9" fill="currentColor" fill-opacity=".14"/><path d="M12 11v6M12 7.5v.5"/>',
 };
 

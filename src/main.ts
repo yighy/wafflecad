@@ -127,7 +127,7 @@ type Mode =
   /** Lining parts up: the parts chosen, the first one staying put. */
   | { kind: "align"; ids: string[] }
   /** Combining parts into a new part: the one it is made from, and the ones it is joined with or cut by. */
-  | { kind: "combine"; target: string | null; tools: string[]; op: CombineFeature["op"]; clearance: number; replace: boolean };
+  | { kind: "combine"; target: string | null; tools: string[]; op: CombineFeature["op"]; clearance: number; replace: boolean; existing: ProjectMeta | null };
 
 /** A face or hole chosen for a mate: its plane or axis, and what to highlight. */
 interface MatePick {
@@ -1675,10 +1675,32 @@ function startCombine() {
   if (clashes) clearClashes();
   if (mode.kind === "align") endAlign();
   // The selected part, if any, is the one the new part is made from.
-  mode = { kind: "combine", target: instanceOf(selectedFeature)?.id ?? null, tools: [], op: "cut", clearance: 0, replace: false };
+  mode = { kind: "combine", target: instanceOf(selectedFeature)?.id ?? null, tools: [], op: "cut", clearance: 0, replace: false, existing: null };
   selectedFeature = null;
   showCombinePicks();
   renderAll();
+  void lookForCombined();
+}
+
+/** The part already made by a Combine from this assembly's target, if any: it can be updated. */
+async function lookForCombined() {
+  if (mode.kind !== "combine" || !project) return;
+  const m = mode;
+  const asm = project.id;
+  const target = m.target;
+  let found: ProjectMeta | null = null;
+  if (target)
+    for (const meta of (await listProjects().catch(() => [])).filter((p) => p.kind !== "assembly")) {
+      const got = await getProject(meta.id).catch(() => null);
+      if (got?.doc.features.some((f) => f.kind === "combine" && f.assembly === asm && f.target.instance === target)) {
+        found = meta;
+        break;
+      }
+    }
+  // Only if still combining the same target.
+  if (mode !== m || m.target !== target) return;
+  m.existing = found;
+  renderPanel();
 }
 
 function endCombine() {
@@ -1696,6 +1718,7 @@ function toggleCombinePart(id: string) {
   else mode.tools.push(id);
   showCombinePicks();
   renderAll();
+  void lookForCombined();
 }
 
 /** The target is marked as a selected body; the tools take the colour of what they do to it. */
@@ -1739,10 +1762,61 @@ function renderCombinePanel(el: HTMLElement, head: (title: string, sub?: string)
         ? "The parts become one solid, as the assembly places them. The result is a new part, kept up to date with the assembly."
         : "Only what it shares with the other parts is kept. The result is a new part, kept up to date with the assembly.";
   el.appendChild(hint);
+  if (m.existing) {
+    // Made before from this part: update that one rather than add another.
+    const again = document.createElement("p");
+    again.className = "p-hint";
+    again.textContent = `${m.existing.name} was made from this part already: update it, or make a new one.`;
+    el.appendChild(again);
+    const existing = m.existing;
+    actions([
+      ["close", "Cancel", endCombine],
+      ["plus", "Make a new one", () => void createCombined()],
+      ["check", `Update ${existing.name}`, () => void updateCombined(existing), "primary"],
+    ]);
+    return;
+  }
   actions([
     ["close", "Cancel", endCombine],
     ["check", "Create the part", () => void createCombined(), "primary"],
   ]);
+}
+
+/** Puts the parts and operation chosen into the part a Combine made before from the same target. */
+async function updateCombined(meta: ProjectMeta) {
+  if (mode.kind !== "combine" || !project) return;
+  const m = mode;
+  const asm = project.id;
+  const target = instanceOf(m.target);
+  if (!target) return;
+  const got = await getProject(meta.id).catch(() => null);
+  const feat = got?.doc.features.find((f): f is CombineFeature => f.kind === "combine" && f.assembly === asm && f.target.instance === target.id);
+  if (!got || !feat) return toast(`${meta.name} could not be read`);
+  Object.assign(feat, {
+    name: { cut: "Cut", add: "Join", intersect: "Intersect" }[m.op],
+    tools: [...m.tools],
+    op: m.op,
+    clearance: m.op === "cut" && m.clearance ? m.clearance : undefined,
+  });
+  try {
+    await putProject({ ...got.meta, updated: Date.now() }, got.doc);
+  } catch {
+    return toast("Could not save in this browser");
+  }
+  if (partDocs[meta.id]) partDocs[meta.id] = got.doc;
+  const replace = m.replace && target.project !== meta.id;
+  endCombine();
+  if (replace) {
+    partDocs[meta.id] = got.doc;
+    partNames[meta.id] = meta.name;
+    target.project = meta.id;
+    delete target.body;
+    commit();
+    selectedFeature = target.id;
+  }
+  sendParts();
+  renderAll();
+  toast(`${meta.name} updated`);
 }
 
 /** The operation and, for a cut, the play: segmented rows that change `c` and call `changed`. */
@@ -3113,7 +3187,92 @@ function currentWorkspace(): Workspace {
   return mode.kind === "sketch" || mode.kind === "pickPlane" ? "sketch" : isAssembly() ? "assembly" : "part";
 }
 
+/** The top bar: the file actions, as icons (their names as tips). */
+const EXPORTS: [ExportFormat, string][] = [
+  ["step", "STEP"],
+  ["stl", "STL"],
+  ["3mf", "3MF"],
+  ["plate", "3MF plate"],
+];
+
+function saveFile() {
+  download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`);
+}
+
 function renderWorkspace() {
+  const el = $("#workspace");
+  el.replaceChildren();
+  el.setAttribute("aria-label", "File");
+  // In the middle of a step, finish it first.
+  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align" || mode.kind === "combine";
+  const items: [string, string, (() => void) | [string, () => void][]][] = [
+    ["folder", "Projects", () => void showProjects()],
+    [
+      "plus",
+      "New",
+      [
+        ["Project", () => void newProject()],
+        ["Assembly", () => void newAssembly()],
+      ],
+    ],
+    ["save", "Save", saveFile],
+    [
+      "import",
+      "Import",
+      [
+        ["STEP", () => void importStep()],
+        // A drawing goes into the sketch open.
+        ...(mode.kind === "sketch" ? [["DXF / SVG", () => void importDrawing()] as [string, () => void]] : []),
+        ["WaffleCAD file (.json)", openFile],
+      ],
+    ],
+    ["export", "Export", EXPORTS.map(([f, label]): [string, () => void] => [label, () => exportFile(f)])],
+  ];
+  for (const [ic, label, act] of items) {
+    const b = document.createElement("button");
+    // A button with choices gets a small corner mark, as the Select tool does: all stay one size.
+    b.className = "ws-btn" + (typeof act === "function" ? "" : " has-list");
+    b.innerHTML = icon(ic, 20) + "<span></span>";
+    b.querySelector("span")!.textContent = label;
+    b.title = typeof act === "function" ? label : `${label}…`;
+    b.setAttribute("aria-label", label);
+    b.disabled = busy;
+    b.onclick = () => (typeof act === "function" ? act() : toggleBarMenu(b, act));
+    el.appendChild(b);
+  }
+}
+
+/** A small list of choices under a top-bar button (New, Export). */
+function toggleBarMenu(anchor: HTMLElement, choices: [string, () => void][]) {
+  const open = document.getElementById("bar-menu");
+  open?.remove();
+  if (open?.dataset.for === anchor.textContent) return;
+  const m = document.createElement("div");
+  m.id = "bar-menu";
+  m.dataset.for = anchor.textContent ?? "";
+  for (const [label, run] of choices) {
+    const c = document.createElement("button");
+    c.textContent = label;
+    c.onclick = () => {
+      m.remove();
+      run();
+    };
+    m.appendChild(c);
+  }
+  const r = anchor.getBoundingClientRect();
+  m.style.left = `${r.left}px`;
+  m.style.top = `${r.bottom + 8}px`;
+  document.body.appendChild(m);
+  const away = (e: PointerEvent) => {
+    if (m.contains(e.target as Node) || anchor.contains(e.target as Node)) return;
+    m.remove();
+    document.removeEventListener("pointerdown", away, true);
+  };
+  document.addEventListener("pointerdown", away, true);
+}
+
+/** Sketch · Part · Assembly (set aside while the file bar is tried). */
+export function renderWorkspaceTabs() {
   const el = $("#workspace");
   el.replaceChildren();
   const cur = currentWorkspace();
@@ -5014,10 +5173,53 @@ async function showProjects() {
   el.querySelector<HTMLElement>(".projects-open")!.onclick = openFile;
   el.querySelector<HTMLElement>(".projects-close")!.onclick = closeProjects;
   const grid = el.querySelector(".projects-grid")!;
-  for (const p of list) grid.appendChild(projectCard(p, list));
+  // Which parts each assembly uses (and so which assemblies use each part), and which assembly
+  // each combined part is made from.
+  const uses = new Map<string, string[]>();
+  const usedBy = new Map<string, string[]>();
+  const from = new Map<string, string[]>();
+  for (const m of list) {
+    const got = await getProject(m.id).catch(() => null);
+    if (m.kind !== "assembly") {
+      const asms = [...new Set((got?.doc.features ?? []).flatMap((f) => (f.kind === "combine" ? [f.assembly] : [])))];
+      if (asms.length) from.set(m.id, asms);
+      continue;
+    }
+    const ids = [...new Set((got?.doc.instances ?? []).map((i) => i.project))];
+    uses.set(m.id, ids);
+    for (const id of ids) usedBy.set(id, [...(usedBy.get(id) ?? []), m.id]);
+  }
+  for (const p of list) {
+    const links: [string, string[]][] =
+      p.kind === "assembly" ? [["", uses.get(p.id) ?? []]] : [["from ", from.get(p.id) ?? []], ["in ", usedBy.get(p.id) ?? []]];
+    grid.appendChild(projectCard(p, list, links, from.has(p.id)));
+  }
 }
 
-function projectCard(p: ProjectMeta, list: ProjectMeta[]) {
+/**
+ * A part renamed: the parts of assemblies still called by its old name take the new one (a part
+ * renamed in its assembly keeps its own name).
+ */
+async function renameInAssemblies(id: string, old: string, name: string, list: ProjectMeta[]) {
+  for (const m of list.filter((x) => x.kind === "assembly")) {
+    const open = project?.id === m.id;
+    const got = open ? null : await getProject(m.id).catch(() => null);
+    const d = open ? doc : got?.doc;
+    const hits = (d?.instances ?? []).filter((i) => i.project === id && i.name === old);
+    if (!d || !hits.length) continue;
+    for (const i of hits) i.name = name;
+    if (open) {
+      commit();
+      renderAll();
+    } else await putProject(got!.meta, d).catch(() => toast(`Could not update ${m.name}`));
+  }
+}
+
+/**
+ * A project's card. `links`: lines of linked projects, each after its word ("", "from ", "in "):
+ * the parts an assembly uses, the assembly a combined part comes from, the assemblies a part is in.
+ */
+function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string[]][] = [], combined = false) {
   const current = p.id === project?.id;
   const card = document.createElement("div");
   card.className = "project-card" + (current ? " current" : "");
@@ -5036,9 +5238,38 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[]) {
     img.alt = "";
     thumb.appendChild(img);
   } else thumb.innerHTML = icon(p.kind === "assembly" ? "assembly" : "extrude", 40);
+  // What kind of project it is, on its picture.
+  const kind = document.createElement("span");
+  kind.className = "project-kind";
+  const [kindIcon, kindName] = p.kind === "assembly" ? ["assembly", "Assembly"] : combined ? ["combine", "Combined"] : ["part", "Part"];
+  kind.innerHTML = icon(kindIcon, 14) + `<span>${kindName}</span>`;
+  thumb.appendChild(kind);
   const name = card.querySelector<HTMLElement>(".project-name")!;
   name.textContent = p.name;
-  card.querySelector(".project-date")!.textContent = (p.kind === "assembly" ? "Assembly · " : "") + (current ? "Open now" : ago(p.updated));
+  card.querySelector(".project-date")!.textContent = current ? "Open now" : ago(p.updated);
+  let after: Element = card.querySelector(".project-row")!;
+  for (const [word, ids] of links) {
+    const others = ids.map((id) => list.find((x) => x.id === id)).filter((x): x is ProjectMeta => !!x);
+    if (!others.length) continue;
+    // Each name opens that project.
+    const line = document.createElement("div");
+    line.className = "project-links";
+    line.innerHTML = icon(word === "from " ? "combine" : "assembly", 14) + "<span></span>";
+    line.querySelector("span")!.textContent = word;
+    others.forEach((o, i) => {
+      const a = document.createElement("button");
+      a.textContent = o.name;
+      a.title = `Open ${o.name}`;
+      a.onclick = async () => {
+        if (o.id !== project?.id) await openProject(o.id);
+        closeProjects();
+      };
+      if (i) line.append(" · ");
+      line.appendChild(a);
+    });
+    after.after(line);
+    after = line;
+  }
   const open = async () => {
     if (p.id !== project?.id) await openProject(p.id);
     closeProjects();
@@ -5060,9 +5291,12 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[]) {
       finished = true;
       const v = input.value.trim();
       if (keep && v && v !== p.name) {
+        const old = p.name;
         p.name = v;
         if (project && p.id === project.id) project.name = v;
         await putProject({ ...(project && p.id === project.id ? project : p) }).catch(() => toast("Could not rename"));
+        await renameInAssemblies(p.id, old, v, list);
+        return void showProjects();
       }
       name.textContent = p.name;
       input.replaceWith(name);
@@ -5115,29 +5349,8 @@ function setupMenu() {
   const menu = $("#menu-panel");
   type Item = [string, () => void];
   // An entry with a list unfolds its choices in place.
+  // The file actions are in the top bar; the menu keeps the theme and About.
   const items: [string, (() => void) | Item[]][] = [
-    ["Projects", () => void showProjects()],
-    [
-      "New",
-      [
-        ["Project", () => void newProject()],
-        ["Assembly", () => void newAssembly()],
-      ],
-    ],
-    ["Open file…", openFile],
-    ["Save file (.json)", () => download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}.waffle.json`)],
-    ["Import STEP…", () => void importStep()],
-    [
-      "Export",
-      (
-        [
-          ["step", "STEP"],
-          ["stl", "STL"],
-          ["3mf", "3MF"],
-          ["plate", "3MF plate"],
-        ] as const
-      ).map(([format, label]): Item => [label, () => exportFile(format)]),
-    ],
     ["Light / dark theme", () => setTheme(prefs.theme === "light" ? "dark" : "light")],
     ["About", () => $("#about").classList.add("open")],
   ];
