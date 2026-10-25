@@ -434,6 +434,8 @@ body.collapsed .section {
 /* The top bar: the file actions, as icons. */
 #workspace .ws-btn {
   color: var(--text);
+  min-height: 40px;
+  height: 40px;
   padding: 0 12px;
   gap: 2px;
 }
@@ -478,15 +480,15 @@ body.collapsed .section {
   background: var(--card2);
 }
 /* Sketch · Part · Assembly: where you are, and the way to the others. */
+/* Top left, on the line of the fold button and as tall as it: one block with the tool column. */
 #workspace {
   position: fixed;
   top: var(--gap);
-  left: 50%;
-  transform: translateX(-50%);
+  left: calc(var(--gap) + 58px);
   z-index: 11;
   display: flex;
-  gap: 3px;
-  padding: 4px;
+  gap: 0;
+  padding: 0 2px;
   border-radius: 22px;
   background: var(--card);
   box-shadow: var(--shadow);
