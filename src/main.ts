@@ -2,7 +2,7 @@ import "@fontsource-variable/dm-sans/wght.css";
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, BundledProject, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { DIMENSION_TYPES } from "./types";
 import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
@@ -3195,12 +3195,65 @@ const EXPORTS: [ExportFormat, string][] = [
   ["plate", "3MF plate"],
 ];
 
-/** Downloads a copy of the project, dated so copies never take each other's name and sort in order. */
-function saveFile() {
+/** The projects a document uses: an assembly's parts, a combined part's assembly and parts. */
+function projectsUsed(d: CadDocument): string[] {
+  const ids = (d.instances ?? []).map((i) => i.project);
+  for (const f of d.features) if (f.kind === "combine") ids.push(f.assembly, f.target.project);
+  return [...new Set(ids)];
+}
+
+/**
+ * Downloads a copy of the project, dated so copies never take each other's name and sort in order.
+ * The projects it uses go in it too, and theirs, so it opens whole on another device.
+ */
+async function saveFile() {
+  if (!project) return;
+  await flushSave();
+  const bundle: BundledProject[] = [];
+  const seen = new Set([project.id]);
+  const todo = projectsUsed(doc);
+  while (todo.length) {
+    const id = todo.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const got = await getProject(id).catch(() => null);
+    if (!got) continue;
+    bundle.push({ id, name: got.meta.name, kind: got.meta.kind, doc: got.doc });
+    todo.push(...projectsUsed(got.doc));
+  }
   const t = new Date();
   const two = (n: number) => String(n).padStart(2, "0");
   const stamp = `${t.getFullYear()}-${two(t.getMonth() + 1)}-${two(t.getDate())}_${two(t.getHours())}${two(t.getMinutes())}`;
-  download(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" }), `${fileName()}_${stamp}.waffle.json`);
+  const copy: CadDocument = bundle.length ? { ...doc, bundle } : doc;
+  download(new Blob([JSON.stringify(copy, null, 1)], { type: "application/json" }), `${fileName()}_${stamp}.waffle.json`);
+}
+
+/**
+ * A copy brought back: the projects it carries are added under new ids (never over a project
+ * already here), and every link to them follows. Returns the document to open and how many came with it.
+ */
+async function unbundle(d: CadDocument): Promise<{ doc: CadDocument; added: number }> {
+  const carried = d.bundle ?? [];
+  const main: CadDocument = { ...d };
+  delete main.bundle;
+  if (!carried.length) return { doc: main, added: 0 };
+  const ids = new Map(carried.map((b) => [b.id, newProjectId()]));
+  const relink = (x: CadDocument): CadDocument => {
+    const to = (id: string) => ids.get(id) ?? id;
+    return {
+      ...x,
+      instances: x.instances?.map((i) => ({ ...i, project: to(i.project) })),
+      features: x.features.map((f) => (f.kind === "combine" ? { ...f, assembly: to(f.assembly), target: { ...f.target, project: to(f.target.project) } } : f)),
+    };
+  };
+  const names = (await listProjects().catch(() => [])).map((p) => p.name);
+  const now = Date.now();
+  for (const b of carried) {
+    const name = freeName(b.name, names);
+    names.push(name);
+    await putProject({ id: ids.get(b.id)!, name, created: now, updated: now, kind: b.kind }, relink(b.doc));
+  }
+  return { doc: relink(main), added: carried.length };
 }
 
 function renderWorkspace() {
@@ -3334,7 +3387,7 @@ async function openPartOfAssembly(sketch: boolean) {
     else startNewSketch();
   };
   const inst = instanceOf(selectedFeature);
-  if (inst) return partDocs[inst.project] ? go(inst.project) : toast("Its project is no longer there");
+  if (inst) return partDocs[inst.project] ? go(inst.project) : toast(`${inst.name} is neither in your projects nor in this file`);
   const ids = [...new Set((doc.instances ?? []).map((i) => i.project))].filter((id) => partDocs[id]);
   if (!ids.length) return toast("Insert a part first");
   if (ids.length === 1) return go(ids[0]);
@@ -5122,7 +5175,9 @@ function openFile() {
       if (!d) throw new Error("not a WaffleCAD file");
       // A copy's date ("Model 1_2026-10-25_1842") is not part of the project's name.
       const name = f.name.replace(/(\.waffle)?\.(json|waffle|tcad)$/i, "").replace(/[ _]\d{4}-\d{2}-\d{2}[ _]\d{4}$/, "");
-      await createProject(name || "Model", d);
+      const { doc: main, added } = await unbundle(d);
+      await createProject(name || "Model", main);
+      if (added) toast(`${added} linked project${added > 1 ? "s" : ""} imported with it`);
       closeProjects();
     } catch (e) {
       toast("Cannot open this file: " + (e instanceof Error ? e.message : e));

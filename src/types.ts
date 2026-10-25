@@ -351,6 +351,19 @@ export interface CadDocument {
   instances?: PartInstance[];
   /** How the assembly's parts are tied together. */
   mates?: Mate[];
+  /**
+   * Only in a downloaded copy: the projects it uses (an assembly's parts, a combined part's
+   * assembly, and theirs in turn), so the file holds all it needs on another device.
+   */
+  bundle?: BundledProject[];
+}
+
+/** A project carried in a downloaded copy of another (see `CadDocument.bundle`). */
+export interface BundledProject {
+  id: string;
+  name: string;
+  kind?: "assembly";
+  doc: CadDocument;
 }
 
 /** A part placed in an assembly: another project, turned and then moved. */
