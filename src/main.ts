@@ -3292,9 +3292,13 @@ function renderParamsPanel(el: HTMLElement) {
     list.appendChild(t);
   };
   const own = new Set(params.map((p) => p.name));
-  const rows: [Parameter, boolean][] = [...shared.map((p): [Parameter, boolean] => [p, true]), ...params.map((p): [Parameter, boolean] => [p, false])];
+  // Shown by name (q_2 before q_10), so families of names stay together; the saved order stays as made.
+  const byName = (list: Parameter[]) => [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  const sharedRows = byName(shared);
+  const ownRows = byName(params);
+  const rows: [Parameter, boolean][] = [...sharedRows.map((p): [Parameter, boolean] => [p, true]), ...ownRows.map((p): [Parameter, boolean] => [p, false])];
   for (const [p, isCommon] of rows) {
-    if (shared.length && p === (isCommon ? shared[0] : params[0])) section(isCommon ? "Shared · every part" : "This part");
+    if (shared.length && p === (isCommon ? sharedRows[0] : ownRows[0])) section(isCommon ? "Shared · every part" : "This part");
     const row = document.createElement("div");
     row.className = "param-row";
     const main = document.createElement("button");
