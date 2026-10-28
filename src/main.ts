@@ -954,6 +954,30 @@ async function pickPart(el: HTMLElement, p: ProjectMeta) {
   }
 }
 
+/** A new, empty part, placed at the assembly's origin and opened to be drawn. */
+async function newPartHere() {
+  if (!project || !isAssembly() || isOperation(mode)) return;
+  const here = { id: project.id, name: project.name };
+  const names = (await listProjects().catch(() => [])).map((p) => p.name);
+  const now = Date.now();
+  const meta: ProjectMeta = { id: newProjectId(), name: freeName("Part", names), created: now, updated: now };
+  const d = emptyDoc();
+  try {
+    await putProject(meta, d);
+  } catch {
+    return toast("Could not save in this browser");
+  }
+  partDocs[meta.id] = d;
+  partNames[meta.id] = meta.name;
+  sendParts();
+  const inst: PartInstance = { id: uid(), project: meta.id, name: meta.name, at: [0, 0, 0], rot: [0, 0, 0], fixed: !doc.instances?.length || undefined };
+  doc.instances = [...(doc.instances ?? []), inst];
+  commit();
+  await flushSave();
+  await openProject(meta.id, here);
+  toast(`${meta.name} is in ${here.name}: draw it, then come back from Projects`);
+}
+
 /**
  * Places a part beside the others (its exact place is then set by hand). With `bodies`, each body
  * becomes a part of its own, all where the part has them.
@@ -1659,6 +1683,9 @@ function renderAlignPanel(el: HTMLElement, head: (title: string, sub?: string) =
 
 // ---------- Combine ----------
 
+/** A combine step's name, after its operation. */
+const COMBINE_NAMES: Record<CombineFeature["op"], string> = { cut: "Cut", add: "Join", intersect: "Intersect", keep: "Copy" };
+
 const COMBINE_OPS: [CombineFeature["op"], string][] = [
   ["cut", "Cut"],
   ["add", "Join"],
@@ -1667,15 +1694,24 @@ const COMBINE_OPS: [CombineFeature["op"], string][] = [
 /** Play offered for a cut (mm): none, or the usual fits of 3D printed parts. */
 const COMBINE_PLAY = [0, 0.1, 0.2, 0.3, 0.5];
 
-function startCombine() {
+/**
+ * Combine (cut, join, intersect parts into a new part) or, with `copy`, Copy as part: the parts
+ * tapped come into a new part as they are, each a body of its own, where the assembly has them.
+ */
+function startCombine(copy = false) {
   if (isOperation(mode)) return;
-  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
-  if (mode.kind === "combine") return endCombine();
+  if (!copy && (doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if (!doc.instances?.length) return toast("Insert a part first");
+  if (mode.kind === "combine") {
+    const was = mode.op === "keep";
+    endCombine();
+    if (was === copy) return;
+  }
   if (measuring) endMeasure();
   if (clashes) clearClashes();
   if (mode.kind === "align") endAlign();
   // The selected part, if any, is the one the new part is made from.
-  mode = { kind: "combine", target: instanceOf(selectedFeature)?.id ?? null, tools: [], op: "cut", clearance: 0, replace: false, existing: null };
+  mode = { kind: "combine", target: instanceOf(selectedFeature)?.id ?? null, tools: [], op: copy ? "keep" : "cut", clearance: 0, replace: false, existing: null };
   selectedFeature = null;
   showCombinePicks();
   renderAll();
@@ -1712,7 +1748,7 @@ function endCombine() {
 /** The first part tapped is the target; the next ones are tools. Tapping one again lets it go. */
 function toggleCombinePart(id: string) {
   if (mode.kind !== "combine") return;
-  if (mode.target === id) mode.target = null;
+  if (mode.target === id) mode.target = mode.op === "keep" ? (mode.tools.shift() ?? null) : null;
   else if (mode.tools.includes(id)) mode.tools = mode.tools.filter((t) => t !== id);
   else if (!mode.target) mode.target = id;
   else mode.tools.push(id);
@@ -1725,7 +1761,7 @@ function toggleCombinePart(id: string) {
 function showCombinePicks() {
   if (mode.kind !== "combine") return;
   const tools = new Set(mode.tools);
-  const colour = mode.op === "cut" ? cssVar("--danger", "#c92a2a") : mode.op === "add" ? cssVar("--accent", "#dc4c12") : cssVar("--sk-selected", "#1971c2");
+  const colour = mode.op === "cut" ? cssVar("--danger", "#c92a2a") : mode.op === "intersect" ? cssVar("--sk-selected", "#1971c2") : cssVar("--accent", "#dc4c12");
   vp.highlightFaces((lastBuild?.bodies ?? []).filter((b) => tools.has(b.id)).flatMap((b) => b.faceIds), colour);
 }
 
@@ -1733,15 +1769,22 @@ function renderCombinePanel(el: HTMLElement, head: (title: string, sub?: string)
   if (mode.kind !== "combine") return;
   const m = mode;
   const n = m.tools.length;
-  head(
-    "Combine",
-    !m.target ? "Tap the part to make the new part from" : `${partLabel(m.target)} · ${n ? `${n} part${n > 1 ? "s" : ""} to ${m.op === "cut" ? "cut away" : m.op === "add" ? "join" : "keep the overlap with"}` : "now tap the other parts"}`,
-  );
-  combineRows(el, m, () => {
-    showCombinePicks();
-    renderPanel();
-  });
-  // The new part can take the target's place here (same place, same mates).
+  if (m.op === "keep") {
+    const count = (m.target ? 1 : 0) + n;
+    head("Copy as part", count ? `${count} part${count > 1 ? "s" : ""} to copy` : "Tap the parts to copy");
+  } else {
+    head(
+      "Combine",
+      !m.target ? "Tap the part to make the new part from" : `${partLabel(m.target)} · ${n ? `${n} part${n > 1 ? "s" : ""} to ${m.op === "cut" ? "cut away" : m.op === "add" ? "join" : "keep the overlap with"}` : "now tap the other parts"}`,
+    );
+    combineRows(el, m, () => {
+      showCombinePicks();
+      renderPanel();
+    });
+  }
+  // The new part can take the target's place here (same place, same mates); not a kept set of
+  // parts, already where the assembly has them.
+  if (m.op === "keep") m.replace = false;
   const then = document.createElement("div");
   then.className = "align-row combine-row";
   then.innerHTML = `<span>Then</span><div class="seg"><button>Keep both</button><button>Replace it</button></div>`;
@@ -1752,13 +1795,15 @@ function renderCombinePanel(el: HTMLElement, head: (title: string, sub?: string)
       renderPanel();
     };
   });
-  el.appendChild(then);
+  if (m.op !== "keep") el.appendChild(then);
   const hint = document.createElement("p");
   hint.className = "p-hint";
   hint.textContent =
     m.op === "cut"
       ? "The other parts are cut out of it where the assembly places them, grown by the play for a fit. The result is a new part, kept up to date with the assembly."
-      : m.op === "add"
+      : m.op === "keep"
+        ? "The parts tapped come into a new part as they are, each a body of its own, where the assembly places it. It is kept up to date with the assembly: add fillets or holes, or export them as one part."
+        : m.op === "add"
         ? "The parts become one solid, as the assembly places them. The result is a new part, kept up to date with the assembly."
         : "Only what it shares with the other parts is kept. The result is a new part, kept up to date with the assembly.";
   el.appendChild(hint);
@@ -1793,7 +1838,7 @@ async function updateCombined(meta: ProjectMeta) {
   const feat = got?.doc.features.find((f): f is CombineFeature => f.kind === "combine" && f.assembly === asm && f.target.instance === target.id);
   if (!got || !feat) return toast(`${meta.name} could not be read`);
   Object.assign(feat, {
-    name: { cut: "Cut", add: "Join", intersect: "Intersect" }[m.op],
+    name: COMBINE_NAMES[m.op],
     tools: [...m.tools],
     op: m.op,
     clearance: m.op === "cut" && m.clearance ? m.clearance : undefined,
@@ -1859,17 +1904,19 @@ function combineNames(f: CombineFeature) {
 async function createCombined() {
   if (mode.kind !== "combine" || !project) return;
   const target = instanceOf(mode.target);
-  if (!target) return toast("Tap the part to make the new part from");
-  if (!mode.tools.length) return toast("Tap at least one other part");
+  if (!target) return toast(mode.op === "keep" ? "Tap the parts to copy" : "Tap the part to make the new part from");
+  if (!mode.tools.length && mode.op !== "keep") return toast("Tap at least one other part");
   const here = { id: project.id, name: project.name };
   await flushSave();
-  const word = { cut: "cut", add: "joined", intersect: "overlap" }[mode.op];
+  const word = { cut: "cut", add: "joined", intersect: "overlap", keep: "copy" }[mode.op];
   const names = (await listProjects().catch(() => [])).map((p) => p.name);
-  const name = freeName(`${partNames[target.project] ?? target.name} (${word})`, names);
+  // A copy of several parts is named after the assembly.
+  const base = mode.op === "keep" && mode.tools.length ? here.name : (partNames[target.project] ?? target.name);
+  const name = freeName(`${base} (${word})`, names);
   const feat: CombineFeature = {
     id: uid(),
     kind: "combine",
-    name: { cut: "Cut", add: "Join", intersect: "Intersect" }[mode.op],
+    name: COMBINE_NAMES[mode.op],
     assembly: here.id,
     target: { instance: target.id, project: target.project, body: target.body },
     tools: [...mode.tools],
@@ -3734,10 +3781,12 @@ function renderTools() {
   } else if (isAssembly()) {
     el.appendChild(section("Parts"));
     el.appendChild(toolRow("plus", "Insert part", () => void showPartPicker(), { key: "I" }));
+    el.appendChild(toolRow("part", "New part", () => void newPartHere()));
+    if (doc.instances?.length) el.appendChild(toolRow("copy", "Copy as part", () => startCombine(true), { active: mode.kind === "combine" && mode.op === "keep" }));
     el.appendChild(toolRow("import", "Import STEP", () => void importStep()));
     if ((doc.instances?.length ?? 0) > 1 || mode.kind === "mate") {
       el.appendChild(toolRow("align", "Align", startAlign, { active: mode.kind === "align", key: "A" }));
-      el.appendChild(toolRow("combine", "Combine", startCombine, { active: mode.kind === "combine", key: "B" }));
+      el.appendChild(toolRow("combine", "Combine", () => startCombine(), { active: mode.kind === "combine" && mode.op !== "keep", key: "B" }));
       el.appendChild(section("Mates"));
       el.appendChild(toolRow("mate", "Mate", startMate, { active: mode.kind === "mate", key: "M" }));
     }
@@ -4078,7 +4127,7 @@ function renderPanel() {
         if (f.op !== "cut") delete f.clearance;
         else if (!f.clearance) delete f.clearance;
         // A name the user gave stays; the default one follows the operation.
-        if (["Cut", "Join", "Intersect"].includes(f.name)) f.name = { cut: "Cut", add: "Join", intersect: "Intersect" }[f.op];
+        if (Object.values(COMBINE_NAMES).includes(f.name)) f.name = COMBINE_NAMES[f.op];
         commit();
         renderAll();
       });
@@ -4377,7 +4426,8 @@ function renderStatus() {
   else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
   else if (mode.kind === "place") s = `${mode.feat.name} · choose a value and type it`;
   else if (mode.kind === "align") s = mode.ids.length < 2 ? "Align · tap the parts to line up" : "Align · choose an axis and where to line them up";
-  else if (mode.kind === "combine") s = !mode.target ? "Combine · tap the part to make the new part from" : "Combine · tap the parts to join or cut it with";
+  else if (mode.kind === "combine")
+    s = mode.op === "keep" ? "Copy as part · tap the parts to copy" : !mode.target ? "Combine · tap the part to make the new part from" : "Combine · tap the parts to join or cut it with";
   else if (mode.kind === "mate") s = mode.picks.length ? "Mate · now the face or hole on the other part" : "Mate · tap a flat face, a hole or a round edge of a part";
   else if (mode.kind === "mateEdit") s = `${mode.feat.name} · facing, flush or at an angle; type the gap, or limits`;
   else if (isAssembly() && clashes) s = clashes.running ? "Checking for overlaps…" : "Interference · overlaps in red";

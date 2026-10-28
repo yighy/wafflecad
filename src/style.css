@@ -1849,6 +1849,8 @@ body.busy #status-pill .dot {
 .projects-grid {
   display: grid;
   align-items: start;
+  /* Each row as tall as its cards: with many projects the list scrolls, its cards never squeeze onto each other. */
+  grid-auto-rows: max-content;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 14px;
   padding: 6px 20px 20px;

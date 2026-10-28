@@ -459,8 +459,11 @@ function replay(doc: CadDocument) {
         if (!text) throw new Error("The imported file is missing");
         solidStep(f, readStep(text));
       } else if (f.kind === "combine") {
-        // The combined parts come in as material of this part (a body of their own at first).
-        solidStep({ id: f.id, op: "add", body: f.body }, combineSolid(f));
+        // The combined parts come in as material of this part (a body of their own at first);
+        // kept apart, each other part is a body of its own too.
+        const [first, ...apart] = combineSolids(f);
+        solidStep({ id: f.id, op: "add", body: f.body }, first);
+        apart.forEach((s, k) => bodies.set(`${f.id}-${k + 1}`, s));
       } else if (f.kind === "hole") {
         // Holes go through every body in their way (a lid and its box, drilled together).
         if (!shape) throw new Error("There is no solid yet");
@@ -566,13 +569,22 @@ function projectSolid(id: string, body?: string): Shape3D {
  * them relative to it. Cut takes each tool away (grown by the clearance first); Join adds them;
  * Intersect keeps what the target shares with any of them.
  */
-function combineSolid(f: CombineFeature): Shape3D {
+/**
+ * The combined solid, in the target's own coordinates (so it can take the target's place). With
+ * "keep", the target and each other part apart (target first), as the assembly places them.
+ */
+function combineSolids(f: CombineFeature): Shape3D[] {
   const asm = docOf(f.assembly);
   if (!asm || asm.kind !== "assembly") throw new Error("Its assembly is no longer there");
   const placed = (id: string) => asm.instances?.find((i) => i.id === id);
   const target = placed(f.target.instance);
   if (!target) throw new Error("Its part was removed from the assembly");
-  if (!f.tools.length) throw new Error("Choose at least one part to combine with");
+  if (!f.tools.length && f.op !== "keep") throw new Error("Choose at least one part to combine with");
+  if (f.op === "keep")
+    return [target, ...f.tools.map((id) => placed(id))].map((t) => {
+      if (!t) throw new Error("A part it uses was removed from the assembly");
+      return placeShape(projectSolid(t === target ? f.target.project : t.project, t === target ? f.target.body : t.body), t);
+    });
   let tools = f.tools.map((id) => {
     const t = placed(id);
     if (!t) throw new Error("A part it uses was removed from the assembly");
@@ -594,7 +606,7 @@ function combineSolid(f: CombineFeature): Shape3D {
     s = s.intersect(all);
   } else for (const t of tools) s = f.op === "add" ? s.fuse(t) : s.cut(t);
   if (!s.faces.length) throw new Error(f.op === "intersect" ? "The parts do not overlap" : "Nothing is left");
-  return s;
+  return [s];
 }
 
 /**

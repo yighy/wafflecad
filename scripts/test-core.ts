@@ -1015,6 +1015,15 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   const c = vol(derived({ op: "cut" }));
   const x = vol(derived({ op: "intersect" }));
   check("combine: join, cut and intersect two overlapping blocks", near(j.v, 1500, 1e-3) && near(c.v, 500, 1e-3) && near(x.v, 500, 1e-3), JSON.stringify([j.v, c.v, x.v, j.r.errors, c.r.errors]));
+  const kept = buildShape(derived({ op: "keep" }));
+  check("combine: keep brings each part in as a body of its own", !kept.errors.cb && kept.bodies.length === 2 && kept.bodies.every((b) => near(measureVolume(b.shape), 1000, 1e-3)), JSON.stringify([kept.bodies.length, kept.errors]));
+  setPartDocs({ p1: block(), a1: asm(place("t", "p1", [0, 0, 0], [0, 0, 90]), place("u", "p1", [10, 0, 0])) });
+  const turnedKeep = buildShape(derived({ op: "keep" }));
+  const [tlo, thi] = turnedKeep.bodies[0]?.shape.boundingBox.bounds ?? [[0, 0, 0], [0, 0, 0]];
+  check("combine: keep takes the target turned as the assembly has it", near(thi[1] - tlo[1], 20, 1e-6) && near(thi[0] - tlo[0], 10, 1e-6), JSON.stringify([tlo, thi, turnedKeep.errors]));
+  setPartDocs({ p1: block(), a1: asm(place("t", "p1", [0, 0, 0]), place("u", "p1", [10, 0, 0])) });
+  const alone = buildShape(derived({ op: "keep", tools: [] }));
+  check("combine: keep with no other part copies the target", !alone.errors.cb && alone.bodies.length === 1, JSON.stringify(alone.errors));
   const play = vol(derived({ op: "cut", clearance: 0.5 }));
   check("combine: cut with play takes the tool grown all around", near(play.v, 475, 1e-2), JSON.stringify([play.v, play.r.errors]));
 

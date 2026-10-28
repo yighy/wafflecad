@@ -309,7 +309,8 @@ export interface CombineFeature {
   target: { instance: string; project: string; body?: string };
   /** The tool parts' instances in the assembly. */
   tools: string[];
-  op: "add" | "cut" | "intersect";
+  /** "keep": no operation, each part comes in as a body of its own, where the assembly has it. */
+  op: "add" | "cut" | "intersect" | "keep";
   /** Cut: the tools first grow by this much (mm) all around, for a fit with play. */
   clearance?: number;
   /** How the result joins the part's bodies (as for an extrusion). */
