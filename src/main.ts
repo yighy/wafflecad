@@ -5504,11 +5504,62 @@ async function showProjects() {
     uses.set(m.id, ids);
     for (const id of ids) usedBy.set(id, [...(usedBy.get(id) ?? []), m.id]);
   }
+  // A part only one assembly needs (in it, or made from it) is kept under that assembly's card.
+  const members = new Map<string, ProjectMeta[]>();
+  const owned = new Set<string>();
   for (const p of list) {
-    const links: [string, string[]][] =
-      p.kind === "assembly" ? [["", uses.get(p.id) ?? []]] : [["from ", from.get(p.id) ?? []], ["in ", usedBy.get(p.id) ?? []]];
-    grid.appendChild(projectCard(p, list, links, from.has(p.id)));
+    if (p.kind === "assembly") continue;
+    const owners = new Set([...(from.get(p.id) ?? []), ...(usedBy.get(p.id) ?? [])]);
+    const [a] = owners;
+    if (owners.size !== 1 || !list.some((x) => x.id === a && x.kind === "assembly")) continue;
+    members.set(a, [...(members.get(a) ?? []), p]);
+    owned.add(p.id);
+    if (p.id === project?.id) familiesOpen.add(a);
   }
+  const linksOf = (p: ProjectMeta): [string, string[]][] =>
+    p.kind === "assembly" ? [["", uses.get(p.id) ?? []]] : [["from ", from.get(p.id) ?? []], ["in ", usedBy.get(p.id) ?? []]];
+  for (const p of list) {
+    if (owned.has(p.id)) continue;
+    const family = members.get(p.id) ?? [];
+    const card = projectCard(p, list, linksOf(p), from.has(p.id), family);
+    grid.appendChild(card);
+    if (!family.length) continue;
+    const cards = family.map((m) => {
+      const c = projectCard(m, list, linksOf(m), from.has(m.id));
+      c.classList.add("member");
+      return c;
+    });
+    const show = () => {
+      const open = familiesOpen.has(p.id);
+      card.classList.toggle("family-open", open);
+      if (open) card.after(...cards);
+      else for (const c of cards) c.remove();
+    };
+    card.querySelector<HTMLElement>(".project-family")!.onclick = () => {
+      if (!familiesOpen.delete(p.id)) familiesOpen.add(p.id);
+      show();
+    };
+    show();
+  }
+}
+
+/** Assemblies whose parts are shown under them in Projects. */
+const familiesOpen = new Set<string>();
+
+/** Projects deleted: what was open, or what Back led to, goes with them. */
+async function removeProjects(ids: string[]) {
+  for (const id of ids) await deleteProject(id).catch(() => toast("Could not delete"));
+  if (cameFrom && ids.includes(cameFrom.id)) {
+    cameFrom = null; // no way back to it any more
+    renderWorkspace();
+  }
+  if (project && ids.includes(project.id)) {
+    project = null; // nothing left to save there
+    const rest = await listProjects().catch(() => []);
+    if (rest.length) await openProject(rest[0].id);
+    else await createProject("Model 1");
+  }
+  void showProjects();
 }
 
 /**
@@ -5534,7 +5585,7 @@ async function renameInAssemblies(id: string, old: string, name: string, list: P
  * A project's card. `links`: lines of linked projects, each after its word ("", "from ", "in "):
  * the parts an assembly uses, the assembly a combined part comes from, the assemblies a part is in.
  */
-function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string[]][] = [], combined = false) {
+function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string[]][] = [], combined = false, family: ProjectMeta[] = []) {
   const current = p.id === project?.id;
   const card = document.createElement("div");
   card.className = "project-card" + (current ? " current" : "");
@@ -5585,6 +5636,13 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
     after.after(line);
     after = line;
   }
+  // Its own parts, folded under it.
+  if (family.length) {
+    const fold = document.createElement("button");
+    fold.className = "project-family";
+    fold.innerHTML = `${icon("part", 14)}<span>${family.length} part${family.length > 1 ? "s" : ""} of its own</span>${icon("chevron", 14)}`;
+    after.after(fold);
+  }
   const open = async () => {
     if (p.id !== project?.id) await openProject(p.id);
     closeProjects();
@@ -5633,20 +5691,20 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
     await putProject(copy, src.doc).catch(() => toast("Could not duplicate"));
     void showProjects();
   };
-  card.querySelector<HTMLElement>('[data-act="delete"]')!.onclick = async () => {
-    if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return;
-    await deleteProject(p.id).catch(() => toast("Could not delete"));
-    if (p.id === cameFrom?.id) {
-      cameFrom = null; // no way back to it any more
-      renderWorkspace();
-    }
-    if (p.id === project?.id) {
-      project = null; // nothing left to save there
-      const rest = await listProjects().catch(() => []);
-      if (rest.length) await openProject(rest[0].id);
-      else await createProject("Model 1");
-    }
-    void showProjects();
+  const del = card.querySelector<HTMLElement>('[data-act="delete"]')!;
+  del.onclick = () => {
+    const only = () => {
+      if (confirm(`Delete "${p.name}"? This cannot be undone.`)) void removeProjects([p.id]);
+    };
+    if (!family.length) return only();
+    // An assembly's own parts can go with it: no other project needs them.
+    const n = `${family.length} part${family.length > 1 ? "s" : ""}`;
+    toggleBarMenu(del, [
+      [`Delete with its ${n}`, () => {
+        if (confirm(`Delete "${p.name}" and its ${n} (${family.map((m) => m.name).join(", ")})? This cannot be undone.`)) void removeProjects([p.id, ...family.map((m) => m.id)]);
+      }, true],
+      ["Delete only the assembly", only],
+    ]);
   };
   return card;
 }
