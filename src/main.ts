@@ -5518,6 +5518,8 @@ async function showProjects() {
   } catch {
     return toast("This browser cannot keep projects");
   }
+  // By name, in natural order: "Part 2" before "Part 10", whatever the case.
+  list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
   let el = document.getElementById("projects");
   if (!el) {
     el = document.createElement("div");
