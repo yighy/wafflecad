@@ -12,6 +12,8 @@ export interface ProjectMeta {
   thumb?: string;
   /** An assembly of other projects (none: a part). */
   kind?: "assembly";
+  /** The tab it is in, in Projects (none: the first one). */
+  group?: string;
 }
 
 const DB_NAME = "waffle";

@@ -107,6 +107,46 @@ function applyPrefs() {
 }
 applyPrefs();
 
+// ---------- Tabs of projects ----------
+
+const GROUPS_KEY = "waffle.groups";
+const TAB_KEY = "waffle.tab";
+interface Group {
+  id: string;
+  name: string;
+}
+/** The tabs projects are sorted into, after "My projects" (which has no id). */
+let groups: Group[] = [];
+try {
+  const raw: unknown = JSON.parse(localStorage.getItem(GROUPS_KEY) ?? "[]");
+  if (Array.isArray(raw)) groups = raw as Group[];
+} catch {
+  // None yet.
+}
+/** The tab Projects shows: "all", "" (My projects) or a tab's id. */
+let projectsTab = localStorage.getItem(TAB_KEY) ?? "";
+function saveGroups() {
+  try {
+    localStorage.setItem(GROUPS_KEY, JSON.stringify(groups));
+    localStorage.setItem(TAB_KEY, projectsTab);
+  } catch {
+    toast("Could not save the tabs in this browser");
+  }
+}
+/** The tab a project is in: "" for My projects, also when its tab is gone. */
+const groupOf = (p: ProjectMeta) => (p.group && groups.some((g) => g.id === p.group) ? p.group : "");
+/** Where a new project goes: the tab Projects shows, or else the open project's. */
+function newGroup(): string | undefined {
+  const shown = document.getElementById("projects") && projectsTab !== "all";
+  return (shown ? projectsTab : project ? groupOf(project) : "") || undefined;
+}
+function addGroup(name: string): Group {
+  const g = { id: newProjectId(), name: keepName(name, ["All", "My projects", ...groups.map((x) => x.name)]) };
+  groups.push(g);
+  saveGroups();
+  return g;
+}
+
 // ---------- Shared parameters ----------
 
 const SHARED_KEY = "waffle.shared";
@@ -507,9 +547,9 @@ async function openProject(id: string, from: { id: string; name: string } | null
 }
 
 /** Saves `d` as a new project and opens it. */
-async function createProject(name: string, d: CadDocument = emptyDoc()) {
+async function createProject(name: string, d: CadDocument = emptyDoc(), group = newGroup()) {
   const now = Date.now();
-  const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now, kind: d.kind };
+  const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now, kind: d.kind, group };
   try {
     await putProject(meta, d);
   } catch {
@@ -992,7 +1032,7 @@ async function newPartHere() {
   const here = { id: project.id, name: project.name };
   const names = (await listProjects().catch(() => [])).map((p) => p.name);
   const now = Date.now();
-  const meta: ProjectMeta = { id: newProjectId(), name: freeName("Part", names), created: now, updated: now };
+  const meta: ProjectMeta = { id: newProjectId(), name: freeName("Part", names), created: now, updated: now, group: newGroup() };
   const d = emptyDoc();
   try {
     await putProject(meta, d);
@@ -1956,7 +1996,7 @@ async function createCombined() {
     clearance: mode.op === "cut" && mode.clearance ? mode.clearance : undefined,
   };
   const now = Date.now();
-  const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now };
+  const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now, group: newGroup() };
   const made: CadDocument = { ...emptyDoc(), features: [feat] };
   try {
     await putProject(meta, made);
@@ -3450,7 +3490,7 @@ async function saveFile() {
  * A copy brought back: the projects it carries are added under new ids (never over a project
  * already here), and every link to them follows. Returns the document to open and how many came with it.
  */
-async function unbundle(d: CadDocument): Promise<{ doc: CadDocument; added: number }> {
+async function unbundle(d: CadDocument, group?: string): Promise<{ doc: CadDocument; added: number }> {
   const carried = d.bundle ?? [];
   const main: CadDocument = { ...d };
   delete main.bundle;
@@ -3471,7 +3511,7 @@ async function unbundle(d: CadDocument): Promise<{ doc: CadDocument; added: numb
   for (const b of carried) {
     const name = keepName(b.name, names);
     names.push(name);
-    await putProject({ id: ids.get(b.id)!, name, created: now, updated: now, kind: b.kind }, relink(b.doc));
+    await putProject({ id: ids.get(b.id)!, name, created: now, updated: now, kind: b.kind, group }, relink(b.doc));
   }
   return { doc: relink(main), added: carried.length };
 }
@@ -5385,7 +5425,7 @@ async function importStep() {
       const partName = texts.length > 1 ? freeName(name, taken) : taken.includes(name) ? freeName(name, taken) : name;
       taken.push(partName);
       const part: CadDocument = { ...emptyDoc(), files: { [id]: t }, features: [{ id: uid(), kind: "import", name: partName, fileId: id, op: "add" }] };
-      const meta: ProjectMeta = { id: newProjectId(), name: partName, created: now, updated: now };
+      const meta: ProjectMeta = { id: newProjectId(), name: partName, created: now, updated: now, group: newGroup() };
       try {
         await putProject(meta, part);
       } catch {
@@ -5429,8 +5469,12 @@ function openFile() {
       if (!d) throw new Error("not a WaffleCAD file");
       // A copy's date ("Model 1_2026-10-25_1842") is not part of the project's name.
       const name = f.name.replace(/(\.waffle)?\.(json|waffle|tcad)$/i, "").replace(/[ _]\d{4}-\d{2}-\d{2}[ _]\d{4}$/, "");
-      const { doc: main, added } = await unbundle(d);
-      await createProject(keepName(name || "Model", (await listProjects().catch(() => [])).map((p) => p.name)), main);
+      // What a file brings goes in a tab of its own, named after it.
+      const tab = addGroup(name || "Imported");
+      const { doc: main, added } = await unbundle(d, tab.id);
+      projectsTab = tab.id;
+      saveGroups();
+      await createProject(keepName(name || "Model", (await listProjects().catch(() => [])).map((p) => p.name)), main, tab.id);
       if (added) toast(`${added} linked project${added > 1 ? "s" : ""} imported with it`);
       closeProjects();
     } catch (e) {
@@ -5477,7 +5521,7 @@ async function showProjects() {
   }
   el.innerHTML = `<div class="projects-card">
     <header><h2>Projects</h2><button class="projects-open">${icon("folder", 20)}<span>Open file</span></button><div class="projects-new-wrap"><button class="primary projects-new">${icon("plus", 20)}<span>New</span>${icon("chevron", 16)}</button><div class="projects-new-menu"><button data-new="project">${icon("extrude", 20)}<span>Project</span></button><button data-new="assembly">${icon("assembly", 20)}<span>Assembly</span></button></div></div><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
-    <div class="projects-grid"></div></div>`;
+    <div class="projects-tabs"></div><div class="projects-grid"></div></div>`;
   // New: a project or an assembly, chosen in a small list under the button.
   const wrap = el.querySelector<HTMLElement>(".projects-new-wrap")!;
   wrap.querySelector<HTMLElement>(".projects-new")!.onclick = () => wrap.classList.toggle("open");
@@ -5504,47 +5548,101 @@ async function showProjects() {
     uses.set(m.id, ids);
     for (const id of ids) usedBy.set(id, [...(usedBy.get(id) ?? []), m.id]);
   }
-  // A part only one assembly needs (in it, or made from it) is kept under that assembly's card.
+  if (projectsTab !== "all" && projectsTab && !groups.some((g) => g.id === projectsTab)) projectsTab = "";
+  renderProjectTabs(el.querySelector(".projects-tabs")!, list);
+  // A part only one assembly needs (in it, or made from it): moved and deleted with that assembly.
   const members = new Map<string, ProjectMeta[]>();
-  const owned = new Set<string>();
   for (const p of list) {
     if (p.kind === "assembly") continue;
     const owners = new Set([...(from.get(p.id) ?? []), ...(usedBy.get(p.id) ?? [])]);
     const [a] = owners;
-    if (owners.size !== 1 || !list.some((x) => x.id === a && x.kind === "assembly")) continue;
+    const owner = list.find((x) => x.id === a && x.kind === "assembly");
+    if (owners.size !== 1 || !owner || groupOf(owner) !== groupOf(p)) continue;
     members.set(a, [...(members.get(a) ?? []), p]);
-    owned.add(p.id);
-    if (p.id === project?.id) familiesOpen.add(a);
   }
   const linksOf = (p: ProjectMeta): [string, string[]][] =>
     p.kind === "assembly" ? [["", uses.get(p.id) ?? []]] : [["from ", from.get(p.id) ?? []], ["in ", usedBy.get(p.id) ?? []]];
   for (const p of list) {
-    if (owned.has(p.id)) continue;
-    const family = members.get(p.id) ?? [];
-    const card = projectCard(p, list, linksOf(p), from.has(p.id), family);
-    grid.appendChild(card);
-    if (!family.length) continue;
-    const cards = family.map((m) => {
-      const c = projectCard(m, list, linksOf(m), from.has(m.id));
-      c.classList.add("member");
-      return c;
-    });
-    const show = () => {
-      const open = familiesOpen.has(p.id);
-      card.classList.toggle("family-open", open);
-      if (open) card.after(...cards);
-      else for (const c of cards) c.remove();
+    if (projectsTab !== "all" && groupOf(p) !== projectsTab) continue;
+    grid.appendChild(projectCard(p, list, linksOf(p), from.has(p.id), members.get(p.id)));
+  }
+  if (!grid.children.length) grid.innerHTML = `<p class="projects-empty">No projects in this tab yet</p>`;
+}
+
+/**
+ * All · My projects · one tab per imported file, and those made here. Tapping the tab shown again
+ * offers to rename or delete it.
+ */
+function renderProjectTabs(row: HTMLElement, list: ProjectMeta[]) {
+  const tabs: [string, string][] = [["all", "All"], ["", "My projects"], ...groups.map((g): [string, string] => [g.id, g.name])];
+  for (const [id, name] of tabs) {
+    const b = document.createElement("button");
+    const n = id === "all" ? list.length : list.filter((p) => groupOf(p) === id).length;
+    const on = id === projectsTab;
+    b.className = on ? "on" : "";
+    b.innerHTML = `<span></span><small>${n}</small>${on && id && id !== "all" ? icon("more", 16) : ""}`;
+    b.querySelector("span")!.textContent = name;
+    b.onclick = () => {
+      if (!on) {
+        projectsTab = id;
+        saveGroups();
+        return void showProjects();
+      }
+      const g = groups.find((x) => x.id === id);
+      if (g) tabMenu(b, g, list.filter((p) => groupOf(p) === id));
     };
-    card.querySelector<HTMLElement>(".project-family")!.onclick = () => {
-      if (!familiesOpen.delete(p.id)) familiesOpen.add(p.id);
-      show();
-    };
-    show();
+    row.appendChild(b);
+    if (on) requestAnimationFrame(() => b.scrollIntoView({ block: "nearest", inline: "nearest" }));
   }
 }
 
-/** Assemblies whose parts are shown under them in Projects. */
-const familiesOpen = new Set<string>();
+function tabMenu(anchor: HTMLElement, g: Group, inside: ProjectMeta[]) {
+  const n = `${inside.length} project${inside.length > 1 ? "s" : ""}`;
+  const drop = () => {
+    groups = groups.filter((x) => x !== g);
+    projectsTab = "";
+    saveGroups();
+  };
+  const choices: [string, () => void, boolean?][] = [
+    ["Rename", () => {
+      const name = prompt("Tab name", g.name)?.trim();
+      if (!name || name === g.name) return;
+      if (["All", "My projects", ...groups.map((x) => x.name)].includes(name)) return toast(`${name} already exists`);
+      g.name = name;
+      saveGroups();
+      void showProjects();
+    }],
+  ];
+  if (inside.length) {
+    choices.push(
+      ["Move its projects to My projects", async () => {
+        await moveProjects(inside.map((p) => p.id), undefined);
+        drop();
+        void showProjects();
+      }],
+      [`Delete with its ${n}`, () => {
+        if (!confirm(`Delete the tab "${g.name}" and its ${n}? This cannot be undone.`)) return;
+        drop();
+        void removeProjects(inside.map((p) => p.id));
+      }, true],
+    );
+  } else {
+    choices.push(["Delete the tab", () => {
+      drop();
+      void showProjects();
+    }, true]);
+  }
+  toggleBarMenu(anchor, choices);
+}
+
+/** Projects put in another tab (none: My projects). */
+async function moveProjects(ids: string[], group: string | undefined) {
+  for (const id of ids) {
+    if (project?.id === id) project.group = group;
+    const got = await getProject(id).catch(() => null);
+    if (got) await putProject({ ...got.meta, group }).catch(() => toast("Could not move"));
+  }
+}
 
 /** Projects deleted: what was open, or what Back led to, goes with them. */
 async function removeProjects(ids: string[]) {
@@ -5595,6 +5693,7 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
     <div class="project-actions"><div>
       <button data-act="rename">${icon("rename", 20)}<span>Rename</span></button>
       <button data-act="copy">${icon("copy", 20)}<span>Duplicate</span></button>
+      <button data-act="move">${icon("folder", 20)}<span>Move</span></button>
       <button data-act="delete" class="danger">${icon("trash", 20)}<span>Delete</span></button>
     </div></div>`;
   const thumb = card.querySelector<HTMLElement>(".project-thumb")!;
@@ -5635,13 +5734,6 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
     });
     after.after(line);
     after = line;
-  }
-  // Its own parts, folded under it.
-  if (family.length) {
-    const fold = document.createElement("button");
-    fold.className = "project-family";
-    fold.innerHTML = `${icon("part", 14)}<span>${family.length} part${family.length > 1 ? "s" : ""} of its own</span>${icon("chevron", 14)}`;
-    after.after(fold);
   }
   const open = async () => {
     if (p.id !== project?.id) await openProject(p.id);
@@ -5690,6 +5782,24 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
     const copy: ProjectMeta = { ...src.meta, id: newProjectId(), name: freeName(base, list.map((x) => x.name)), created: now, updated: now };
     await putProject(copy, src.doc).catch(() => toast("Could not duplicate"));
     void showProjects();
+  };
+  // To another tab, with its own parts.
+  const move = card.querySelector<HTMLElement>('[data-act="move"]')!;
+  move.onclick = () => {
+    const ids = [p.id, ...family.map((m) => m.id)];
+    const go = async (group: string | undefined) => {
+      await moveProjects(ids, group);
+      void showProjects();
+    };
+    const here = groupOf(p);
+    const tabs: [string, string][] = [["", "My projects"], ...groups.map((g): [string, string] => [g.id, g.name])];
+    toggleBarMenu(move, [
+      ...tabs.filter(([id]) => id !== here).map(([id, name]): [string, () => void] => [name, () => void go(id || undefined)]),
+      ["New tab…", () => {
+        const name = prompt("Tab name", p.name)?.trim();
+        if (name) void go(addGroup(name).id);
+      }],
+    ]);
   };
   const del = card.querySelector<HTMLElement>('[data-act="delete"]')!;
   del.onclick = () => {
