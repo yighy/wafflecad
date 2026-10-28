@@ -128,6 +128,28 @@ export function partParameters(doc: CadDocument, shared: Parameter[] = []): Para
   return [...shared.filter((p) => !mine.has(p.name)), ...own];
 }
 
+/**
+ * Drops a part's own parameters that only repeat a shared one: same name, same value, and the same
+ * expression or a plain number. The part then follows the shared one. Returns whether any went.
+ */
+export function dropSharedCopies(doc: CadDocument, shared: Parameter[]): boolean {
+  const own = doc.parameters ?? [];
+  if (!own.length || !shared.length) return false;
+  const byName = new Map(shared.map((p) => [p.name, p]));
+  const here = resolveParameters(partParameters(doc, shared)).scope;
+  const there = resolveParameters(shared).scope;
+  const copy = (p: Parameter) => {
+    const s = byName.get(p.name);
+    if (!s || here[p.name] === undefined || there[p.name] === undefined) return false;
+    if (Math.abs(here[p.name] - there[p.name]) > 1e-9) return false;
+    return s.expr.trim() === p.expr.trim() || !identifiers(p.expr).length;
+  };
+  const kept = own.filter((p) => !copy(p));
+  if (kept.length === own.length) return false;
+  doc.parameters = kept;
+  return true;
+}
+
 /** Shared parameters the part uses (directly or through other parameters), and those they use. */
 export function sharedUsed(doc: CadDocument, shared: Parameter[]): Parameter[] {
   const own = new Set((doc.parameters ?? []).map((p) => p.name));

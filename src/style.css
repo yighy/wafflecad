@@ -1966,39 +1966,32 @@ body.busy #status-pill .dot {
 }
 .project-name {
   font-weight: 650;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* The whole name, on as many lines as it needs. */
+  overflow-wrap: anywhere;
 }
 .project-date {
   font-size: 12px;
   color: var(--muted);
 }
 /* The parts an assembly uses, or the assemblies a part is in: each name opens it. */
-/* One line of text (no flex, so the names cannot squeeze onto each other), cut by "…". */
+/* Plain text (no flex, so the names cannot squeeze onto each other), wrapped onto as many lines as it needs. */
 .project-links {
   display: block;
   margin: -6px 12px 10px;
   font-size: 12px;
+  line-height: 1.5;
   color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .project-links .ic {
   vertical-align: -2px;
   margin-right: 4px;
 }
-.project-links button {
-  display: inline;
-  min-height: 0;
-  min-width: 0;
+.project-links [role="button"] {
   padding: 2px 0;
-  border: none;
-  background: transparent;
   color: var(--accent);
-  font-size: 12px;
   font-weight: 600;
+  cursor: pointer;
 }
 .project-rename {
   width: 100%;

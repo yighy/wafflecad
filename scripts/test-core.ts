@@ -20,7 +20,7 @@ import { offsetEntities } from "../src/sketch/offset";
 import { connectedContour, entitiesInside, pathTouchesBox, regionAt, selectionOutlines } from "../src/sketch/selectModes";
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
-import { applyParameters, evaluate, partParameters, renameInExpr, resolveParameters, sharedUsed } from "../src/params";
+import { applyParameters, dropSharedCopies, evaluate, partParameters, renameInExpr, resolveParameters, sharedUsed } from "../src/params";
 import type { CadDocument, CombineFeature, Mate, MateRef, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
 setOC(await opencascade());
@@ -340,6 +340,18 @@ pDoc.parameters.push({ id: "q3", name: "width", expr: "45" });
 applyParameters(pDoc, solver, common);
 const ob = buildShape(pDoc).shape!.boundingBox.bounds;
 check("a part's own parameter wins over the shared one", near(ob[1][0] - ob[0][0], 45) && partParameters(pDoc, common).filter((p) => p.name === "width").length === 1, JSON.stringify(ob));
+const copies: CadDocument = {
+  format: "waffle",
+  version: 1,
+  features: [],
+  parameters: [
+    { id: "c1", name: "width", expr: "60" },
+    { id: "c2", name: "wall", expr: "4" },
+    { id: "c3", name: "height", expr: "7" },
+  ],
+};
+check("own copies of a shared value dropped, other values kept", dropSharedCopies(copies, common) && copies.parameters!.map((p) => p.name).join() === "wall,height");
+check("nothing more to drop", !dropSharedCopies(copies, common));
 
 // --- Splines.
 function splineSketch(pts: [number, number][], closed: boolean) {

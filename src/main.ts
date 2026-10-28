@@ -4,7 +4,7 @@ import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
 import type { Axis, BuildResult, BundledProject, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { DIMENSION_TYPES } from "./types";
-import { NAME_RE, applyParameters, expressionSlots, hasNames, identifiers, partParameters, renameInExpr, resolveParameters, sharedUsed, usedNames } from "./params";
+import { NAME_RE, applyParameters, dropSharedCopies, expressionSlots, hasNames, identifiers, partParameters, renameInExpr, resolveParameters, sharedUsed, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
@@ -3087,12 +3087,14 @@ function paramScope() {
  * another part was open. Left as it is when they no longer fit it. True when it changed.
  */
 function catchUpShared(d: CadDocument): boolean {
+  // Its own copy of a shared parameter (same value), left from before it was shared, goes.
+  const dropped = dropSharedCopies(d, shared);
   // Before the solver is there (at start), done once it is.
-  if (!solverReady || !sharedUsed(d, shared).length) return false;
+  if (!solverReady || !sharedUsed(d, shared).length) return dropped;
   const before = JSON.stringify(d);
   const copy = JSON.parse(before) as CadDocument;
-  if (applyParameters(copy, solver, shared).length) return false;
-  if (JSON.stringify(copy) === before) return false;
+  if (applyParameters(copy, solver, shared).length) return dropped;
+  if (JSON.stringify(copy) === before) return dropped;
   Object.assign(d, copy);
   return true;
 }
@@ -3212,18 +3214,24 @@ function deleteParameter(p: Parameter) {
 }
 
 /** A part's parameter becomes shared: every part can use it. */
-function shareParameter(p: Parameter) {
+async function shareParameter(p: Parameter) {
   if (shared.some((x) => x.name === p.name)) return toast(`A shared ${p.name} exists already`);
   const own = new Set((doc.parameters ?? []).map((x) => x.name));
   const local = identifiers(p.expr).find((n) => own.has(n) && n !== p.name);
   if (local) return toast(`${p.name} uses ${local}, which is only in this part: share ${local} first`);
   if (
-    applyParamChange(() => {
+    !applyParamChange(() => {
       doc.parameters = (doc.parameters ?? []).filter((x) => x.id !== p.id);
       shared.push({ ...p });
     })
   )
-    toast(`${p.name} is shared: every part can use it`);
+    return;
+  // Other parts with the same value of their own follow the shared one from now on.
+  await flushSave();
+  const n = await changeOtherParts((d) => dropSharedCopies(d, shared));
+  // Other parts changed with it: undoing it here alone would leave them apart.
+  if (n) resetHistory();
+  toast(`${p.name} is shared: every part can use it${n ? ` · ${n} other part${n > 1 ? "s" : ""} dropped the same value of their own` : ""}`);
 }
 
 /**
@@ -3368,7 +3376,7 @@ function renderParamsPanel(el: HTMLElement) {
     more.setAttribute("aria-label", `${p.name}: more`);
     more.onclick = () =>
       toggleBarMenu(more, [
-        ...(isCommon ? [] : [["Share with every part", () => shareParameter(p)] as [string, () => void]]),
+        ...(isCommon ? [] : [["Share with every part", () => void shareParameter(p)] as [string, () => void]]),
         ["Rename", () => renameParameter(p)],
         [isCommon ? "Delete (parts keep its value)" : "Delete", () => deleteParameter(p), true],
       ]);
@@ -5722,12 +5730,18 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
     line.innerHTML = icon(word === "from " ? "combine" : "assembly", 14) + "<span></span>";
     line.querySelector("span")!.textContent = word;
     others.forEach((o, i) => {
-      const a = document.createElement("button");
+      // Inline text rather than a button, so a long name wraps with the line.
+      const a = document.createElement("span");
+      a.role = "button";
+      a.tabIndex = 0;
       a.textContent = o.name;
       a.title = `Open ${o.name}`;
       a.onclick = async () => {
         if (o.id !== project?.id) await openProject(o.id);
         closeProjects();
+      };
+      a.onkeydown = (e) => {
+        if (e.key === "Enter") a.click();
       };
       if (i) line.append(" · ");
       line.appendChild(a);
