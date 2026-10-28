@@ -199,6 +199,8 @@ interface MatePick {
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
 
 const emptyDoc = (): CadDocument => ({ format: "waffle", version: 1, features: [] });
+/** Listed by name, in natural order: "Part 2" before "Part 10", whatever the case. */
+const byName = <T extends { name: string }>(list: T[]) => [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
 let doc: CadDocument = emptyDoc();
 /** The open project; null until the saved ones are read (or when this browser cannot store them). */
 let project: ProjectMeta | null = null;
@@ -942,7 +944,7 @@ const instanceOf = (id: string | null) => doc.instances?.find((i) => i.id === id
 async function showPartPicker() {
   let list: ProjectMeta[];
   try {
-    list = (await listProjects()).filter((p) => p.kind !== "assembly" && p.id !== project?.id);
+    list = byName((await listProjects()).filter((p) => p.kind !== "assembly" && p.id !== project?.id));
   } catch {
     return toast("This browser cannot keep projects");
   }
@@ -3346,7 +3348,6 @@ function renderParamsPanel(el: HTMLElement) {
   };
   const own = new Set(params.map((p) => p.name));
   // Shown by name (q_2 before q_10), so families of names stay together; the saved order stays as made.
-  const byName = (list: Parameter[]) => [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
   const sharedRows = byName(shared);
   const ownRows = byName(params);
   const rows: [Parameter, boolean][] = [...sharedRows.map((p): [Parameter, boolean] => [p, true]), ...ownRows.map((p): [Parameter, boolean] => [p, false])];
@@ -3722,6 +3723,7 @@ async function chooseAssembly() {
 
 /** A short list of projects in the gallery's look, to go to one; `extra`: an action below it. */
 function chooseProject(title: string, list: ProjectMeta[], go: (p: ProjectMeta) => void, extra?: [string, string, () => void]) {
+  list = byName(list);
   closeProjects();
   const el = document.createElement("div");
   el.id = "projects";
@@ -5518,8 +5520,7 @@ async function showProjects() {
   } catch {
     return toast("This browser cannot keep projects");
   }
-  // By name, in natural order: "Part 2" before "Part 10", whatever the case.
-  list.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  list = byName(list);
   let el = document.getElementById("projects");
   if (!el) {
     el = document.createElement("div");
@@ -5584,7 +5585,7 @@ async function showProjects() {
  * offers to rename or delete it.
  */
 function renderProjectTabs(row: HTMLElement, list: ProjectMeta[]) {
-  const tabs: [string, string][] = [["all", "All"], ["", "My projects"], ...groups.map((g): [string, string] => [g.id, g.name])];
+  const tabs: [string, string][] = [["all", "All"], ["", "My projects"], ...byName(groups).map((g): [string, string] => [g.id, g.name])];
   for (const [id, name] of tabs) {
     const b = document.createElement("button");
     const n = id === "all" ? list.length : list.filter((p) => groupOf(p) === id).length;
@@ -5724,7 +5725,7 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
   card.querySelector(".project-date")!.textContent = current ? "Open now" : ago(p.updated);
   let after: Element = card.querySelector(".project-row")!;
   for (const [word, ids] of links) {
-    const others = ids.map((id) => list.find((x) => x.id === id)).filter((x): x is ProjectMeta => !!x);
+    const others = byName(ids.map((id) => list.find((x) => x.id === id)).filter((x): x is ProjectMeta => !!x));
     if (!others.length) continue;
     // Each name opens that project.
     const line = document.createElement("div");
@@ -5808,7 +5809,7 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
       void showProjects();
     };
     const here = groupOf(p);
-    const tabs: [string, string][] = [["", "My projects"], ...groups.map((g): [string, string] => [g.id, g.name])];
+    const tabs: [string, string][] = [["", "My projects"], ...byName(groups).map((g): [string, string] => [g.id, g.name])];
     toggleBarMenu(move, [
       ...tabs.filter(([id]) => id !== here).map(([id, name]): [string, () => void] => [name, () => void go(id || undefined)]),
       ["New tab…", () => {
