@@ -3469,11 +3469,20 @@ async function unbundle(d: CadDocument): Promise<{ doc: CadDocument; added: numb
   const names = (await listProjects().catch(() => [])).map((p) => p.name);
   const now = Date.now();
   for (const b of carried) {
-    const name = freeName(b.name, names);
+    const name = keepName(b.name, names);
     names.push(name);
     await putProject({ id: ids.get(b.id)!, name, created: now, updated: now, kind: b.kind }, relink(b.doc));
   }
   return { doc: relink(main), added: carried.length };
+}
+
+/** A name brought in stays as it is unless a project here has it: "Box" then becomes "Box 2", "Box 2" becomes "Box 3". */
+function keepName(name: string, taken: string[]) {
+  if (!taken.includes(name)) return name;
+  const base = name.replace(/ \d+$/, "");
+  let i = 2;
+  while (taken.includes(`${base} ${i}`)) i++;
+  return `${base} ${i}`;
 }
 
 /** Shared parameters a file brings: the missing ones are added, the ones here keep their value. */
@@ -5421,7 +5430,7 @@ function openFile() {
       // A copy's date ("Model 1_2026-10-25_1842") is not part of the project's name.
       const name = f.name.replace(/(\.waffle)?\.(json|waffle|tcad)$/i, "").replace(/[ _]\d{4}-\d{2}-\d{2}[ _]\d{4}$/, "");
       const { doc: main, added } = await unbundle(d);
-      await createProject(name || "Model", main);
+      await createProject(keepName(name || "Model", (await listProjects().catch(() => [])).map((p) => p.name)), main);
       if (added) toast(`${added} linked project${added > 1 ? "s" : ""} imported with it`);
       closeProjects();
     } catch (e) {
