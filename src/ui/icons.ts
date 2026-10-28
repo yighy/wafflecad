@@ -50,6 +50,7 @@ const P: Record<string, string> = {
   ellipse: '<ellipse cx="12" cy="12" rx="9.5" ry="5.5" transform="rotate(-25 12 12)" fill="currentColor" fill-opacity=".14"/>',
   offset: '<rect x="3" y="3" width="18" height="18" rx="4" stroke-dasharray="2.5 2.5"/><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" fill-opacity=".14"/>',
   folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z" fill="currentColor" fill-opacity=".14"/>',
+  share: '<circle cx="6" cy="12" r="2.6" fill="currentColor" fill-opacity=".14"/><circle cx="18" cy="5.5" r="2.6" fill="currentColor" fill-opacity=".14"/><circle cx="18" cy="18.5" r="2.6" fill="currentColor" fill-opacity=".14"/><path d="M8.3 10.8l7.4-4M8.3 13.2l7.4 4"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2" fill="currentColor" fill-opacity=".14"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>',
   more: '<circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/>',
   mate: '<rect x="3" y="14" width="18" height="6" rx="1.5" fill="currentColor" fill-opacity=".14"/><rect x="7" y="4" width="10" height="6" rx="1.5" fill="currentColor" fill-opacity=".14"/><path d="M12 10v4M9.5 12.5 12 14l2.5-1.5"/>',

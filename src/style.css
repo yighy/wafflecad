@@ -1230,6 +1230,19 @@ body.busy #status-pill .dot {
   gap: 6px;
   margin-bottom: 12px;
 }
+.param-section {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 6px 2px 0;
+}
+.param-main.overridden {
+  opacity: 0.55;
+}
+/* This part has its own of that name. */
+.param-main.overridden .param-val {
+  text-decoration: line-through;
+}
 .param-row {
   display: flex;
   gap: 6px;

@@ -20,7 +20,7 @@ import { offsetEntities } from "../src/sketch/offset";
 import { connectedContour, entitiesInside, pathTouchesBox, regionAt, selectionOutlines } from "../src/sketch/selectModes";
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
-import { applyParameters, evaluate, renameInExpr, resolveParameters } from "../src/params";
+import { applyParameters, evaluate, partParameters, renameInExpr, resolveParameters, sharedUsed } from "../src/params";
 import type { CadDocument, CombineFeature, Mate, MateRef, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
 setOC(await opencascade());
@@ -324,6 +324,22 @@ const pb = buildShape(pDoc).shape!.boundingBox.bounds;
 check("parameters drive sketch and extrusion", !problems.length && near(pb[1][0] - pb[0][0], 50) && near(pb[1][2], 10), `${JSON.stringify(problems)} ${JSON.stringify(pb)}`);
 pDoc.parameters![0].expr = "-5";
 check("negative length reported", applyParameters(pDoc, solver).length > 0);
+
+// Shared parameters: every part sees them; a part's own of the same name wins.
+const common = [
+  { id: "s1", name: "width", expr: "60" },
+  { id: "s2", name: "wall", expr: "3" },
+  { id: "s3", name: "unused", expr: "nope + 1" },
+];
+pDoc.parameters = [{ id: "q2", name: "height", expr: "wall * 2" }];
+const sharedProblems = applyParameters(pDoc, solver, common);
+const sb = buildShape(pDoc).shape!.boundingBox.bounds;
+check("shared parameters drive a part", !sharedProblems.length && near(sb[1][0] - sb[0][0], 60) && near(sb[1][2], 6), `${JSON.stringify(sharedProblems)} ${JSON.stringify(sb)}`);
+check("shared ones used, with what they use", sharedUsed(pDoc, common).map((p) => p.name).sort().join() === "wall,width");
+pDoc.parameters.push({ id: "q3", name: "width", expr: "45" });
+applyParameters(pDoc, solver, common);
+const ob = buildShape(pDoc).shape!.boundingBox.bounds;
+check("a part's own parameter wins over the shared one", near(ob[1][0] - ob[0][0], 45) && partParameters(pDoc, common).filter((p) => p.name === "width").length === 1, JSON.stringify(ob));
 
 // --- Splines.
 function splineSketch(pts: [number, number][], closed: boolean) {

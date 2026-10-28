@@ -4,7 +4,7 @@ import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
 import type { Axis, BuildResult, BundledProject, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { DIMENSION_TYPES } from "./types";
-import { NAME_RE, applyParameters, expressionSlots, hasNames, renameInExpr, resolveParameters, usedNames } from "./params";
+import { NAME_RE, applyParameters, expressionSlots, hasNames, identifiers, partParameters, renameInExpr, resolveParameters, sharedUsed, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
@@ -107,6 +107,25 @@ function applyPrefs() {
 }
 applyPrefs();
 
+// ---------- Shared parameters ----------
+
+const SHARED_KEY = "waffle.shared";
+/** Parameters every part sees, kept in this browser beside the projects. */
+let shared: Parameter[] = [];
+try {
+  const raw: unknown = JSON.parse(localStorage.getItem(SHARED_KEY) ?? "[]");
+  if (Array.isArray(raw)) shared = raw as Parameter[];
+} catch {
+  // None yet.
+}
+function saveShared() {
+  try {
+    localStorage.setItem(SHARED_KEY, JSON.stringify(shared));
+  } catch {
+    toast("Could not save the shared parameters in this browser");
+  }
+}
+
 // ---------- State ----------
 
 type Mode =
@@ -159,7 +178,7 @@ let kernelBroken = false;
 /** When the kernel last showed signs of life while loading (download progress). */
 let kernelAlive = performance.now();
 /** The document without its imported files (they only ever get added, so undo leaves them be). */
-const snapshot = () => JSON.stringify({ ...doc, files: undefined });
+const snapshot = () => JSON.stringify({ ...doc, files: undefined, sharedNow: shared });
 const undoStack: string[] = [snapshot()];
 let undoPos = 0;
 
@@ -461,6 +480,7 @@ async function openProject(id: string, from: { id: string; name: string } | null
   leaveModes();
   project = p.meta;
   doc = asDocument(p.doc) ?? emptyDoc();
+  const caughtUp = catchUpShared(doc);
   cameFrom = from;
   await loadParts();
   if (isAssembly()) {
@@ -480,6 +500,7 @@ async function openProject(id: string, from: { id: string; name: string } | null
   vp.setHiddenBodies(hiddenBodies);
   thumbStale = !p.meta.thumb && (p.doc.features.length > 0 || !!p.doc.instances?.length);
   resetHistory();
+  if (caughtUp) save();
   vp.setModel(null);
   rebuild(true);
   renderAll();
@@ -554,7 +575,12 @@ function commit() {
 function restore(pos: number) {
   if (isOperation(mode)) mode.keypad.close();
   undoPos = pos;
-  doc = { ...JSON.parse(undoStack[pos]), files: doc.files };
+  const { sharedNow, ...was } = JSON.parse(undoStack[pos]) as CadDocument & { sharedNow?: Parameter[] };
+  doc = { ...was, files: doc.files };
+  if (sharedNow && JSON.stringify(sharedNow) !== JSON.stringify(shared)) {
+    shared = sharedNow;
+    saveShared();
+  }
   save();
   if (mode.kind === "sketch") {
     const id = mode.editor.sk.id;
@@ -857,6 +883,7 @@ async function loadLinked(d: CadDocument) {
     got.forEach((p, i) => {
       if (!p) return;
       const pd = asDocument(p.doc) ?? emptyDoc();
+      if (catchUpShared(pd)) void putProject(p.meta, pd).catch(() => {});
       partDocs[todo[i]] = pd;
       partNames[todo[i]] = p.meta.name;
       next.push(...linkedProjects(pd));
@@ -3007,25 +3034,46 @@ function toggleShellFace(feat: ShellFeature, faceId: number) {
 // ---------- Parameters ----------
 
 function paramScope() {
-  return resolveParameters(doc.parameters ?? []).scope;
+  return resolveParameters(partParameters(doc, shared)).scope;
+}
+
+/**
+ * Brings a part up to date with the shared parameters it uses: they may have changed while
+ * another part was open. Left as it is when they no longer fit it. True when it changed.
+ */
+function catchUpShared(d: CadDocument): boolean {
+  // Before the solver is there (at start), done once it is.
+  if (!solverReady || !sharedUsed(d, shared).length) return false;
+  const before = JSON.stringify(d);
+  const copy = JSON.parse(before) as CadDocument;
+  if (applyParameters(copy, solver, shared).length) return false;
+  if (JSON.stringify(copy) === before) return false;
+  Object.assign(d, copy);
+  return true;
 }
 
 /** Re-evaluates the whole document after a parameter change; undoes it if something breaks. */
 function applyParamChange(change: () => void) {
   const backup = JSON.stringify(doc);
+  const sharedBefore = JSON.stringify(shared);
   change();
-  const problems = applyParameters(doc, solver);
+  const problems = applyParameters(doc, solver, shared);
   if (problems.length) {
     doc = JSON.parse(backup);
+    shared = JSON.parse(sharedBefore);
     toast(problems[0]);
     reloadSketch();
     renderAll();
     return false;
   }
+  if (JSON.stringify(shared) !== sharedBefore) saveShared();
   reloadSketch();
   commit();
   return true;
 }
+
+const findParam = (id: string) => doc.parameters?.find((x) => x.id === id) ?? shared.find((x) => x.id === id);
+const isShared = (p: Parameter) => shared.some((x) => x.id === p.id);
 
 /** The sketch being edited takes the document's version of it again (after parameters changed it). */
 function reloadSketch() {
@@ -3035,14 +3083,15 @@ function reloadSketch() {
   if (sk) mode.editor.load(sk);
 }
 
-function askName(title: string, initial: string, except?: string): string | null {
+/** `among`: the parameters the name must differ from (the part's own, or the shared ones). */
+function askName(title: string, initial: string, except?: string, among = doc.parameters ?? []): string | null {
   const name = prompt(title, initial)?.trim();
   if (!name) return null;
   if (!NAME_RE.test(name)) {
     toast("Use letters, digits and _ (not starting with a digit)");
     return null;
   }
-  if ((doc.parameters ?? []).some((p) => p.name === name && p.name !== except)) {
+  if (among.some((p) => p.name === name && p.name !== except)) {
     toast(`${name} already exists`);
     return null;
   }
@@ -3058,7 +3107,7 @@ async function newParameter() {
   const res = await openKeypad({ title: name, subtitle: "New parameter", label: "Value", value: 10, scope: paramScope(), confirmLabel: "Add" }).result;
   if (!res) return;
   const p: Parameter = { id: uid(), name, expr: res.expr ?? String(res.value) };
-  applyParamChange(() => (doc.parameters ??= []).push(p));
+  if (applyParamChange(() => (doc.parameters ??= []).push(p)) && shared.some((x) => x.name === name)) toast(`In this part, ${name} is this value instead of the shared one`);
 }
 
 async function editParameter(p: Parameter) {
@@ -3066,7 +3115,7 @@ async function editParameter(p: Parameter) {
   delete scope[p.name];
   const res = await openKeypad({
     title: p.name,
-    subtitle: "Every dimension using it updates",
+    subtitle: isShared(p) ? "Shared: every part using it updates" : "Every dimension using it updates",
     label: "Value",
     value: paramScope()[p.name] ?? 0,
     expr: hasNames(p.expr) ? p.expr : undefined,
@@ -3076,12 +3125,13 @@ async function editParameter(p: Parameter) {
   if (!res) return;
   const expr = res.expr ?? String(res.value);
   applyParamChange(() => {
-    const live = doc.parameters?.find((x) => x.id === p.id);
+    const live = findParam(p.id);
     if (live) live.expr = expr;
   });
 }
 
 function renameParameter(p: Parameter) {
+  if (isShared(p)) return void renameShared(p);
   const name = askName("New name", p.name, p.name);
   if (!name || name === p.name) return;
   for (const slot of expressionSlots(doc)) slot.set(renameInExpr(slot.get(), p.name, name));
@@ -3092,6 +3142,12 @@ function renameParameter(p: Parameter) {
 }
 
 function deleteParameter(p: Parameter) {
+  if (isShared(p)) return void deleteShared(p);
+  // It was replacing a shared one here: the part goes back to that one.
+  if (shared.some((x) => x.name === p.name)) {
+    if (applyParamChange(() => (doc.parameters = (doc.parameters ?? []).filter((x) => x.id !== p.id)))) toast(`${p.name} is the shared value again here`);
+    return;
+  }
   const used = usedNames(doc, p.name).has(p.name);
   if (used && !confirm(`${p.name} is used. Replace it by its current value everywhere?`)) return;
   const value = paramScope()[p.name];
@@ -3110,6 +3166,92 @@ function deleteParameter(p: Parameter) {
   });
 }
 
+/** A part's parameter becomes shared: every part can use it. */
+function shareParameter(p: Parameter) {
+  if (shared.some((x) => x.name === p.name)) return toast(`A shared ${p.name} exists already`);
+  const own = new Set((doc.parameters ?? []).map((x) => x.name));
+  const local = identifiers(p.expr).find((n) => own.has(n) && n !== p.name);
+  if (local) return toast(`${p.name} uses ${local}, which is only in this part: share ${local} first`);
+  if (
+    applyParamChange(() => {
+      doc.parameters = (doc.parameters ?? []).filter((x) => x.id !== p.id);
+      shared.push({ ...p });
+    })
+  )
+    toast(`${p.name} is shared: every part can use it`);
+}
+
+/**
+ * Runs `change` on every other saved part (and on the ones loaded here), saving those it changed.
+ * Returns how many changed.
+ */
+async function changeOtherParts(change: (d: CadDocument) => boolean): Promise<number> {
+  let n = 0;
+  const list = await listProjects().catch(() => []);
+  for (const meta of list) {
+    if (meta.id === project?.id || meta.kind === "assembly") continue;
+    const got = await getProject(meta.id).catch(() => null);
+    const d = got && asDocument(got.doc);
+    if (!d || !change(d)) continue;
+    n++;
+    await putProject(meta, d).catch(() => {});
+    if (partDocs[meta.id]) partDocs[meta.id] = d;
+  }
+  if (n) sendParts();
+  return n;
+}
+
+/** True when a part uses the shared parameter `name` (a part's own of that name hides it). */
+const usesShared = (d: CadDocument, name: string) => !(d.parameters ?? []).some((x) => x.name === name) && usedNames(d).has(name);
+
+/** Renames a shared parameter, and where every part uses it. */
+async function renameShared(p: Parameter) {
+  const name = askName("New name (in every part using it)", p.name, p.name, shared);
+  if (!name || name === p.name) return;
+  const from = p.name;
+  const rename = (d: CadDocument) => {
+    if (!usesShared(d, from)) return false;
+    for (const slot of expressionSlots(d)) slot.set(renameInExpr(slot.get(), from, name));
+    return true;
+  };
+  await flushSave();
+  rename(doc);
+  for (const x of shared) x.expr = renameInExpr(x.expr, from, name);
+  const live = findParam(p.id);
+  if (live) live.name = name;
+  saveShared();
+  const n = await changeOtherParts(rename);
+  reloadSketch();
+  commit();
+  // Other parts changed with it: undoing it here alone would leave them apart.
+  resetHistory();
+  if (n) toast(`Renamed in ${n} other part${n > 1 ? "s" : ""} too`);
+}
+
+/** Deletes a shared parameter; the parts using it keep its value as a parameter of their own. */
+async function deleteShared(p: Parameter) {
+  if (!confirm(`Delete the shared ${p.name}? Parts using it keep its value as a parameter of their own.`)) return;
+  const value = resolveParameters(shared).scope[p.name];
+  const expr = value === undefined ? "0" : String(+value.toFixed(6));
+  const keep = (d: CadDocument) => {
+    if (!usesShared(d, p.name)) return false;
+    (d.parameters ??= []).push({ id: uid(), name: p.name, expr });
+    return true;
+  };
+  await flushSave();
+  if (
+    !applyParamChange(() => {
+      keep(doc);
+      shared = shared.filter((x) => x.id !== p.id);
+      for (const x of shared) x.expr = renameInExpr(x.expr, p.name, `(${expr})`);
+    })
+  )
+    return;
+  const n = await changeOtherParts(keep);
+  resetHistory();
+  if (n) toast(`${n} other part${n > 1 ? "s" : ""} keep${n > 1 ? "" : "s"} ${p.name} = ${expr}`);
+}
+
 function toggleParams() {
   showParams = !showParams;
   if (showParams) {
@@ -3122,7 +3264,9 @@ function toggleParams() {
 
 function renderParamsPanel(el: HTMLElement) {
   const params = doc.parameters ?? [];
-  const { scope, errors } = resolveParameters(params);
+  const { scope, errors } = resolveParameters(partParameters(doc, shared));
+  // Shared ones show their own value, even where this part has one of the same name.
+  const common = resolveParameters(shared);
   const h = document.createElement("div");
   h.className = "p-head";
   h.innerHTML = `<div><div class="p-title">Parameters</div><div class="p-sub">Use them in any dimension or value</div></div>`;
@@ -3135,25 +3279,46 @@ function renderParamsPanel(el: HTMLElement) {
   el.appendChild(h);
   const list = document.createElement("div");
   list.className = "param-list";
-  if (!params.length) {
+  if (!params.length && !shared.length) {
     const hint = document.createElement("p");
     hint.className = "p-hint";
-    hint.textContent = "Name the values you reuse (width, wall, screw diameter…). Change one, and the whole part follows.";
+    hint.textContent = "Name the values you reuse (width, wall, screw diameter…). Change one, and the whole part follows. Share one to use it in every part.";
     list.appendChild(hint);
   }
-  for (const p of params) {
+  const section = (text: string) => {
+    const t = document.createElement("div");
+    t.className = "param-section";
+    t.textContent = text;
+    list.appendChild(t);
+  };
+  const own = new Set(params.map((p) => p.name));
+  const rows: [Parameter, boolean][] = [...shared.map((p): [Parameter, boolean] => [p, true]), ...params.map((p): [Parameter, boolean] => [p, false])];
+  for (const [p, isCommon] of rows) {
+    if (shared.length && p === (isCommon ? shared[0] : params[0])) section(isCommon ? "Shared · every part" : "This part");
     const row = document.createElement("div");
     row.className = "param-row";
     const main = document.createElement("button");
     main.className = "param-main";
-    const val = scope[p.name];
+    const hidden = isCommon && own.has(p.name);
+    if (hidden) main.classList.add("overridden");
+    const err = isCommon ? common.errors[p.id] : errors[p.id];
+    const val = isCommon ? common.scope[p.name] : scope[p.name];
     main.innerHTML = `<span class="param-name"></span><span class="param-expr"></span><span class="param-val"></span>`;
     main.querySelector(".param-name")!.textContent = p.name;
     main.querySelector(".param-expr")!.textContent = hasNames(p.expr) ? p.expr : "";
+    if (hidden) main.title = "This part has its own " + p.name;
     const v = main.querySelector(".param-val")!;
-    v.textContent = errors[p.id] ?? (val === undefined ? "?" : fmtNum(val));
-    v.classList.toggle("err", !!errors[p.id]);
+    v.textContent = err ?? (val === undefined ? "?" : fmtNum(val));
+    v.classList.toggle("err", !!err);
     main.onclick = () => void editParameter(p);
+    if (!isCommon) {
+      const share = document.createElement("button");
+      share.className = "param-icon";
+      share.innerHTML = icon("share", 18);
+      share.title = "Share with every part";
+      share.onclick = () => shareParameter(p);
+      row.append(main, share);
+    } else row.append(main);
     const ren = document.createElement("button");
     ren.className = "param-icon";
     ren.innerHTML = icon("rename", 18);
@@ -3164,7 +3329,7 @@ function renderParamsPanel(el: HTMLElement) {
     del.innerHTML = icon("trash", 18);
     del.title = "Delete";
     del.onclick = () => deleteParameter(p);
-    row.append(main, ren, del);
+    row.append(ren, del);
     list.appendChild(row);
   }
   el.appendChild(list);
@@ -3271,7 +3436,10 @@ async function saveFile() {
   const t = new Date();
   const two = (n: number) => String(n).padStart(2, "0");
   const stamp = `${t.getFullYear()}-${two(t.getMonth() + 1)}-${two(t.getDate())}_${two(t.getHours())}${two(t.getMinutes())}`;
-  const copy: CadDocument = bundle.length ? { ...doc, bundle } : doc;
+  // The shared parameters it uses go with it.
+  const carried = new Map<string, Parameter>();
+  for (const d of [doc, ...bundle.map((b) => b.doc)]) for (const p of sharedUsed(d, shared)) carried.set(p.name, p);
+  const copy: CadDocument = { ...doc, ...(bundle.length ? { bundle } : {}), ...(carried.size ? { shared: [...carried.values()] } : {}) };
   download(new Blob([JSON.stringify(copy, null, 1)], { type: "application/json" }), `${fileName()}_${stamp}.waffle.json`);
 }
 
@@ -3283,6 +3451,8 @@ async function unbundle(d: CadDocument): Promise<{ doc: CadDocument; added: numb
   const carried = d.bundle ?? [];
   const main: CadDocument = { ...d };
   delete main.bundle;
+  delete main.shared;
+  takeShared(d.shared ?? []);
   if (!carried.length) return { doc: main, added: 0 };
   const ids = new Map(carried.map((b) => [b.id, newProjectId()]));
   const relink = (x: CadDocument): CadDocument => {
@@ -3301,6 +3471,21 @@ async function unbundle(d: CadDocument): Promise<{ doc: CadDocument; added: numb
     await putProject({ id: ids.get(b.id)!, name, created: now, updated: now, kind: b.kind }, relink(b.doc));
   }
   return { doc: relink(main), added: carried.length };
+}
+
+/** Shared parameters a file brings: the missing ones are added, the ones here keep their value. */
+function takeShared(brought: Parameter[]) {
+  const here = new Map(shared.map((p) => [p.name, p]));
+  const added = brought.filter((p) => !here.has(p.name));
+  const kept = brought.filter((p) => here.has(p.name) && here.get(p.name)!.expr !== p.expr);
+  if (added.length) {
+    shared.push(...added.map((p) => ({ ...p, id: uid() })));
+    saveShared();
+  }
+  const say: string[] = [];
+  if (added.length) say.push(`${added.length} shared parameter${added.length > 1 ? "s" : ""} added`);
+  if (kept.length) say.push(`${kept.map((p) => p.name).join(", ")} kept the value set here`);
+  if (say.length) window.setTimeout(() => toast(say.join(" · ")), 1500);
 }
 
 function renderWorkspace() {
@@ -5775,6 +5960,13 @@ async function boot() {
   splashStep("Loading the sketch solver…");
   solver = await Solver.create(planegcsWasm);
   solverReady = true;
+  // What opened before the solver was there catches up with the shared parameters now.
+  if (catchUpShared(doc)) {
+    resetHistory();
+    save();
+    rebuild();
+  }
+  if (Object.keys(partDocs).length) void loadParts().then(() => rebuild());
   splashStep(kernelReady ? "Building the model…" : "Loading the geometry kernel…");
   maybeHideSplash();
   // A slow kernel (first visit, slow tablet) does not keep the app hidden: sketching works without it.

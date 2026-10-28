@@ -118,6 +118,31 @@ export function resolveParameters(params: Parameter[]): { scope: Scope; errors: 
   return { scope, errors };
 }
 
+/**
+ * The parameters a part sees: the shared ones (kept in the app, for every part), then its own.
+ * A part's own parameter of the same name wins over the shared one, in that part only.
+ */
+export function partParameters(doc: CadDocument, shared: Parameter[] = []): Parameter[] {
+  const own = doc.parameters ?? [];
+  const mine = new Set(own.map((p) => p.name));
+  return [...shared.filter((p) => !mine.has(p.name)), ...own];
+}
+
+/** Shared parameters the part uses (directly or through other parameters), and those they use. */
+export function sharedUsed(doc: CadDocument, shared: Parameter[]): Parameter[] {
+  const own = new Set((doc.parameters ?? []).map((p) => p.name));
+  const byName = new Map(shared.map((p) => [p.name, p]));
+  const out = new Map<string, Parameter>();
+  const todo = [...usedNames(doc)].filter((n) => !own.has(n));
+  while (todo.length) {
+    const p = byName.get(todo.pop()!);
+    if (!p || out.has(p.name)) continue;
+    out.set(p.name, p);
+    todo.push(...identifiers(p.expr));
+  }
+  return [...out.values()];
+}
+
 /** Replaces a parameter name in an expression (whole words only). */
 export function renameInExpr(src: string, from: string, to: string) {
   return src.replace(IDENT_G, (n) => (n === from ? to : n));
@@ -171,10 +196,13 @@ export function usedNames(doc: CadDocument, except?: string): Set<string> {
  * Re-evaluates every expression and re-solves the sketches whose dimensions changed.
  * Works in place; returns the problems found (the caller decides whether to keep the result).
  */
-export function applyParameters(doc: CadDocument, solver: Solver): string[] {
+export function applyParameters(doc: CadDocument, solver: Solver, shared: Parameter[] = []): string[] {
   const problems: string[] = [];
-  const { scope, errors } = resolveParameters(doc.parameters ?? []);
-  for (const p of doc.parameters ?? []) if (errors[p.id]) problems.push(`${p.name}: ${errors[p.id]}`);
+  const all = partParameters(doc, shared);
+  const { scope, errors } = resolveParameters(all);
+  // A broken shared parameter matters only where it is used: the values using it say so.
+  const used = usedNames(doc);
+  for (const p of all) if (errors[p.id] && ((doc.parameters ?? []).includes(p) || used.has(p.name))) problems.push(`${p.name}: ${errors[p.id]}`);
   const val = (expr: string, what: string): number | null => {
     const v = evaluate(expr, scope);
     if (v === null) problems.push(`${what}: ${explain(expr, scope)}`);

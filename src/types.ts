@@ -357,6 +357,8 @@ export interface CadDocument {
    * assembly, and theirs in turn), so the file holds all it needs on another device.
    */
   bundle?: BundledProject[];
+  /** In a saved copy only: the shared parameters it (and what it carries) uses. */
+  shared?: Parameter[];
 }
 
 /** A project carried in a downloaded copy of another (see `CadDocument.bundle`). */
