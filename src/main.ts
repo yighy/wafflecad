@@ -954,6 +954,11 @@ async function pickPart(el: HTMLElement, p: ProjectMeta) {
   const got = await getProject(p.id).catch(() => null);
   if (!got) return toast("This project could not be read");
   const d = asDocument(got.doc) ?? emptyDoc();
+  // What it reads (a copy's assembly and parts) must be there to count its bodies.
+  if (linkedProjects(d).some((id) => !partDocs[id])) {
+    await loadLinked(d);
+    sendParts();
+  }
   const bodies = await partBodies(d);
   if (bodies.length < 2) {
     closeProjects();
