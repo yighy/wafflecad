@@ -1,6 +1,6 @@
 {
   "name": "wafflecad",
-  "version": "0.22.0",
+  "version": "0.22.1",
   "private": true,
   "description": "Touch-first parametric 3D CAD for the browser (Android, stylus, finger)",
   "type": "module",
