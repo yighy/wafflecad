@@ -476,6 +476,9 @@ body.collapsed .section {
   border-radius: 14px;
   font-weight: 600;
 }
+#bar-menu button.danger {
+  color: var(--danger);
+}
 #bar-menu button:active {
   background: var(--card2);
 }

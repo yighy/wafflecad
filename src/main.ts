@@ -3311,25 +3311,19 @@ function renderParamsPanel(el: HTMLElement) {
     v.textContent = err ?? (val === undefined ? "?" : fmtNum(val));
     v.classList.toggle("err", !!err);
     main.onclick = () => void editParameter(p);
-    if (!isCommon) {
-      const share = document.createElement("button");
-      share.className = "param-icon";
-      share.innerHTML = icon("share", 18);
-      share.title = "Share with every part";
-      share.onclick = () => shareParameter(p);
-      row.append(main, share);
-    } else row.append(main);
-    const ren = document.createElement("button");
-    ren.className = "param-icon";
-    ren.innerHTML = icon("rename", 18);
-    ren.title = "Rename";
-    ren.onclick = () => renameParameter(p);
-    const del = document.createElement("button");
-    del.className = "param-icon danger";
-    del.innerHTML = icon("trash", 18);
-    del.title = "Delete";
-    del.onclick = () => deleteParameter(p);
-    row.append(ren, del);
+    // The rarer actions wait behind one button: the value keeps the room.
+    const more = document.createElement("button");
+    more.className = "param-icon";
+    more.innerHTML = icon("more", 20);
+    more.title = "Share, rename, delete";
+    more.setAttribute("aria-label", `${p.name}: more`);
+    more.onclick = () =>
+      toggleBarMenu(more, [
+        ...(isCommon ? [] : [["Share with every part", () => shareParameter(p)] as [string, () => void]]),
+        ["Rename", () => renameParameter(p)],
+        [isCommon ? "Delete (parts keep its value)" : "Delete", () => deleteParameter(p), true],
+      ]);
+    row.append(main, more);
     list.appendChild(row);
   }
   el.appendChild(list);
@@ -3531,17 +3525,20 @@ function renderWorkspace() {
   }
 }
 
-/** A small list of choices under a top-bar button (New, Export). */
-function toggleBarMenu(anchor: HTMLElement, choices: [string, () => void][]) {
+let barMenuFor: HTMLElement | null = null;
+
+/** A small list of choices under a button (New, Export, a parameter's ⋯). A third `true`: it destroys. */
+function toggleBarMenu(anchor: HTMLElement, choices: [string, () => void, boolean?][]) {
   const open = document.getElementById("bar-menu");
   open?.remove();
-  if (open?.dataset.for === anchor.textContent) return;
+  if (open && barMenuFor === anchor) return void (barMenuFor = null);
+  barMenuFor = anchor;
   const m = document.createElement("div");
   m.id = "bar-menu";
-  m.dataset.for = anchor.textContent ?? "";
-  for (const [label, run] of choices) {
+  for (const [label, run, danger] of choices) {
     const c = document.createElement("button");
     c.textContent = label;
+    if (danger) c.classList.add("danger");
     c.onclick = () => {
       m.remove();
       run();
@@ -3552,6 +3549,10 @@ function toggleBarMenu(anchor: HTMLElement, choices: [string, () => void][]) {
   m.style.left = `${r.left}px`;
   m.style.top = `${r.bottom + 8}px`;
   document.body.appendChild(m);
+  // Kept on screen: right-aligned near the right edge, above the button near the bottom.
+  const b = m.getBoundingClientRect();
+  if (b.right > innerWidth - 8) m.style.left = `${Math.max(8, r.right - b.width)}px`;
+  if (b.bottom > innerHeight - 8) m.style.top = `${Math.max(8, r.top - 8 - b.height)}px`;
   const away = (e: PointerEvent) => {
     if (m.contains(e.target as Node) || anchor.contains(e.target as Node)) return;
     m.remove();
