@@ -3473,9 +3473,38 @@ function projectsUsed(d: CadDocument): string[] {
 async function saveFile() {
   if (!project) return;
   await flushSave();
+  const bundle = await bundleProjects([], [doc], new Set([project.id]));
+  const copy: CadDocument = { ...doc, ...(bundle.length ? { bundle } : {}), ...sharedCarried([doc, ...bundle.map((b) => b.doc)]) };
+  download(new Blob([JSON.stringify(copy, null, 1)], { type: "application/json" }), `${fileName()}_${stamp()}.waffle.json`);
+}
+
+/**
+ * Downloads a tab whole: its projects, and the ones they use from elsewhere, in one file named
+ * after it. Opened on another device, it becomes a tab of the same name again.
+ */
+async function saveTab(name: string, ids: string[]) {
+  if (!ids.length) return;
+  await flushSave();
+  const bundle = await bundleProjects(ids, [], new Set());
+  const copy: CadDocument = { ...emptyDoc(), tab: name, bundle, ...sharedCarried(bundle.map((b) => b.doc)) };
+  download(new Blob([JSON.stringify(copy, null, 1)], { type: "application/json" }), `${safeName(name)}_${stamp()}.waffle.json`);
+}
+
+/** The name of a tab by id ("" is My projects). */
+const tabName = (id: string) => groups.find((g) => g.id === id)?.name ?? "My projects";
+
+/** Saves the tab the open project is in (none open: My projects). */
+async function saveOpenTab() {
+  const id = project ? groupOf(project) : "";
+  const inside = (await listProjects().catch(() => [])).filter((p) => groupOf(p) === id);
+  if (!inside.length) return toast("Nothing in this tab yet");
+  await saveTab(tabName(id), inside.map((p) => p.id));
+}
+
+/** The projects given, then the ones used by them or by `docs`, and theirs in turn: none twice, none in `seen`. */
+async function bundleProjects(ids: string[], docs: CadDocument[], seen: Set<string>): Promise<BundledProject[]> {
   const bundle: BundledProject[] = [];
-  const seen = new Set([project.id]);
-  const todo = projectsUsed(doc);
+  const todo = [...ids, ...docs.flatMap(projectsUsed)];
   while (todo.length) {
     const id = todo.shift()!;
     if (seen.has(id)) continue;
@@ -3485,14 +3514,21 @@ async function saveFile() {
     bundle.push({ id, name: got.meta.name, kind: got.meta.kind, doc: got.doc });
     todo.push(...projectsUsed(got.doc));
   }
+  return bundle;
+}
+
+/** The shared parameters these documents use, to go in a saved file with them. */
+function sharedCarried(docs: CadDocument[]): { shared?: Parameter[] } {
+  const carried = new Map<string, Parameter>();
+  for (const d of docs) for (const p of sharedUsed(d, shared)) carried.set(p.name, p);
+  return carried.size ? { shared: [...carried.values()] } : {};
+}
+
+/** The date and time, for a saved file's name: copies never take each other's name and sort in order. */
+function stamp() {
   const t = new Date();
   const two = (n: number) => String(n).padStart(2, "0");
-  const stamp = `${t.getFullYear()}-${two(t.getMonth() + 1)}-${two(t.getDate())}_${two(t.getHours())}${two(t.getMinutes())}`;
-  // The shared parameters it uses go with it.
-  const carried = new Map<string, Parameter>();
-  for (const d of [doc, ...bundle.map((b) => b.doc)]) for (const p of sharedUsed(d, shared)) carried.set(p.name, p);
-  const copy: CadDocument = { ...doc, ...(bundle.length ? { bundle } : {}), ...(carried.size ? { shared: [...carried.values()] } : {}) };
-  download(new Blob([JSON.stringify(copy, null, 1)], { type: "application/json" }), `${fileName()}_${stamp}.waffle.json`);
+  return `${t.getFullYear()}-${two(t.getMonth() + 1)}-${two(t.getDate())}_${two(t.getHours())}${two(t.getMinutes())}`;
 }
 
 /**
@@ -3565,7 +3601,14 @@ function renderWorkspace() {
         ["Assembly", () => void newAssembly()],
       ],
     ],
-    ["save", "Save", saveFile],
+    [
+      "save",
+      "Save",
+      [
+        ...(project ? [["This project and the ones it uses", () => void saveFile()] as [string, () => void]] : []),
+        [`The whole tab "${tabName(project ? groupOf(project) : "")}"`, () => void saveOpenTab()],
+      ],
+    ],
     [
       "import",
       "Import",
@@ -5484,6 +5527,11 @@ function openFile() {
       const { doc: main, added } = await unbundle(d, tab.id);
       projectsTab = tab.id;
       saveGroups();
+      if (d.tab !== undefined) {
+        // A saved tab: its projects are all in the bundle, and the tab is what opens.
+        toast(`${added} project${added > 1 ? "s" : ""} imported in the tab "${tab.name}"`);
+        return void showProjects();
+      }
       await createProject(keepName(name || "Model", (await listProjects().catch(() => [])).map((p) => p.name)), main, tab.id);
       if (added) toast(`${added} linked project${added > 1 ? "s" : ""} imported with it`);
       closeProjects();
@@ -5495,7 +5543,8 @@ function openFile() {
 }
 
 /** The project's name, made safe for a file name. */
-const fileName = () => (project?.name ?? "model").replace(/[\\/:*?"<>|]+/g, "-").trim() || "model";
+const fileName = () => safeName(project?.name ?? "model");
+const safeName = (name: string) => name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "model";
 
 // ---------- Project gallery ----------
 
@@ -5591,7 +5640,7 @@ function renderProjectTabs(row: HTMLElement, list: ProjectMeta[]) {
     const n = id === "all" ? list.length : list.filter((p) => groupOf(p) === id).length;
     const on = id === projectsTab;
     b.className = on ? "on" : "";
-    b.innerHTML = `<span></span><small>${n}</small>${on && id && id !== "all" ? icon("more", 16) : ""}`;
+    b.innerHTML = `<span></span><small>${n}</small>${on && id !== "all" ? icon("more", 16) : ""}`;
     b.querySelector("span")!.textContent = name;
     b.onclick = () => {
       if (!on) {
@@ -5599,8 +5648,25 @@ function renderProjectTabs(row: HTMLElement, list: ProjectMeta[]) {
         saveGroups();
         return void showProjects();
       }
+      const inside = list.filter((p) => groupOf(p) === id);
       const g = groups.find((x) => x.id === id);
-      if (g) tabMenu(b, g, list.filter((p) => groupOf(p) === id));
+      if (g) tabMenu(b, g, inside);
+      else if (id === "" && inside.length) {
+        toggleBarMenu(b, [
+          [saveTabLabel(inside), () => void saveTab("My projects", inside.map((p) => p.id))],
+          // My projects stays the tab projects land in by default, so it is not renamed: its projects move out instead.
+          [`Move its ${inside.length} project${inside.length > 1 ? "s" : ""} to a new tab…`, async () => {
+            const name = prompt("Name of the new tab")?.trim();
+            if (!name) return;
+            if (["All", "My projects", ...groups.map((x) => x.name)].includes(name)) return toast(`${name} already exists`);
+            const g = addGroup(name);
+            await moveProjects(inside.map((p) => p.id), g.id);
+            projectsTab = g.id;
+            saveGroups();
+            void showProjects();
+          }],
+        ]);
+      }
     };
     row.appendChild(b);
     if (on) requestAnimationFrame(() => b.scrollIntoView({ block: "nearest", inline: "nearest" }));
@@ -5615,12 +5681,14 @@ function tabMenu(anchor: HTMLElement, g: Group, inside: ProjectMeta[]) {
     saveGroups();
   };
   const choices: [string, () => void, boolean?][] = [
+    ...(inside.length ? [[saveTabLabel(inside), () => void saveTab(g.name, inside.map((p) => p.id))] as [string, () => void]] : []),
     ["Rename", () => {
       const name = prompt("Tab name", g.name)?.trim();
       if (!name || name === g.name) return;
       if (["All", "My projects", ...groups.map((x) => x.name)].includes(name)) return toast(`${name} already exists`);
       g.name = name;
       saveGroups();
+      renderWorkspace(); // Save names the open project's tab
       void showProjects();
     }],
   ];
@@ -5646,6 +5714,8 @@ function tabMenu(anchor: HTMLElement, g: Group, inside: ProjectMeta[]) {
   toggleBarMenu(anchor, choices);
 }
 
+const saveTabLabel = (inside: ProjectMeta[]) => `Save the tab as a file (${inside.length} project${inside.length === 1 ? "" : "s"})`;
+
 /** Projects put in another tab (none: My projects). */
 async function moveProjects(ids: string[], group: string | undefined) {
   for (const id of ids) {
@@ -5653,6 +5723,7 @@ async function moveProjects(ids: string[], group: string | undefined) {
     const got = await getProject(id).catch(() => null);
     if (got) await putProject({ ...got.meta, group }).catch(() => toast("Could not move"));
   }
+  renderWorkspace(); // Save names the open project's tab
 }
 
 /** Projects deleted: what was open, or what Back led to, goes with them. */

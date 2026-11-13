@@ -359,6 +359,8 @@ export interface CadDocument {
   bundle?: BundledProject[];
   /** In a saved copy only: the shared parameters it (and what it carries) uses. */
   shared?: Parameter[];
+  /** In a saved tab only: the tab's name. The file has no project of its own, they are all in `bundle`. */
+  tab?: string;
 }
 
 /** A project carried in a downloaded copy of another (see `CadDocument.bundle`). */
