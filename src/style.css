@@ -1239,6 +1239,13 @@ body.busy #status-pill .dot {
   color: var(--muted);
   margin: 6px 2px 0;
 }
+/* The parts a shared parameter is used in. */
+.param-used {
+  font-size: 12px;
+  color: var(--muted);
+  margin: -2px 4px 4px;
+  overflow-wrap: anywhere;
+}
 .param-main.overridden {
   opacity: 0.55;
 }
@@ -1882,6 +1889,24 @@ body.busy #status-pill .dot {
   color: var(--text);
   font-size: 14px;
   font-weight: 600;
+}
+.projects-search {
+  flex: none;
+  width: 120px;
+  min-height: 38px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--card2);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.projects-search:focus {
+  outline: 2px solid var(--accent);
+}
+.project-card.off {
+  display: none;
 }
 .projects-tabs small {
   font-size: 12px;

@@ -123,6 +123,8 @@ try {
 } catch {
   // None yet.
 }
+/** What is typed in the search field of Projects: only the names holding it are shown. */
+let projectsQuery = "";
 /** The tab Projects shows: "all", "" (My projects) or a tab's id. */
 let projectsTab = localStorage.getItem(TAB_KEY) ?? "";
 function saveGroups() {
@@ -3347,6 +3349,7 @@ function renderParamsPanel(el: HTMLElement) {
     list.appendChild(t);
   };
   const own = new Set(params.map((p) => p.name));
+  const usedIn = new Map<string, HTMLElement>();
   // Shown by name (q_2 before q_10), so families of names stay together; the saved order stays as made.
   const sharedRows = byName(shared);
   const ownRows = byName(params);
@@ -3383,7 +3386,16 @@ function renderParamsPanel(el: HTMLElement) {
       ]);
     row.append(main, more);
     list.appendChild(row);
+    if (isCommon) {
+      // Which parts use it, filled in once they are read.
+      const where = document.createElement("div");
+      where.className = "param-used";
+      where.textContent = "…";
+      list.appendChild(where);
+      usedIn.set(p.id, where);
+    }
   }
+  if (usedIn.size) void showSharedUse(usedIn);
   el.appendChild(list);
   const add = document.createElement("div");
   add.className = "p-actions";
@@ -3393,6 +3405,22 @@ function renderParamsPanel(el: HTMLElement) {
   b.onclick = () => void newParameter();
   add.appendChild(b);
   el.appendChild(add);
+}
+
+/** Under each shared parameter, the parts that use it (the open one as it is now, unsaved changes included). */
+async function showSharedUse(rows: Map<string, HTMLElement>) {
+  const list = byName(await listProjects().catch(() => []));
+  const users = new Map<string, string[]>();
+  for (const m of list) {
+    const d = m.id === project?.id ? doc : (await getProject(m.id).catch(() => null))?.doc;
+    if (!d) continue;
+    for (const p of sharedUsed(d, shared)) users.set(p.id, [...(users.get(p.id) ?? []), m.name]);
+  }
+  for (const [id, el] of rows) {
+    if (!el.isConnected) return; // the panel was drawn again meanwhile
+    const names = users.get(id) ?? [];
+    el.textContent = names.length ? `In ${names.join(", ")}` : "Not used in any part yet";
+  }
 }
 
 /** The selected sketch, or the last sketch not yet used by a feature. */
@@ -5609,7 +5637,18 @@ async function showProjects() {
     for (const id of ids) usedBy.set(id, [...(usedBy.get(id) ?? []), m.id]);
   }
   if (projectsTab !== "all" && projectsTab && !groups.some((g) => g.id === projectsTab)) projectsTab = "";
-  renderProjectTabs(el.querySelector(".projects-tabs")!, list);
+  const tabsRow = el.querySelector<HTMLElement>(".projects-tabs")!;
+  // A search field once there are enough projects to lose one; it narrows the tab shown by name.
+  const search = document.createElement("input");
+  if (list.length >= 6) {
+    search.type = "search";
+    search.className = "projects-search";
+    search.placeholder = "Search";
+    search.setAttribute("aria-label", "Search projects");
+    search.value = projectsQuery;
+    tabsRow.appendChild(search);
+  } else projectsQuery = "";
+  renderProjectTabs(tabsRow, list);
   // A part only one assembly needs (in it, or made from it): moved and deleted with that assembly.
   const members = new Map<string, ProjectMeta[]>();
   for (const p of list) {
@@ -5626,7 +5665,25 @@ async function showProjects() {
     if (projectsTab !== "all" && groupOf(p) !== projectsTab) continue;
     grid.appendChild(projectCard(p, list, linksOf(p), from.has(p.id), members.get(p.id)));
   }
-  if (!grid.children.length) grid.innerHTML = `<p class="projects-empty">No projects in this tab yet</p>`;
+  const filter = () => {
+    projectsQuery = search.value.trim();
+    const q = projectsQuery.toLowerCase();
+    let shown = 0;
+    for (const c of grid.querySelectorAll<HTMLElement>(".project-card")) {
+      const hit = !q || (c.dataset.name ?? "").toLowerCase().includes(q);
+      c.classList.toggle("off", !hit);
+      if (hit) shown++;
+    }
+    grid.querySelector(".projects-empty")?.remove();
+    if (!shown) {
+      const e = document.createElement("p");
+      e.className = "projects-empty";
+      e.textContent = q ? `No project named "${projectsQuery}" in this tab` : "No projects in this tab yet";
+      grid.appendChild(e);
+    }
+  };
+  search.oninput = filter;
+  filter();
 }
 
 /**
@@ -5769,6 +5826,7 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
   const current = p.id === project?.id;
   const card = document.createElement("div");
   card.className = "project-card" + (current ? " current" : "");
+  card.dataset.name = p.name;
   card.innerHTML = `<button class="project-thumb"></button>
     <div class="project-row"><div class="project-info"><div class="project-name"></div><div class="project-date"></div></div>
     <button class="project-more" aria-label="More">${icon("more", 22)}</button></div>
