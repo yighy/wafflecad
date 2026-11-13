@@ -246,31 +246,37 @@ export class SketchEditor implements PointerTool {
 
   /** Nearest point, then nearest curve, within the pointer's hit radius. */
   private hitTest(p: Ptr, exclude: Set<string> = new Set()): { id: string; kind: "point" | "curve"; at: P2 } | null {
+    return this.hitsAt(p, exclude)[0] ?? null;
+  }
+
+  /** Everything within the pointer's hit radius, nearest first: the points, or else the curves. */
+  private hitsAt(p: Ptr, exclude: Set<string> = new Set()): { id: string; kind: "point" | "curve"; at: P2 }[] {
     const v = this.view;
     const R = hitRadius(p.kind);
-    let best: { id: string; kind: "point" | "curve"; at: P2; d: number } | null = null;
+    const hits: { id: string; kind: "point" | "curve"; at: P2; d: number }[] = [];
     const hidden = this.hiddenControls(v);
     for (const pt of v.points()) {
       if (exclude.has(pt.id) || hidden.has(pt.id)) continue;
       const [sx, sy] = this.toScreen([pt.x, pt.y]);
       const d = Math.hypot(sx - p.x, sy - p.y);
-      if (d < R && (!best || d < best.d)) best = { id: pt.id, kind: "point", at: [pt.x, pt.y], d };
+      if (d < R) hits.push({ id: pt.id, kind: "point", at: [pt.x, pt.y], d });
     }
-    if (best) return best;
-    const s = this.toSketch(p);
-    for (const c of v.curves()) {
-      if (exclude.has(c.id)) continue;
-      const proj = this.project(c, s, v);
-      if (!proj) continue;
-      const [sx, sy] = this.toScreen(proj);
-      const raw = Math.hypot(sx - p.x, sy - p.y);
-      // Curves are a bit easier to miss than points: favour points by a margin.
-      if (raw >= R * 0.8) continue;
-      // Drawn geometry wins over a reference axis it lies on (the axis is still picked away from it).
-      const d = c.type === "line" && c.axis ? raw + R : raw;
-      if (!best || d < best.d) best = { id: c.id, kind: "curve", at: proj, d };
+    if (!hits.length) {
+      const s = this.toSketch(p);
+      for (const c of v.curves()) {
+        if (exclude.has(c.id)) continue;
+        const proj = this.project(c, s, v);
+        if (!proj) continue;
+        const [sx, sy] = this.toScreen(proj);
+        const raw = Math.hypot(sx - p.x, sy - p.y);
+        // Curves are a bit easier to miss than points: favour points by a margin.
+        if (raw >= R * 0.8) continue;
+        // Drawn geometry wins over a reference axis it lies on (the axis is still picked away from it).
+        const d = c.type === "line" && c.axis ? raw + R : raw;
+        hits.push({ id: c.id, kind: "curve", at: proj, d });
+      }
     }
-    return best;
+    return hits.sort((a, b) => a.d - b.d);
   }
 
   /** Closest point on a curve (arcs: only within their sweep). */
@@ -1088,6 +1094,29 @@ export class SketchEditor implements PointerTool {
       const ids = connectedContour(this.sk, id);
       if (ids.length) return this.toggleGroup(ids, id);
     }
+    // Several under the finger (a line on another): each tap there takes the next one, then none.
+    // (A reference axis under drawn geometry is left out, as when it is tapped alone.)
+    const axis = (x: string) => {
+      const e = this.view.get(x);
+      return e?.type === "line" && !!e.axis;
+    };
+    const all = this.hitsAt(p).map((h) => h.id);
+    const under = all.some((x) => !axis(x)) ? all.filter((x) => !axis(x)) : all;
+    if (under.length > 1) {
+      const k = under.findIndex((x) => this.selection.has(x));
+      if (k < 0) {
+        this.selection.add(under[0]);
+        this.lastTapped = under[0];
+        const what = this.view.get(under[0])?.type === "point" ? "points" : "lines";
+        return this.hooks.toast(`${under.length} ${what} here: tap again for the next one`);
+      }
+      this.selection.delete(under[k]);
+      if (k + 1 < under.length) {
+        this.selection.add(under[k + 1]);
+        this.lastTapped = under[k + 1];
+      }
+      return;
+    }
     if (this.selection.has(id)) this.selection.delete(id);
     else {
       this.selection.add(id);
@@ -1413,6 +1442,11 @@ export class SketchEditor implements PointerTool {
   }
 
   async dimension(type: ConstraintType, refs: string[]) {
+    // Already sized the same way: that dimension is edited (a second one would conflict with it).
+    // A radius asked where a diameter is (or the reverse) takes its place.
+    const kin: ConstraintType[] = type === "radius" || type === "diameter" ? ["radius", "diameter"] : [type];
+    const same = this.sk.constraints.find((c) => kin.includes(c.type) && c.refs.length === refs.length && refs.every((id) => c.refs.includes(id)));
+    if (same && same.type === type) return this.editDimension(same);
     let r = refs;
     let current = this.measure(type, r);
     // Signed horizontal/vertical distances: order the points so the value is positive.
@@ -1439,7 +1473,18 @@ export class SketchEditor implements PointerTool {
     const value = res.value;
     if (type !== "angle" && value <= 0) return this.hooks.toast("The value must be positive");
     const signed = type === "angle" && current < 0 ? -Math.abs(value) : value;
-    this.constrainWith({ id: uid(), type, refs: r, value: signed, expr: res.expr }, titles[type] ?? "Dimension");
+    const replaced = same ? this.sk.constraints.indexOf(same) : -1;
+    if (replaced >= 0) this.sk.constraints.splice(replaced, 1);
+    const made: SkConstraint = { id: uid(), type, refs: r, value: signed, expr: res.expr, dimOff: same?.dimOff };
+    if (this.addConstraint(made)) {
+      this.selection.clear();
+      this.hooks.commit(titles[type] ?? "Dimension");
+    } else if (replaced >= 0) {
+      this.sk.constraints.splice(replaced, 0, same!);
+      this.solve();
+    }
+    this.render();
+    this.hooks.changed();
   }
 
   async editDimension(c: SkConstraint) {
