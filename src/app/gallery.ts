@@ -536,9 +536,24 @@ async function confirmDelete(question: string, ids: string[]): Promise<{ shared:
   return got === null ? null : { shared: got === 0 ? only : [] };
 }
 
-/** Projects deleted: what was open, or what Back led to, goes with them; and the shared parameters given. */
+/**
+ * Projects deleted: what was open, or what Back led to, goes with them; and the shared parameters
+ * given. A tab they leave empty goes too (one made empty on purpose, never filled, stays).
+ */
 async function removeProjects(ids: string[], shared: Parameter[] = []) {
+  const before = await listProjects().catch(() => []);
+  const tabsHit = new Set(before.filter((p) => ids.includes(p.id)).map(groupOf).filter((g) => g));
   for (const id of ids) await deleteProject(id).catch(() => ctx.toast("Could not delete"));
+  const after = await listProjects().catch(() => null);
+  const emptied = after ? [...tabsHit].filter((g) => !after.some((p) => groupOf(p) === g)) : [];
+  if (emptied.length) {
+    const names = emptied.map(tabName);
+    groups = groups.filter((g) => !emptied.includes(g.id));
+    if (emptied.includes(projectsTab)) projectsTab = "";
+    saveGroups();
+    ctx.renderWorkspace(); // Save names the open project's tab
+    window.setTimeout(() => ctx.toast(`The tab${names.length > 1 ? "s" : ""} ${names.map((n) => `"${n}"`).join(", ")}, now empty, ${names.length > 1 ? "were" : "was"} deleted too`), 1200);
+  }
   const from = ctx.cameFrom();
   if (from && ids.includes(from.id)) {
     ctx.setCameFrom(null); // no way back to it any more
