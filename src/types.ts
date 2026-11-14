@@ -9,6 +9,8 @@ export interface PlaneDef {
   normal: Vec3;
   /** Display name: "XY", "XZ", "YZ" or "Face". */
   label: string;
+  /** Degrees it was turned around the picked plane's X axis, then around its own Y axis (for the timeline). */
+  tilt?: [number, number];
 }
 
 // ---------- Sketch entities (2D, in sketch coordinates, millimetres) ----------
@@ -270,10 +272,22 @@ export interface SweepFeature {
   name: string;
   /** The profile: a closed sketch, drawn where the path starts. */
   sketchId: string;
-  /** The path: one open chain of lines, arcs or curves in another sketch. */
+  /** The path: one open chain of lines, arcs or curves in another sketch (unused with a helix). */
   pathSketchId: string;
+  /** Instead of a drawn path: a coil around a line of the profile's sketch (a spring, a coarse thread). */
+  helix?: SweepHelix;
   op: ExtrudeOp;
   body?: BodyTarget;
+}
+
+/** The profile turns around `axisLine` (as a revolve's axis), rising `pitch` mm per turn. */
+export interface SweepHelix {
+  /** "AX" / "AY" for the sketch axes, or a drawn line of the profile's sketch. */
+  axisLine: string;
+  /** Rise per turn, mm. Negative coils the other way along the axis. */
+  pitch: number;
+  turns: number;
+  leftHand: boolean;
 }
 
 /** A solid through the closed region of two or more sketches, one after the other (a handle, a funnel). */

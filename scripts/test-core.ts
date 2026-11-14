@@ -314,6 +314,29 @@ sws = sw({}, closedPath);
 check("a closed path is refused", /open/.test(sws.errors.sw ?? ""), JSON.stringify(sws.errors));
 check("openPath orders the chain from a free end", openPath(swPath).segments.map((g) => g.kind).join() === "line,line" && openPath(swPath).segments[0].a.join() === "0,0");
 
+// --- Helix sweep: a 1 mm wire (circle r = 1) on XZ at 10 mm from the sketch Y axis (world Z) → a spring.
+const coilSk = newSketch("COIL", XZ);
+coilSk.entities.push({ id: "cc", type: "point", x: 10, y: 0 }, { id: "co", type: "circle", c: "cc", r: 1 });
+const coil = (h: object) =>
+  buildShape({ format: "waffle", version: 1, features: [coilSk, { id: "hx", kind: "sweep", name: "HX", sketchId: coilSk.id, pathSketchId: "", helix: { axisLine: "AY", pitch: 5, turns: 4, leftHand: false, ...h }, op: "add" } as never] });
+let cs = coil({});
+const springLen = 4 * Math.hypot(2 * Math.PI * 10, 5);
+check("helix sweep = a spring of the right volume", !cs.errors.hx && Math.abs(measureVolume(cs.shape!) - Math.PI * springLen) < Math.PI * springLen * 0.03, `${JSON.stringify(cs.errors)} vol=${cs.shape && measureVolume(cs.shape)} want=${Math.PI * springLen}`);
+const sbb = cs.shape?.boundingBox.bounds;
+check("the spring is 20 mm tall (4 turns × 5) around Z, 11 mm out", !!sbb && near(sbb[1][2] - sbb[0][2], 22, 0.2) && near(sbb[1][0], 11, 0.2) && near(sbb[0][0], -11, 0.2), JSON.stringify(sbb));
+cs = coil({ leftHand: true });
+check("left-handed coil builds too", !cs.errors.hx && Math.abs(measureVolume(cs.shape!) - Math.PI * springLen) < Math.PI * springLen * 0.03, JSON.stringify(cs.errors));
+cs = coil({ pitch: -5 });
+check("a negative pitch coils downwards", !cs.errors.hx && !!cs.shape && cs.shape.boundingBox.bounds[0][2] < -15, JSON.stringify(cs.shape?.boundingBox.bounds));
+cs = coil({ turns: 0 });
+check("zero turns is refused", /turns/.test(cs.errors.hx ?? ""), JSON.stringify(cs.errors));
+{
+  const onAxis = newSketch("ONAX", XZ);
+  onAxis.entities.push({ id: "oc", type: "point", x: 0, y: 0 }, { id: "oo", type: "circle", c: "oc", r: 1 });
+  const r = buildShape({ format: "waffle", version: 1, features: [onAxis, { id: "hx", kind: "sweep", name: "HX", sketchId: onAxis.id, pathSketchId: "", helix: { axisLine: "AY", pitch: 5, turns: 2, leftHand: false }, op: "add" } as never] });
+  check("a profile on the axis is refused", /axis/.test(r.errors.hx ?? ""), JSON.stringify(r.errors));
+}
+
 // --- Loft: a 10 × 10 square on XY and a 4 × 4 square 20 mm above it → a frustum.
 const lfA = newSketch("LFA", XY);
 rect(lfA, -5, -5, 5, 5);

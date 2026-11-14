@@ -1,12 +1,12 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, genericSweep, getOC, isShape3D, makeCompound, makeOffset, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D, type Sketch } from "replicad";
+import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, genericSweep, getOC, isShape3D, makeCompound, makeHelix, makeOffset, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D, type Sketch, type Wire } from "replicad";
 import type { Axis, BuildResult, CadDocument, Clash, CombineFeature, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, LoftFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, ProfileSegment, PushPullFeature, ShellFeature, SketchFeature, SweepFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
 import { hasRef } from "./measure";
 import { sketchLineWorld } from "../sketch/model";
-import { findRegions, openPath } from "../sketch/profiles";
+import { findRegions, openPath, sampleSegments } from "../sketch/profiles";
 
 const MESH_OPTS = { tolerance: 0.01, angularTolerance: 0.1 };
 
@@ -97,23 +97,69 @@ function revolveSolid(sk: SketchFeature, f: RevolveFeature): Shape3D {
  * Each region of the profile is pushed along the path; its holes are pushed too and cut out. The
  * profile is swept as drawn, so it is drawn where the path starts, across it.
  */
-function sweepSolid(sk: SketchFeature, path: SketchFeature, f: SweepFeature): Shape3D {
+function sweepSolid(sk: SketchFeature, path: SketchFeature | null, f: SweepFeature): Shape3D {
   const regions = findRegions(sk);
   if (!regions.length) throw new Error("The profile sketch has no closed region");
-  const { segments, problem } = openPath(path);
-  if (problem) throw new Error(problem);
-  const spine = (penAlong(segments, false).done().sketchOnPlane(planeOf(path)) as Sketch).wire;
+  let spine: Wire;
+  if (f.helix) spine = helixSpine(sk, regions[0].outer, f.helix);
+  else {
+    if (!path) throw new Error("The path sketch is missing");
+    const { segments, problem } = openPath(path);
+    if (problem) throw new Error(problem);
+    spine = (penAlong(segments, false).done().sketchOnPlane(planeOf(path)) as Sketch).wire;
+  }
   const along = (loop: ProfileLoop) => {
     try {
-      return genericSweep(loopWire(loop, sk), spine, { transitionMode: "round" });
+      // Along a helix the profile keeps facing the axis (Frenet frame); along a drawn path, corners are rounded.
+      return genericSweep(loopWire(loop, sk), spine, f.helix ? { frenet: true } : { transitionMode: "round" });
     } catch {
-      throw new Error("Cannot sweep: the profile must be drawn across the start of the path, and the path's bends not tighter than the profile");
+      throw new Error(
+        f.helix
+          ? "Cannot coil this profile: it must not reach the axis, and the pitch must leave room between turns"
+          : "Cannot sweep: the profile must be drawn across the start of the path, and the path's bends not tighter than the profile",
+      );
     }
   };
   const solids = regions.map((r) => r.holes.reduce((s, h) => s.cut(along(h)), along(r.outer)));
   const out = solids.length === 1 ? solids[0] : (makeCompound(solids) as Shape3D);
   if (!(measureVolume(out) > 1e-9)) throw new Error(`${f.name}: the sweep gives nothing (the profile may lie along the path instead of across it)`);
   return out;
+}
+
+/**
+ * The coil a helix sweep follows: around the axis line of the profile's sketch, through the middle
+ * of the profile (its distance from the axis is the coil's radius), starting where the profile is.
+ */
+function helixSpine(sk: SketchFeature, outer: ProfileLoop, h: NonNullable<SweepFeature["helix"]>): Wire {
+  if (!(h.turns > 0)) throw new Error("The number of turns must be more than zero");
+  if (Math.abs(h.pitch) < 1e-6) throw new Error("The pitch cannot be zero");
+  const [a, b] = sketchLineWorld(sk, h.axisLine);
+  let dir = add(b, scale(a, -1));
+  const len = Math.hypot(...dir);
+  if (len < 1e-9) throw new Error("The axis line has no length");
+  dir = scale(dir, (h.pitch < 0 ? -1 : 1) / len);
+  // The middle of the profile, in the sketch and then in space.
+  let mid: [number, number];
+  if (outer.kind === "path") {
+    const pts = sampleSegments(outer.segments);
+    mid = [pts.reduce((s, p) => s + p[0], 0) / pts.length, pts.reduce((s, p) => s + p[1], 0) / pts.length];
+  } else mid = outer.c;
+  const { origin: o, xDir: xd, normal: n } = sk.plane;
+  const yd: Vec3 = [n[1] * xd[2] - n[2] * xd[1], n[2] * xd[0] - n[0] * xd[2], n[0] * xd[1] - n[1] * xd[0]];
+  const c: Vec3 = add(o, add(scale(xd, mid[0]), scale(yd, mid[1])));
+  const foot = add(a, scale(dir, dot(add(c, scale(a, -1)), dir)));
+  const out = add(c, scale(foot, -1));
+  const r = Math.hypot(...out);
+  if (r < 1e-6) throw new Error("The profile sits on the axis: draw it beside the axis, at the coil's radius");
+  const pitch = Math.abs(h.pitch);
+  let wire = makeHelix(pitch, pitch * h.turns, r, foot, dir, h.leftHand);
+  // Turn the coil around its axis so it starts where the profile is.
+  const s = wire.startPoint;
+  const s0: Vec3 = [s.x - foot[0], s.y - foot[1], s.z - foot[2]];
+  const cr: Vec3 = [s0[1] * out[2] - s0[2] * out[1], s0[2] * out[0] - s0[0] * out[2], s0[0] * out[1] - s0[1] * out[0]];
+  const angle = (Math.atan2(dot(cr, dir), dot(s0, out)) * 180) / Math.PI;
+  if (Math.abs(angle) > 1e-9) wire = wire.rotate(angle, foot, dir) as Wire;
+  return wire;
 }
 
 /** The solid through the first closed region of each sketch, in their order. */
@@ -568,10 +614,8 @@ function replay(doc: CadDocument) {
         bodies.set(id, next);
       } else if (f.kind === "sweep") {
         const sk = sketches.get(f.sketchId);
-        const path = sketches.get(f.pathSketchId);
         if (!sk) throw new Error("The profile sketch is missing");
-        if (!path) throw new Error("The path sketch is missing");
-        solidStep(f, sweepSolid(sk, path, f));
+        solidStep(f, sweepSolid(sk, f.helix ? null : (sketches.get(f.pathSketchId) ?? null), f));
       } else if (f.kind === "loft") {
         const sks = f.sketchIds.map((id) => sketches.get(id));
         if (sks.some((s) => !s)) throw new Error("A sketch of the loft is missing");

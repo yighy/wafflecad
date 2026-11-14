@@ -19,8 +19,8 @@
   polygons, slots, ellipses, text, offset, trim, fillet, mirror, model edges brought into the sketch, DXF and
   SVG import. A sketch goes on XY, XZ, YZ or any flat face, offset along the normal and tilted
   around its own axes (sections for a loft, ribs at an angle).
-- **Solids** with OpenCascade: extrude, revolve, sweep (a profile along a path), loft (through
-  several sketches), Press Pull, shell, fillet / chamfer, metric holes (counterbore, countersink),
+- **Solids** with OpenCascade: extrude, revolve, sweep (a profile along a path, or coiled
+  around an axis: springs, coarse threads), loft (through several sketches), Press Pull, shell, fillet / chamfer, metric holes (counterbore, countersink),
   mirror and patterns. Every step stays editable in the timeline.
 - **Bodies**: several solids in one part (a box and its lid), each joined, cut, renamed, hidden or shown
   alone.

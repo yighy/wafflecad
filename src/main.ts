@@ -129,7 +129,7 @@ function saveShared() {
 
 type Mode =
   | { kind: "part" }
-  | { kind: "pickPlane"; offset: number; tilt: number; tiltAxis: "X" | "Y" }
+  | { kind: "pickPlane"; offset: number; tiltX: number; tiltY: number }
   | { kind: "sketch"; editor: SketchEditor }
   | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle }
   | { kind: "pushpull"; feat: PushPullFeature; keypad: KeypadHandle }
@@ -161,7 +161,7 @@ interface MatePick {
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
 /** The sketches a feature is made from: hidden in the part view once used, deleted with them. */
 const usedSketchIds = (f: Feature): string[] =>
-  f.kind === "extrude" || f.kind === "revolve" ? [f.sketchId] : f.kind === "sweep" ? [f.sketchId, f.pathSketchId] : f.kind === "loft" ? f.sketchIds : [];
+  f.kind === "extrude" || f.kind === "revolve" ? [f.sketchId] : f.kind === "sweep" ? (f.helix ? [f.sketchId] : [f.sketchId, f.pathSketchId]) : f.kind === "loft" ? f.sketchIds : [];
 
 let doc: CadDocument = emptyDoc();
 /** The open project; null until the saved ones are read (or when this browser cannot store them). */
@@ -695,7 +695,7 @@ function nextName(prefix: string) {
 // ---------- Modes ----------
 
 function startNewSketch() {
-  mode = { kind: "pickPlane", offset: 0, tilt: 0, tiltAxis: "X" };
+  mode = { kind: "pickPlane", offset: 0, tiltX: 0, tiltY: 0 };
   selectedFeature = null;
   selectedFace = null;
   vp.highlightFace(null);
@@ -710,72 +710,64 @@ function showPickPlanes() {
   vp.showPlanes(STD_PLANES.map((def) => ({ def: placedPlane(def, m), color: PLANE_COLORS[def.label] })));
 }
 
-/** The picked plane moved along its normal, then tilted around its own X or Y axis. */
-function placedPlane(base: PlaneDef, o: { offset: number; tilt: number; tiltAxis: "X" | "Y" }): PlaneDef {
-  if (!o.offset && !o.tilt) return base;
+/**
+ * The picked plane moved along its normal, then turned around its own X axis, then around the Y
+ * axis of the plane so turned (tilt forward, then to the side).
+ */
+function placedPlane(base: PlaneDef, o: { offset: number; tiltX: number; tiltY: number }): PlaneDef {
+  if (!o.offset && !o.tiltX && !o.tiltY) return base;
   const add3 = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
   const mul3 = (a: Vec3, k: number): Vec3 => [a[0] * k, a[1] * k, a[2] * k];
   const cross3 = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-  const origin = add3(base.origin, mul3(base.normal, o.offset));
-  if (!o.tilt) return { ...base, origin };
-  const axis = o.tiltAxis === "X" ? base.xDir : cross3(base.normal, base.xDir);
-  const rad = (o.tilt * Math.PI) / 180;
-  const rot = (v: Vec3): Vec3 => {
-    // Rodrigues: v cosθ + (axis × v) sinθ + axis (axis · v)(1 − cosθ)
+  // Rodrigues: v cosθ + (axis × v) sinθ + axis (axis · v)(1 − cosθ)
+  const rot = (v: Vec3, axis: Vec3, deg: number): Vec3 => {
+    const rad = (deg * Math.PI) / 180;
     const c = Math.cos(rad);
     const s = Math.sin(rad);
     const d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
     return add3(add3(mul3(v, c), mul3(cross3(axis, v), s)), mul3(axis, d * (1 - c)));
   };
-  return { origin, xDir: rot(base.xDir), normal: rot(base.normal), label: base.label };
+  const origin = add3(base.origin, mul3(base.normal, o.offset));
+  if (!o.tiltX && !o.tiltY) return { ...base, origin };
+  let xDir = base.xDir;
+  let normal = base.normal;
+  if (o.tiltX) normal = rot(normal, xDir, o.tiltX);
+  if (o.tiltY) {
+    const yDir = cross3(normal, xDir);
+    xDir = rot(xDir, yDir, o.tiltY);
+    normal = rot(normal, yDir, o.tiltY);
+  }
+  return { origin, xDir, normal, label: base.label, tilt: [o.tiltX, o.tiltY] };
 }
 
 /** Set while the offset or tilt keypad is open: a tap on a plane then waits for Confirm. */
 let planeKeypad: KeypadHandle | null = null;
 
-/** Types the offset (mm along the normal) or the tilt (degrees around the sketch X or Y axis). */
-async function pickPlaneValue(what: "offset" | "tilt") {
+/** Types the offset (mm along the normal) or a tilt (degrees around the plane's X, then its Y axis). */
+async function pickPlaneValue(what: "offset" | "tiltX" | "tiltY") {
   if (mode.kind !== "pickPlane" || planeKeypad) return;
   const m = mode;
-  const was = { offset: m.offset, tilt: m.tilt, tiltAxis: m.tiltAxis };
+  const was = { offset: m.offset, tiltX: m.tiltX, tiltY: m.tiltY };
   const kp = openKeypad({
     title: "Sketch plane",
-    subtitle: what === "offset" ? "Moved along its normal" : "Turned around one of its axes",
-    label: what === "offset" ? "Offset" : "Tilt",
+    subtitle: what === "offset" ? "Moved along its normal" : what === "tiltX" ? "Tilted around its X axis (forward or back)" : "Then tilted around its Y axis (to the side)",
+    label: what === "offset" ? "Offset" : what === "tiltX" ? "Tilt X" : "Tilt Y",
     unit: what === "offset" ? "mm" : "°",
-    value: Math.abs(what === "offset" ? m.offset : m.tilt),
+    value: Math.abs(m[what]),
     scope: paramScope(),
     confirmLabel: "Confirm",
-    segments:
-      what === "tilt"
-        ? [
-            {
-              options: [
-                { value: "X", label: "Around X" },
-                { value: "Y", label: "Around Y" },
-              ],
-              get: () => m.tiltAxis,
-              set: (v) => {
-                m.tiltAxis = v as "X" | "Y";
-                showPickPlanes();
-              },
-            },
-          ]
-        : [],
     extras: [
       {
         label: "Flip",
         icon: "flip",
         run: () => {
-          if (what === "offset") m.offset = -m.offset;
-          else m.tilt = -m.tilt;
+          m[what] = -m[what];
           showPickPlanes();
         },
       },
     ],
     onInput: (v) => {
-      if (what === "offset") m.offset = Math.sign(m.offset || 1) * v;
-      else m.tilt = Math.sign(m.tilt || 1) * v;
+      m[what] = Math.sign(m[what] || 1) * v;
       showPickPlanes();
     },
   });
@@ -783,8 +775,7 @@ async function pickPlaneValue(what: "offset" | "tilt") {
   const res = await kp.result;
   planeKeypad = null;
   if (res === null) Object.assign(m, was);
-  else if (what === "offset") m.offset = Math.sign(m.offset || 1) * res.value;
-  else m.tilt = Math.sign(m.tilt || 1) * res.value;
+  else m[what] = Math.sign(m[what] || 1) * res.value;
   showPickPlanes();
   renderTools();
   renderStatus();
@@ -808,7 +799,7 @@ function pickPlaneAt(p: Ptr) {
     if (faceId != null) toast("Only flat faces can hold a sketch");
     return;
   }
-  if (mode.kind === "pickPlane" && (mode.offset || mode.tilt)) {
+  if (mode.kind === "pickPlane" && (mode.offset || mode.tiltX || mode.tiltY)) {
     plane = placedPlane(plane, mode);
     face = undefined; // off the face, the sketch no longer follows it
   }
@@ -2956,18 +2947,57 @@ function startSweep(existing?: SweepFeature) {
   let f = existing;
   if (!f) {
     const sketches = allSketches();
-    if (sketches.length < 2) return toast("Draw the profile, and its path in another sketch");
+    if (!sketches.length) return toast("Draw the profile first");
     if (mode.kind === "sketch") exitSketch();
     // The profile: the sketch chosen if closed, else the last closed one; the path: the latest other sketch, open if there is one.
     const chosen = pickSketchForExtrude();
     const profile = (chosen && findRegions(chosen).length ? chosen : null) ?? [...sketches].reverse().find((s) => findRegions(s).length) ?? sketches[sketches.length - 1];
     const others = sketches.filter((s) => s.id !== profile.id);
-    const path = [...others].reverse().find((s) => !findRegions(s).length) ?? others[others.length - 1];
-    f = { id: uid(), kind: "sweep", name: nextName("Sweep"), sketchId: profile.id, pathSketchId: path.id, op: "add" };
+    const path = [...others].reverse().find((s) => !findRegions(s).length);
+    // No open path drawn: a coil around the profile's sketch Y axis (a spring standing up when drawn on XZ).
+    f = path
+      ? { id: uid(), kind: "sweep", name: nextName("Sweep"), sketchId: profile.id, pathSketchId: path.id, op: "add" }
+      : { id: uid(), kind: "sweep", name: nextName("Sweep"), sketchId: profile.id, pathSketchId: "", helix: defaultHelix(profile), op: "add" };
     doc.features.push(f);
   } else if (mode.kind === "sketch") exitSketch();
   sweepLoftBefore = existing ? structuredClone(existing) : null;
   beginSweepLoft({ kind: "sweep", feat: f });
+}
+
+/** A coil with room between its turns: the pitch is twice the profile's width. */
+function defaultHelix(profile: SketchFeature): NonNullable<SweepFeature["helix"]> {
+  const outer = findRegions(profile)[0]?.outer;
+  const width = outer?.kind === "circle" ? 2 * outer.r : outer?.kind === "ellipse" ? 2 * Math.max(outer.ra, outer.rb) : 2;
+  return { axisLine: "AY", pitch: Math.max(1, Math.round(width * 2 * 10) / 10), turns: 5, leftHand: false };
+}
+
+/** Types a helix's pitch or number of turns. */
+async function helixValue(f: SweepFeature, what: "pitch" | "turns") {
+  const h = f.helix;
+  if (!h) return;
+  const was = { ...h };
+  const kp = openKeypad({
+    title: f.name,
+    subtitle: what === "pitch" ? "Rise per turn" : "How many times it goes round",
+    label: what === "pitch" ? "Pitch" : "Turns",
+    unit: what === "pitch" ? "mm" : "",
+    value: what === "pitch" ? Math.abs(h.pitch) : h.turns,
+    scope: paramScope(),
+    confirmLabel: "Confirm",
+    onInput: (v) => {
+      if (!(v > 0)) return;
+      if (what === "pitch") h.pitch = Math.sign(h.pitch || 1) * v;
+      else h.turns = v;
+      rebuild();
+    },
+  });
+  const res = await kp.result;
+  if (!res || !(res.value > 0)) Object.assign(h, was);
+  else if (what === "pitch") h.pitch = Math.sign(h.pitch || 1) * res.value;
+  else h.turns = res.value;
+  rebuild();
+  renderPanel();
+  renderTimeline();
 }
 
 /** A solid through two or more sketches, in order. */
@@ -3005,7 +3035,7 @@ function endSweepLoft(keep: boolean) {
   if (mode.kind !== "sweep" && mode.kind !== "loft") return;
   const f = mode.feat;
   if (keep && f.kind === "loft" && f.sketchIds.length < 2) return toast("Choose at least two sketches");
-  if (keep && f.kind === "sweep" && f.sketchId === f.pathSketchId) return toast("The path must be another sketch than the profile");
+  if (keep && f.kind === "sweep" && !f.helix && (!f.pathSketchId || f.sketchId === f.pathSketchId)) return toast("Choose a path: another sketch than the profile");
   mode = { kind: "part" };
   if (keep) return commit();
   if (sweepLoftBefore) Object.assign(f, sweepLoftBefore);
@@ -3022,7 +3052,7 @@ function renderSweepLoftPanel(el: HTMLElement, head: (title: string, sub?: strin
   if (mode.kind !== "sweep" && mode.kind !== "loft") return;
   const f = mode.feat;
   const err = lastBuild?.errors[f.id];
-  head(f.name, err ?? (f.kind === "sweep" ? "A profile pushed along a path" : "A solid through the sketches, in their order"), !!err);
+  head(f.name, err ?? (f.kind === "sweep" ? (f.helix ? "A profile coiled around an axis" : "A profile pushed along a path") : "A solid through the sketches, in their order"), !!err);
   const sketches = allSketches();
   const nameOf = (id: string) => sketches.find((s) => s.id === id)?.name ?? "Missing sketch";
   const changed = () => {
@@ -3068,8 +3098,47 @@ function renderSweepLoftPanel(el: HTMLElement, head: (title: string, sub?: strin
     row(label, seg);
   };
   if (f.kind === "sweep") {
-    row("Profile", picker(f.sketchId, [f.pathSketchId], (id) => void ((f.sketchId = id), changed())));
-    row("Path", picker(f.pathSketchId, [f.sketchId], (id) => void ((f.pathSketchId = id), changed())));
+    row("Profile", picker(f.sketchId, f.helix ? [] : [f.pathSketchId], (id) => void ((f.sketchId = id), changed())));
+    segRow("Along", [{ value: "path", label: "A drawn path" }, { value: "helix", label: "A helix" }], () => (f.helix ? "helix" : "path"), (v) => {
+      if (v === "helix" && !f.helix) {
+        const sk = sketches.find((s) => s.id === f.sketchId);
+        f.helix = sk ? defaultHelix(sk) : { axisLine: "AY", pitch: 5, turns: 5, leftHand: false };
+      } else if (v === "path") {
+        delete f.helix;
+        if (!f.pathSketchId || f.pathSketchId === f.sketchId) f.pathSketchId = sketches.find((s) => s.id !== f.sketchId && !findRegions(s).length)?.id ?? "";
+      }
+    });
+    const h = f.helix;
+    if (!h) row("Path", picker(f.pathSketchId || null, [f.sketchId], (id) => void ((f.pathSketchId = id), changed())));
+    else {
+      // The axis: one of the profile sketch's axes, or a line drawn in it (as for a revolve).
+      const profile = sketches.find((s) => s.id === f.sketchId);
+      const lines = (profile?.entities ?? []).filter((e) => e.type === "line" && !e.axis);
+      const axisLabel = h.axisLine === "AX" ? "Sketch X" : h.axisLine === "AY" ? "Sketch Y" : "A drawn line";
+      const ax = document.createElement("button");
+      ax.className = "pick";
+      ax.innerHTML = `<span></span>${icon("chevron", 16)}`;
+      ax.querySelector("span")!.textContent = axisLabel;
+      ax.onclick = () =>
+        toggleBarMenu(ax, [
+          ["Sketch X", () => void ((h.axisLine = "AX"), changed())],
+          ["Sketch Y", () => void ((h.axisLine = "AY"), changed())],
+          ...lines.map((l, i): [string, () => void] => [`${l.type === "line" && l.construction ? "Construction line" : "Line"} ${i + 1}`, () => void ((h.axisLine = l.id), changed())]),
+        ]);
+      row("Axis", ax);
+      const value = (text: string, run: () => void) => {
+        const b = document.createElement("button");
+        b.className = "pick";
+        b.innerHTML = `<span></span>${icon("chevron", 16)}`;
+        b.querySelector("span")!.textContent = text;
+        b.onclick = run;
+        return b;
+      };
+      row("Pitch", value(`${fmtNum(Math.abs(h.pitch))} mm per turn`, () => void helixValue(f, "pitch")));
+      row("Turns", value(`${fmtNum(h.turns)} · ${fmtNum(Math.abs(h.pitch) * h.turns)} mm long`, () => void helixValue(f, "turns")));
+      segRow("Hand", [{ value: "right", label: "Right" }, { value: "left", label: "Left" }], () => (h.leftHand ? "left" : "right"), (v) => (h.leftHand = v === "left"));
+      segRow("Goes", [{ value: "up", label: "Along the axis" }, { value: "down", label: "The other way" }], () => (h.pitch < 0 ? "down" : "up"), (v) => (h.pitch = (v === "down" ? -1 : 1) * Math.abs(h.pitch)));
+    }
   } else {
     f.sketchIds.forEach((id, i) => {
       const drop = document.createElement("button");
@@ -3092,7 +3161,9 @@ function renderSweepLoftPanel(el: HTMLElement, head: (title: string, sub?: strin
   hint.className = "p-hint";
   hint.textContent =
     f.kind === "sweep"
-      ? "Draw the profile across the start of the path, on a plane facing along it. The path is one chain of lines, arcs or curves; a bend tighter than the profile is wide cannot be swept."
+      ? f.helix
+        ? "The profile winds around the axis, at the distance it is drawn from it: for a spring, draw a small circle on XZ beside the sketch Y axis. Keep the pitch wider than the profile so the turns do not touch."
+        : "Draw the profile across the start of the path, on a plane facing along it. The path is one chain of lines, arcs or curves; a bend tighter than the profile is wide cannot be swept."
       : "Each sketch gives one closed outline; the solid goes from the first to the last. Sketches on offset planes, one above the other, loft best.";
   el.appendChild(hint);
   actions([
@@ -4282,7 +4353,8 @@ function renderTools() {
       el.appendChild(toolRow("plane" + p.label, PLANE_NAMES[p.label], () => createSketchOn(placedPlane(p, m)), { tint: PLANE_COLORS[p.label], tag: p.label }));
     el.appendChild(section("Place it"));
     el.appendChild(toolRow("pushpull", m.offset ? `Offset · ${fmtNum(m.offset)} mm` : "Offset…", () => void pickPlaneValue("offset"), { on: !!m.offset }));
-    el.appendChild(toolRow("revolve", m.tilt ? `Tilt · ${fmtNum(m.tilt)}° around ${m.tiltAxis}` : "Tilt…", () => void pickPlaneValue("tilt"), { on: !!m.tilt }));
+    el.appendChild(toolRow("revolve", m.tiltX ? `Tilt X · ${fmtNum(m.tiltX)}°` : "Tilt X…", () => void pickPlaneValue("tiltX"), { on: !!m.tiltX }));
+    el.appendChild(toolRow("revolve", m.tiltY ? `Tilt Y · ${fmtNum(m.tiltY)}°` : "Tilt Y…", () => void pickPlaneValue("tiltY"), { on: !!m.tiltY }));
     el.appendChild(toolRow("close", "Cancel", () => escape()));
   } else if (isAssembly()) {
     el.appendChild(section("Parts"));
@@ -4323,7 +4395,7 @@ function renderTools() {
       el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { key: "E", disabled: needSketch }));
       el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { key: "V", disabled: needSketch }));
       const two = allSketches().length >= 2 ? undefined : "Draw a second sketch first";
-      el.appendChild(toolRow("sweep", "Sweep", () => startSweep(), { active: mode.kind === "sweep", disabled: two }));
+      el.appendChild(toolRow("sweep", "Sweep", () => startSweep(), { active: mode.kind === "sweep", disabled: needSketch }));
       el.appendChild(toolRow("loft", "Loft", () => startLoft(), { active: mode.kind === "loft", disabled: two }));
     }
     if (solid) {
@@ -4765,7 +4837,9 @@ function featureDetail(f: Feature) {
     const std = STD_PLANES.find((p) => p.label === f.plane.label);
     const off = std ? (f.plane.origin[0] - std.origin[0]) * std.normal[0] + (f.plane.origin[1] - std.origin[1]) * std.normal[1] + (f.plane.origin[2] - std.origin[2]) * std.normal[2] : 0;
     const tilted = std ? f.plane.normal[0] * std.normal[0] + f.plane.normal[1] * std.normal[1] + f.plane.normal[2] * std.normal[2] < 1 - 1e-9 : false;
-    const extra = `${Math.abs(off) > 1e-9 ? ` · ${fmtNum(off)} mm` : ""}${tilted ? " · tilted" : ""}`;
+    const t = f.plane.tilt;
+    const said = t ? [t[0] ? `${fmtNum(t[0])}° X` : "", t[1] ? `${fmtNum(t[1])}° Y` : ""].filter(Boolean).join(", ") : "";
+    const extra = `${Math.abs(off) > 1e-9 ? ` · ${fmtNum(off)} mm` : ""}${tilted ? (said ? ` · tilted ${said}` : " · tilted") : ""}`;
     return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}${extra}`;
   }
   if (f.kind === "pushpull") return `${f.distance >= 0 ? "Pull" : "Push"} · ${fmtNum(Math.abs(f.distance))} mm`;
@@ -4792,7 +4866,10 @@ function featureDetail(f: Feature) {
     return `${f.mode === "fillet" ? "Radius" : "Chamfer"} ${fmtNum(f.radius)} mm · ${f.edges.length} edge${f.edges.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
   const skName = (id: string) => doc.features.find((x) => x.id === id)?.name ?? "?";
-  if (f.kind === "sweep") return `${op} · ${skName(f.sketchId)} along ${skName(f.pathSketchId)}${bodyNote(f)}`;
+  if (f.kind === "sweep")
+    return f.helix
+      ? `${op} · ${skName(f.sketchId)} coiled · ${fmtNum(f.helix.turns)} turns, ${fmtNum(Math.abs(f.helix.pitch))} mm pitch${f.helix.leftHand ? ", left hand" : ""}${bodyNote(f)}`
+      : `${op} · ${skName(f.sketchId)} along ${skName(f.pathSketchId)}${bodyNote(f)}`;
   if (f.kind === "loft") return `${op} · through ${f.sketchIds.map(skName).join(", ")}${f.ruled ? " · ruled" : ""}${bodyNote(f)}`;
   return `${op} · ${fmtNum(Math.abs(f.distance))} mm${f.symmetric ? " · symmetric" : ""}${bodyNote(f)}`;
 }
@@ -4929,7 +5006,7 @@ function renderPartList(el: HTMLElement) {
 function renderStatus() {
   let s = kernelMessage;
   if (mode.kind === "pickPlane")
-    s = mode.offset || mode.tilt ? "New sketch · tap a plane or a face: the sketch lands on it moved as set" : "New sketch · tap a plane or a flat face";
+    s = mode.offset || mode.tiltX || mode.tiltY ? "New sketch · tap a plane or a face: the sketch lands on it moved as set" : "New sketch · tap a plane or a flat face";
   else if (mode.kind === "sketch") {
     const ed = mode.editor;
     const tool = SKETCH_TOOLS.find((t) => t.tool === ed.tool)!.label;
@@ -4938,7 +5015,7 @@ function renderStatus() {
   else if (mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
   else if (mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
   else if (mode.kind === "revolve") s = "Revolve · tap a line of the sketch to use it as the axis";
-  else if (mode.kind === "sweep") s = "Sweep · choose the profile and the path in the panel";
+  else if (mode.kind === "sweep") s = mode.feat.helix ? "Sweep · a coil: set its axis, pitch and turns in the panel" : "Sweep · choose the profile and the path in the panel";
   else if (mode.kind === "loft") s = "Loft · choose the sketches, in order, in the panel";
   else if (mode.kind === "pattern") {
     const f = mode.feat;
