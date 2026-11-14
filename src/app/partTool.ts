@@ -1,6 +1,6 @@
 // Taps and drags on the model in the part view: planes, faces, parts.
 import { M, renderAll, vp } from "../main";
-import { pickPlaneAt } from "./modes";
+import { hingeEdgeAt, pickPlaneAt, planeKeypad } from "./modes";
 import { isAssembly } from "./assemblies";
 import { mateTap } from "./mates";
 import { endDrag, fingerDown, fingerMove } from "./partDrag";
@@ -78,6 +78,11 @@ export const partTool: PointerTool = {
   },
   hover(p) {
     if (S.mode.kind !== "pickPlane" || !p) return;
+    if (S.mode.hinge) {
+      if (planeKeypad) return; // the angle is being typed: the edge stays shown
+      const i = hingeEdgeAt(p);
+      return vp.highlightEdges(i === null ? [] : [i]);
+    }
     vp.highlightFace(vp.pickFace(p.x, p.y));
   },
 };

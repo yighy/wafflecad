@@ -1,6 +1,6 @@
 // The tool column on the left: sketch tools, part tools, assembly tools, as the mode needs.
 import { M, PLANE_COLORS, PLANE_NAMES, STD_PLANES, renderAll } from "../main";
-import { createSketchOn, escape, pickPlaneValue, placedPlane, startNewSketch } from "./modes";
+import { createSketchOn, escape, pickPlaneValue, placedPlane, startHinge, startNewSketch } from "./modes";
 import { renderStatus } from "./status";
 import { startAlign } from "./align";
 import { isAssembly, newPartHere, showPartPicker } from "./assemblies";
@@ -267,6 +267,7 @@ export function renderTools() {
     el.appendChild(toolRow("pushpull", m.offset ? `Offset · ${fmtNum(m.offset)} mm` : "Offset…", () => void pickPlaneValue("offset"), { on: !!m.offset }));
     el.appendChild(toolRow("revolve", m.tiltX ? `Tilt X · ${fmtNum(m.tiltX)}°` : "Tilt X…", () => void pickPlaneValue("tiltX"), { on: !!m.tiltX }));
     el.appendChild(toolRow("revolve", m.tiltY ? `Tilt Y · ${fmtNum(m.tiltY)}°` : "Tilt Y…", () => void pickPlaneValue("tiltY"), { on: !!m.tiltY }));
+    el.appendChild(toolRow("revolve", "Around an edge…", startHinge, { on: !!m.hinge }));
     el.appendChild(toolRow("close", "Cancel", () => escape()));
   } else if (isAssembly()) {
     el.appendChild(section("Parts"));

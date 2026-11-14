@@ -22,6 +22,7 @@ export function featureDetail(f: Feature) {
     const t = f.plane.tilt;
     const said = t ? [t[0] ? `${fmtNum(t[0])}° X` : "", t[1] ? `${fmtNum(t[1])}° Y` : ""].filter(Boolean).join(", ") : "";
     const extra = `${Math.abs(off) > 1e-9 ? ` · ${fmtNum(off)} mm` : ""}${tilted ? (said ? ` · tilted ${said}` : " · tilted") : ""}`;
+    if (f.plane.hinge !== undefined) return `Sketch at ${fmtNum(f.plane.hinge)}° from a face`;
     return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}${extra}`;
   }
   if (f.kind === "pushpull") return `${f.distance >= 0 ? "Pull" : "Push"} · ${fmtNum(Math.abs(f.distance))} mm`;

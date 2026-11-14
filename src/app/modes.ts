@@ -22,6 +22,8 @@ import { icon } from "../ui/icons";
 import { openKeypad, type KeypadHandle } from "../ui/keypad";
 import { toast } from "../ui/toast";
 import { type Ptr } from "../view/input";
+import { cssVar } from "../view/viewport";
+import { fmtNum } from "./util";
 
 export function startNewSketch() {
   S.mode = { kind: "pickPlane", offset: 0, tiltX: 0, tiltY: 0 };
@@ -101,6 +103,8 @@ export async function pickPlaneValue(what: "offset" | "tiltX" | "tiltY") {
     },
   });
   planeKeypad = kp;
+  m.hinge = false;
+  vp.highlightEdges([]);
   const res = await kp.result;
   planeKeypad = null;
   if (res === null) Object.assign(m, was);
@@ -112,6 +116,7 @@ export async function pickPlaneValue(what: "offset" | "tiltX" | "tiltY") {
 
 export function pickPlaneAt(p: Ptr) {
   if (planeKeypad) return; // the offset or tilt is being typed
+  if (S.mode.kind === "pickPlane" && S.mode.hinge) return void hingeAt(p);
   const label = vp.pickPlane(p.x, p.y);
   const faceId = vp.pickFace(p.x, p.y);
   let plane: PlaneDef | undefined;
@@ -133,13 +138,119 @@ export function pickPlaneAt(p: Ptr) {
   createSketchOn(plane, face);
 }
 
+/** Around an edge: the next tap picks a straight edge of the model, then the angle is typed. */
+export function startHinge() {
+  if (S.mode.kind !== "pickPlane") return;
+  const m = S.mode;
+  if (m.hinge) {
+    m.hinge = false;
+    vp.highlightEdges([]);
+    showPickPlanes();
+  } else {
+    if (!S.lastBuild?.planarFaces.length) return toast("Make a solid first: the plane turns around one of its edges");
+    Object.assign(m, { hinge: true, offset: 0, tiltX: 0, tiltY: 0 });
+    vp.showPlanes(null);
+  }
+  renderTools();
+  renderStatus();
+}
+
+/** The edge a tap would pick for the plane to turn around (shown on hover). */
+export const hingeEdgeAt = (p: Ptr) => vp.pickEdge(p.x, p.y, p.kind === "touch" ? 24 : p.kind === "pen" ? 14 : 9);
+
+const sub3 = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const crossV = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const mulV = (a: Vec3, k: number): Vec3 => [a[0] * k, a[1] * k, a[2] * k];
+const addV = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+
+/**
+ * The plane of a face turned by `deg` around one of its straight edges (a to b): at 0 it is the
+ * face, positive lifts it out of the material, negative turns it into it. Its X axis runs along
+ * the edge and its Y axis away from the edge, so the sketch grid starts at the hinge.
+ */
+export function hingePlane(a: Vec3, b: Vec3, face: { normal: Vec3; center: Vec3 }, deg: number): PlaneDef {
+  const len = Math.hypot(...sub3(b, a));
+  const u = mulV(sub3(b, a), 1 / len);
+  const n = face.normal;
+  // In the face, at right angles to the edge, towards the face's inside.
+  let w = crossV(n, u);
+  if (dot3(sub3(face.center, a), w) < 0) w = mulV(w, -1);
+  const r = (deg * Math.PI) / 180;
+  const w2 = addV(mulV(w, Math.cos(r)), mulV(n, Math.sin(r)));
+  const n2 = sub3(mulV(n, Math.cos(r)), mulV(w, Math.sin(r)));
+  const xDir = dot3(crossV(n2, u), w2) >= 0 ? u : mulV(u, -1);
+  const origin = dot3(a, xDir) <= dot3(b, xDir) ? a : b;
+  return { origin, xDir, normal: n2, label: "Face", hinge: deg };
+}
+
+/** The tapped edge, if straight: the flat faces it bounds, one per direction, the one facing the camera first. */
+async function hingeAt(p: Ptr) {
+  const i = hingeEdgeAt(p);
+  if (i === null) return toast("Tap a straight edge of the model");
+  const line = vp.edgePolyline(i);
+  const a = line[0];
+  const b = line[line.length - 1];
+  const len = Math.hypot(...sub3(b, a));
+  const u = len > 1e-9 ? mulV(sub3(b, a), 1 / len) : ([0, 0, 0] as Vec3);
+  const off = (q: Vec3) => Math.hypot(...crossV(sub3(q, a), u));
+  if (len < 1e-6 || line.some((q) => off(q) > Math.max(1e-4, len * 1e-5))) return toast("Only a straight edge can be turned around");
+  const tol = Math.max(1e-4, len * 1e-6);
+  const mid = mulV(addV(a, b), 0.5);
+  const view = vp.lookDir();
+  const faces = (S.lastBuild?.planarFaces ?? [])
+    .filter((pf) => Math.abs(dot3(pf.plane.normal, u)) < 1e-6 && [a, b].every((q) => Math.abs(dot3(sub3(q, pf.plane.origin), pf.plane.normal)) < tol))
+    .sort((x, y) => Math.hypot(...sub3(x.center, mid)) - Math.hypot(...sub3(y.center, mid)))
+    // The face seen most squarely first (the top of a box seen from above), then the other.
+    .sort((x, y) => dot3(x.plane.normal, view) - dot3(y.plane.normal, view))
+    .filter((pf, k, all) => all.findIndex((o) => dot3(o.plane.normal, pf.plane.normal) > 0.999) === k);
+  if (!faces.length) return toast("This edge is not on a flat face");
+  vp.highlightEdges([i]);
+  let which = 0;
+  let angle = 45;
+  const color = cssVar("--accent", "#1f7a5a");
+  const preview = () => vp.showPlanes([{ def: hingePlane(a, b, { normal: faces[which].plane.normal, center: faces[which].center }, angle), color }]);
+  preview();
+  const kp = openKeypad({
+    title: "Sketch plane",
+    subtitle: "Turned around the edge, from the face next to it",
+    label: "Angle",
+    unit: "°",
+    value: Math.abs(angle),
+    scope: paramScope(),
+    confirmLabel: "Confirm",
+    extras: [
+      { label: "Flip", icon: "flip", run: () => ((angle = -angle), preview()) },
+      ...(faces.length > 1 ? [{ label: "Other face", icon: "plane", run: () => ((which = (which + 1) % faces.length), preview()) }] : []),
+    ],
+    onInput: (v) => {
+      angle = Math.sign(angle || 1) * v;
+      preview();
+    },
+  });
+  planeKeypad = kp;
+  const res = await kp.result;
+  planeKeypad = null;
+  vp.highlightEdges([]);
+  if (res === null || S.mode.kind !== "pickPlane") {
+    vp.showPlanes(null);
+    return;
+  }
+  angle = Math.sign(angle || 1) * res.value;
+  const f = faces[which];
+  // The other face at the edge (if flat): with both, the plane follows the edge wherever it goes.
+  const g = faces.find((x) => x !== f && dot3(x.plane.normal, f.plane.normal) < 0.999 && dot3(x.plane.normal, f.plane.normal) > -0.999);
+  createSketchOn(hingePlane(a, b, { normal: f.plane.normal, center: f.center }, angle), { center: f.center, normal: f.plane.normal }, g && { center: g.center, normal: g.plane.normal });
+}
+
 /** `face`: the model face the plane comes from, so the sketch follows it when the model changes. */
-export function createSketchOn(plane: PlaneDef, face?: FaceRef) {
+export function createSketchOn(plane: PlaneDef, face?: FaceRef, hingeFace?: FaceRef) {
   vp.showPlanes(null);
   vp.highlightFace(null);
   S.selectedFace = null;
   const sk = newSketch(nextName("Sketch"), plane);
   if (face) sk.face = face;
+  if (face && hingeFace) sk.hingeFace = hingeFace;
   S.doc.features.push(sk);
   commit();
   enterSketch(sk);

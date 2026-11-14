@@ -8,7 +8,7 @@ import { emptyDoc } from "./util";
 
 export type Mode =
   | { kind: "part" }
-  | { kind: "pickPlane"; offset: number; tiltX: number; tiltY: number }
+  | { kind: "pickPlane"; offset: number; tiltX: number; tiltY: number; hinge?: boolean }
   | { kind: "sketch"; editor: SketchEditor }
   | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle }
   | { kind: "pushpull"; feat: PushPullFeature; keypad: KeypadHandle }

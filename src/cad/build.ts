@@ -441,7 +441,7 @@ interface ReplayState {
   sketches: Map<string, SketchFeature>;
   tools: Map<string, Tool>;
   /** Face sketches moved to stay on their face (see BuildResult.movedSketches). */
-  movedSketches: Record<string, { plane: PlaneDef; center: Vec3 }>;
+  movedSketches: Record<string, { plane: PlaneDef; center: Vec3; hingeCenter?: Vec3 }>;
 }
 
 /**
@@ -572,16 +572,32 @@ function replay(doc: CadDocument) {
           const say = noteMoved;
           noteMoved = null; // following the face is the point here, not a worry
           const face = findFace(shape, f.face);
+          const other = f.hingeFace ? findFace(shape, f.hingeFace) : null;
           noteMoved = say;
           const c = face.center;
           const n = f.face.normal;
           // How far the face moved along its normal (its centre may also slide within it).
           const d = dot([c.x, c.y, c.z], n) - dot(f.face.center, n);
           const center = interiorPoint(face, [c.x, c.y, c.z]);
-          if (Math.abs(d) > 1e-7 || Math.hypot(...f.face.center.map((v, i) => v - center[i])) > 1e-6) {
-            const plane: PlaneDef = Math.abs(d) > 1e-7 ? { ...f.plane, origin: add(f.plane.origin, scale(n, d)) } : f.plane;
+          let shift = scale(n, d);
+          let hingeCenter: Vec3 | undefined;
+          if (other && f.hingeFace) {
+            // Turned around the edge of two faces: the edge (where both meet) moves by the step t
+            // with n·t = d and m·t = e, t in the span of both normals.
+            const oc = other.center;
+            const m = f.hingeFace.normal;
+            const e = dot([oc.x, oc.y, oc.z], m) - dot(f.hingeFace.center, m);
+            const k = dot(n, m);
+            const det = 1 - k * k;
+            if (det > 1e-9) shift = add(scale(n, (d - k * e) / det), scale(m, (e - k * d) / det));
+            hingeCenter = interiorPoint(other, [oc.x, oc.y, oc.z]);
+          }
+          const moved = Math.hypot(...shift) > 1e-7;
+          const slid = Math.hypot(...f.face.center.map((v, i) => v - center[i])) > 1e-6 || (!!hingeCenter && Math.hypot(...f.hingeFace!.center.map((v, i) => v - hingeCenter![i])) > 1e-6);
+          if (moved || slid) {
+            const plane: PlaneDef = moved ? { ...f.plane, origin: add(f.plane.origin, shift) } : f.plane;
             sketches.set(f.id, { ...f, plane });
-            movedSketches[f.id] = { plane, center };
+            movedSketches[f.id] = { plane, center, ...(hingeCenter ? { hingeCenter } : {}) };
           } else delete movedSketches[f.id];
         } catch {
           warnings[f.id] = "The face it was drawn on is no longer there: the sketch stays where it was";

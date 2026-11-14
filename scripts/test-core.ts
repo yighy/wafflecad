@@ -198,6 +198,16 @@ const offSk = { ...newSketch("O", { origin: [0, 0, 8], xDir: [1, 0, 0], normal: 
 const off = buildShape({ format: "waffle", version: 1, features: [blockSk, { id: "eb", kind: "extrude", name: "EB", sketchId: blockSk.id, distance: 40, symmetric: false, op: "add" }, offSk] });
 const offPlane = off.movedSketches?.[offSk.id]?.plane;
 check("offset face sketch keeps its offset and tilt", !off.warnings[offSk.id] && near(offPlane?.origin[2] ?? 0, 43) && near(offPlane?.normal[1] ?? 0, -0.5), JSON.stringify([off.warnings, offPlane]));
+// Turned 45° around the top edge at x = 20, from the side face: it follows the edge up (z 5 → 40).
+const v45 = Math.SQRT1_2;
+const hingeSk = {
+  ...newSketch("H", { origin: [20, 0, 5], xDir: [0, 1, 0], normal: [v45, 0, v45], label: "Face", hinge: 45 }),
+  face: { center: [20, 5, 2.5] as [number, number, number], normal: [1, 0, 0] as [number, number, number] },
+  hingeFace: { center: [10, 5, 5] as [number, number, number], normal: [0, 0, 1] as [number, number, number] },
+};
+const hinged = buildShape({ format: "waffle", version: 1, features: [blockSk, { id: "eb", kind: "extrude", name: "EB", sketchId: blockSk.id, distance: 40, symmetric: false, op: "add" }, hingeSk] });
+const hp = hinged.movedSketches?.[hingeSk.id]?.plane;
+check("a plane turned around an edge follows the edge", !hinged.warnings[hingeSk.id] && near(hp?.origin[0] ?? 0, 20) && near(hp?.origin[2] ?? 0, 40) && near(hp?.normal[0] ?? 0, v45), JSON.stringify([hinged.warnings, hp]));
 check("face sketch follows a much taller block", !tall.warnings[tallSk.id] && near(tall.movedSketches?.[tallSk.id]?.plane.origin[2] ?? 0, 40), JSON.stringify([tall.warnings, tall.movedSketches]));
 const sh = buildShape(block({ id: "sh", kind: "shell", name: "SH", faces: [topRef], thickness: 1 }));
 check("shell open top, 1 mm walls", !sh.errors.sh && near(measureVolume(sh.shape!), 1000 - 18 * 8 * 4, 1e-3), `${JSON.stringify(sh.errors)} vol=${sh.shape && measureVolume(sh.shape)}`);

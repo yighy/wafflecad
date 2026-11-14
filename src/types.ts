@@ -11,6 +11,8 @@ export interface PlaneDef {
   label: string;
   /** Degrees it was turned around the picked plane's X axis, then around its own Y axis (for the timeline). */
   tilt?: [number, number];
+  /** Degrees it was turned from a face around one of its edges (for the timeline). */
+  hinge?: number;
 }
 
 // ---------- Sketch entities (2D, in sketch coordinates, millimetres) ----------
@@ -143,6 +145,8 @@ export interface SketchFeature {
   constraints: SkConstraint[];
   /** The flat face it was drawn on: the sketch follows the face when earlier steps move it along its normal. */
   face?: FaceRef;
+  /** A plane turned around an edge: the other flat face at that edge, so the plane follows the edge itself. */
+  hingeFace?: FaceRef;
   /** Model edges copied in with "Use edges": each is found again by its midpoint, and the copies follow it. */
   projections?: SketchProjection[];
 }
@@ -546,7 +550,7 @@ export interface PlanarFace {
 
 export interface BuildResult {
   /** Face sketches moved to stay on their face: the new plane, and a fresh point inside the face. */
-  movedSketches?: Record<string, { plane: PlaneDef; center: Vec3 }>;
+  movedSketches?: Record<string, { plane: PlaneDef; center: Vec3; hingeCenter?: Vec3 }>;
   mesh: MeshData | null;
   /** Polylines of B-rep edges: pairs of points x,y,z,x,y,z… */
   edges: Float32Array;

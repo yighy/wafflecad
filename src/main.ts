@@ -317,6 +317,7 @@ function catchUpFaceSketches(movedList: NonNullable<BuildResult["movedSketches"]
     if (!f) continue;
     f.plane = mv.plane;
     if (f.face) f.face = { ...f.face, center: mv.center };
+    if (f.hingeFace && mv.hingeCenter) f.hingeFace = { ...f.hingeFace, center: mv.hingeCenter };
     if (S.mode.kind === "sketch" && S.mode.editor.sk.id === id) grid = true;
   }
   save();

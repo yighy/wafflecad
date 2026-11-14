@@ -12,7 +12,9 @@ import { S } from "./state";
 export function renderStatus() {
   let s = kernelMessage;
   if (S.mode.kind === "pickPlane")
-    s = S.mode.offset || S.mode.tiltX || S.mode.tiltY ? "New sketch · tap a plane or a face: the sketch lands on it moved as set" : "New sketch · tap a plane or a flat face";
+    s = S.mode.hinge
+      ? "New sketch · tap a straight edge: the plane turns around it"
+      : S.mode.offset || S.mode.tiltX || S.mode.tiltY ? "New sketch · tap a plane or a face: the sketch lands on it moved as set" : "New sketch · tap a plane or a flat face";
   else if (S.mode.kind === "sketch") {
     const ed = S.mode.editor;
     const tool = SKETCH_TOOLS.find((t) => t.tool === ed.tool)!.label;

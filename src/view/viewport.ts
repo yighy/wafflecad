@@ -39,6 +39,12 @@ export class Viewport {
   /** The user's choice of projection; sketches are always shown orthographic (`forceOrtho`). */
   private perspectiveOn = false;
   private orthoForced = false;
+  /** Where the camera looks (a unit vector, from the eye into the scene). */
+  lookDir(): Vec3 {
+    const d = this.camera.getWorldDirection(new THREE.Vector3());
+    return [d.x, d.y, d.z];
+  }
+
   get camera(): THREE.OrthographicCamera | THREE.PerspectiveCamera {
     return this.perspectiveOn && !this.orthoForced ? this.persp : this.ortho;
   }
