@@ -2,7 +2,7 @@
 import { M, createProject, exportFile, flushSave, newAssembly, newProject, openProject } from "../main";
 import { enterSketch, escape, exitSketch, startNewSketch } from "./modes";
 import { instanceOf, isAssembly, partDocs, pickPart } from "./assemblies";
-import { importDrawing, importStep } from "./files";
+import { importDrawing, importStep, importStl } from "./files";
 import { closeProjects, groupOf, openFile, saveFile, saveOpenTab, showProjects, tabName } from "./gallery";
 import { endMeasure, measuring } from "./measure";
 import { S, isOperation, usedSketchIds } from "./state";
@@ -60,6 +60,7 @@ export function renderWorkspace() {
       "Import",
       [
         ["STEP", () => void importStep()],
+        ...(isAssembly() ? [] : [["STL mesh", () => void importStl()] as [string, () => void]]),
         // A drawing goes into the sketch open.
         ...(S.mode.kind === "sketch" ? [["DXF / SVG", () => void importDrawing()] as [string, () => void]] : []),
         ["WaffleCAD file (.json)", openFile],

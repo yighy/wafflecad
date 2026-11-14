@@ -2,6 +2,8 @@
 import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import { setOC } from "replicad";
+import manifoldUrl from "manifold-3d/manifold.wasm?url";
+import { initManifold } from "./mesh";
 import { bodyNames, buildResult, buildShape, exportFile, interferences, setOpenDocument, setPartDocs, splitStep } from "./build";
 import { measure, refGeometry } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
@@ -43,7 +45,10 @@ async function fetchKernel(): Promise<ArrayBuffer> {
 }
 
 const ready = (async () => {
+  // Manifold (meshes, some 0.5 MB) loads while the kernel downloads.
+  const mesh = initManifold(manifoldUrl);
   const wasmBinary = await fetchKernel();
+  await mesh;
   const OC = await opencascade({ locateFile: () => wasmUrl, wasmBinary } as Parameters<typeof opencascade>[0]);
   setOC(OC);
 })();

@@ -288,17 +288,24 @@ export function renderPanel() {
     else if (f.kind === "revolve") items.push(["edit", "Edit", () => void revolveTool(f)]);
     else if (f.kind === "sweep") items.push(["edit", "Edit", () => startSweep(f)]);
     else if (f.kind === "loft") items.push(["edit", "Edit", () => startLoft(f)]);
-    else if (f.kind === "import")
-      items.push([
-        f.op === "add" ? "cut" : "extrude",
-        f.op === "add" ? "Cut it instead" : "Join it instead",
-        () => {
-          f.op = f.op === "add" ? "cut" : "add";
-          commit();
-          renderAll();
-        },
-      ]);
-    else if (f.kind === "shell") items.push(["edit", "Edit", () => void shell(f)]);
+    else if (f.kind === "import") {
+      for (const [op, icon, label] of [
+        ["add", "extrude", "Join it instead"],
+        ["cut", "cut", "Cut it instead"],
+        ["intersect", "intersect", "Keep only what it shares"],
+      ] as const)
+        if (f.op !== op)
+          items.push([
+            icon,
+            label,
+            () => {
+              f.op = op;
+              if (op !== "add" && f.body === "new") f.body = undefined;
+              commit();
+              renderAll();
+            },
+          ]);
+    } else if (f.kind === "shell") items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
     if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "sweep" || f.kind === "loft" || f.kind === "import") && S.lastBuild?.bodies?.some((b) => b.id === f.id) && S.lastBuild.bodies.length > 1) {
       items.push(["rename", "Rename body", () => renameBody(f.id)]);

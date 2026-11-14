@@ -38,7 +38,7 @@ export function featureDetail(f: Feature) {
     const head = f.head === "counterbore" ? " · counterbore" : f.head === "countersink" ? " · countersink" : "";
     return `${f.size} ${n}${head} · ${f.depth > 0 ? `${fmtNum(f.depth)} mm deep` : "through"}`;
   }
-  if (f.kind === "import") return `${f.op === "add" ? "Join" : "Cut"} · STEP file${bodyNote(f)}`;
+  if (f.kind === "import") return `${f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect"} · ${f.format === "stl" ? "STL mesh" : "STEP file"}${bodyNote(f)}`;
   if (f.kind === "combine") {
     const n = combineNames(f);
     const tools = n.tools.join(", ");

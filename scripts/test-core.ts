@@ -1,6 +1,7 @@
 // Core tests under Node: solver, profile detection, solid build. Run: npm test
 import opencascade from "replicad-opencascadejs";
 import { measureVolume, setOC } from "replicad";
+import { type AnySolid, encodeMesh, initManifold, isMesh, meshVolume, parseStl } from "../src/cad/mesh";
 import { Solver } from "../src/sketch/solver";
 import { constraintName, deleteEntities, entityName, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, openPath, sampleSegments, signedArea } from "../src/sketch/profiles";
@@ -24,6 +25,9 @@ import { applyParameters, dropSharedCopies, evaluate, partParameters, renameInEx
 import type { CadDocument, CombineFeature, Mate, MateRef, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
 
 setOC(await opencascade());
+await initManifold();
+const volumeOf = (s: AnySolid) => (isMesh(s) ? meshVolume(s) : measureVolume(s));
+const boxOf = (s: AnySolid | undefined) => (s ? (isMesh(s) ? s.bounds() : s.boundingBox.bounds) : undefined);
 const solver = await Solver.create();
 
 let failures = 0;
@@ -1017,7 +1021,7 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
     block(lidSk, { id: "lid", kind: "extrude", name: "Lid", sketchId: lidSk.id, distance: 2, symmetric: false, op: "add", body: "new" }, ...more);
   const vol = (d: CadDocument) => {
     const r = buildShape(d);
-    return { r, v: r.bodies.map((b) => measureVolume(b.shape)) };
+    return { r, v: r.bodies.map((b) => volumeOf(b.shape)) };
   };
   let t = vol(two());
   check("bodies: box and lid stay two solids", t.r.bodies.length === 2 && near(t.v[0], 1000) && near(t.v[1], 400), JSON.stringify(t.v));
@@ -1054,12 +1058,12 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   const a: PartInstance = { id: "a", project: "p1", name: "Box 1", at: [0, 0, 0], rot: [0, 0, 0] };
   const b: PartInstance = { id: "b", project: "p1", name: "Box 2", at: [30, 0, 0], rot: [0, 0, 90] };
   const r = buildShape(asm(a, b));
-  const bb = r.bodies[1]?.shape.boundingBox.bounds;
-  check("assembly: two copies of a part, apart", r.bodies.length === 2 && r.bodies.every((x) => near(measureVolume(x.shape), 1000, 1e-3)), JSON.stringify(r.errors));
+  const bb = boxOf(r.bodies[1]?.shape);
+  check("assembly: two copies of a part, apart", r.bodies.length === 2 && r.bodies.every((x) => near(volumeOf(x.shape), 1000, 1e-3)), JSON.stringify(r.errors));
   check("assembly: turned about Z, then moved", !!bb && near(bb[0][0], 20, 1e-3) && near(bb[1][0], 30, 1e-3) && near(bb[0][1], 0, 1e-3) && near(bb[1][1], 20, 1e-3), JSON.stringify(bb));
   // Any turn matches the app's own matrix (three.js "XYZ" Euler angles).
   const c: PartInstance = { id: "c", project: "p1", name: "C", at: [1, 2, 3], rot: [30, 45, 60] };
-  const cb = buildShape(asm(c)).bodies[0].shape.boundingBox.bounds;
+  const cb = boxOf(buildShape(asm(c)).bodies[0].shape)!;
   const m = new THREE.Matrix4().compose(new THREE.Vector3(1, 2, 3), new THREE.Quaternion().setFromEuler(new THREE.Euler(...([30, 45, 60].map((d) => (d * Math.PI) / 180) as [number, number, number]), "XYZ")), new THREE.Vector3(1, 1, 1));
   const box = new THREE.Box3();
   for (const x of [0, 20]) for (const y of [0, 10]) for (const z of [0, 5]) box.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(m));
@@ -1167,8 +1171,8 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   setPartDocs({ p1: block(lidSk, { id: "lid", kind: "extrude", name: "Lid", sketchId: lidSk.id, distance: 2, symmetric: false, op: "add", body: "new" }) });
   const one = (body: string | undefined, at: [number, number, number] = [0, 0, 0]): PartInstance => ({ id: body ?? "all", project: "p1", name: body ?? "all", at, rot: [0, 0, 0], body });
   const r = buildShape({ format: "waffle", version: 1, features: [], kind: "assembly", instances: [one("eb"), one("lid", [0, 0, 10])] });
-  const v = r.bodies.map((b) => measureVolume(b.shape));
-  const lidTop = r.bodies[1]?.shape.boundingBox.bounds[1][2];
+  const v = r.bodies.map((b) => volumeOf(b.shape));
+  const lidTop = boxOf(r.bodies[1]?.shape)?.[1][2] ?? NaN;
   check("assembly: a part's bodies inserted apart", r.bodies.length === 2 && near(v[0], 1000, 1e-3) && near(v[1], 400, 1e-3) && near(lidTop, 17, 1e-6), JSON.stringify([v, lidTop, r.errors]));
   const gone = buildShape({ format: "waffle", version: 1, features: [], kind: "assembly", instances: [one("nope")] });
   check("assembly: a body gone from its part is reported", !!gone.errors.nope, JSON.stringify(gone.errors));
@@ -1193,10 +1197,10 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   const x = vol(derived({ op: "intersect" }));
   check("combine: join, cut and intersect two overlapping blocks", near(j.v, 1500, 1e-3) && near(c.v, 500, 1e-3) && near(x.v, 500, 1e-3), JSON.stringify([j.v, c.v, x.v, j.r.errors, c.r.errors]));
   const kept = buildShape(derived({ op: "keep" }));
-  check("combine: keep brings each part in as a body of its own", !kept.errors.cb && kept.bodies.length === 2 && kept.bodies.every((b) => near(measureVolume(b.shape), 1000, 1e-3)), JSON.stringify([kept.bodies.length, kept.errors]));
+  check("combine: keep brings each part in as a body of its own", !kept.errors.cb && kept.bodies.length === 2 && kept.bodies.every((b) => near(volumeOf(b.shape), 1000, 1e-3)), JSON.stringify([kept.bodies.length, kept.errors]));
   setPartDocs({ p1: block(), a1: asm(place("t", "p1", [0, 0, 0], [0, 0, 90]), place("u", "p1", [10, 0, 0])) });
   const turnedKeep = buildShape(derived({ op: "keep" }));
-  const [tlo, thi] = turnedKeep.bodies[0]?.shape.boundingBox.bounds ?? [[0, 0, 0], [0, 0, 0]];
+  const [tlo, thi] = boxOf(turnedKeep.bodies[0]?.shape) ?? [[0, 0, 0], [0, 0, 0]];
   check("combine: keep takes the target turned as the assembly has it", near(thi[1] - tlo[1], 20, 1e-6) && near(thi[0] - tlo[0], 10, 1e-6), JSON.stringify([tlo, thi, turnedKeep.errors]));
   setPartDocs({ p1: block(), a1: asm(place("t", "p1", [0, 0, 0]), place("u", "p1", [10, 0, 0])) });
   const alone = buildShape(derived({ op: "keep", tools: [] }));
@@ -1257,6 +1261,86 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("names: lines numbered by kind, axes by name", entityName(sk, r.lines[1]) === "Line 2" && entityName(sk, "AX") === "X axis" && entityName(sk, "hole") === "Circle 1", JSON.stringify([entityName(sk, r.lines[1]), entityName(sk, "hole")]));
   check("names: a distance on one line is its length", constraintName({ id: "k", type: "distance", refs: [r.lines[0]], value: 60 }, v) === "Length" && constraintName({ id: "k", type: "distance", refs: ["i1", "i2"] }, v) === "Distance");
   check("crossing box: a line through it counts, one beside it not", pathTouchesBox([[0, 5], [10, 5]], [4, 0, 6, 10]) && !pathTouchesBox([[0, 20], [10, 20]], [4, 0, 6, 10]));
+}
+
+// --- STL meshes: read, stored, joined, cut and intersected with exact solids (through Manifold).
+{
+  /** Binary STL of a box from `lo` to `hi`, triangles turned outwards (minus some, to open it). */
+  const boxStl = (lo: number[], hi: number[], drop = 0) => {
+    const c = (i: number) => [i & 1 ? hi[0] : lo[0], i & 2 ? hi[1] : lo[1], i & 4 ? hi[2] : lo[2]];
+    const quads = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+    const tris = quads.flatMap(([a, b, cc, d]) => [[a, b, cc], [a, cc, d]]).slice(drop);
+    const bytes = new Uint8Array(84 + tris.length * 50);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(80, tris.length, true);
+    tris.forEach((t, i) => t.forEach((k, j) => c(k).forEach((x, n) => view.setFloat32(84 + i * 50 + 12 + j * 12 + n * 4, x, true))));
+    return bytes;
+  };
+  const asciiStl = "solid t\n" + [[0, 0, 0, 1, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 1, 1, 0, 0]].map((t) => `facet normal 0 0 1\nouter loop\n${[0, 1, 2].map((k) => `vertex ${t[k * 3]} ${t[k * 3 + 1]} ${t[k * 3 + 2]}`).join("\n")}\nendloop\nendfacet`).join("\n") + "\nendsolid t\n";
+  const cube = parseStl(boxStl([0, 0, 0], [10, 10, 10]));
+  check("stl: a binary box welds to 8 corners and 12 triangles", cube.vertices.length === 24 && cube.triangles.length === 36, JSON.stringify([cube.vertices.length, cube.triangles.length]));
+  const text = parseStl(new TextEncoder().encode(asciiStl));
+  check("stl: a text file is read too", text.vertices.length === 12 && text.triangles.length === 6, JSON.stringify([text.vertices.length, text.triangles.length]));
+  let notStl = "";
+  try {
+    parseStl(new TextEncoder().encode("hello"));
+  } catch (e) {
+    notStl = String(e);
+  }
+  check("stl: another file is refused", notStl.includes("not an STL"), notStl);
+
+  const meshDoc = (stl: Uint8Array, op: "add" | "cut" | "intersect", body?: "new", ...before: CadDocument["features"]): CadDocument => ({
+    format: "waffle",
+    version: 1,
+    files: { m: encodeMesh(parseStl(stl)) },
+    features: [...before, { id: "im", kind: "import", name: "Mesh", fileId: "m", format: "stl", op, body }],
+  });
+  const blockSteps = block().features;
+  let r = buildShape(meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "add", "new"));
+  check("stl: imported as a mesh body of its own", !r.errors.im && r.bodies.length === 1 && isMesh(r.bodies[0].shape) && near(volumeOf(r.bodies[0].shape), 1000, 1e-3) && r.shape === null, JSON.stringify(r.errors));
+  // The 20 × 10 × 5 block and the 10 mm cube overlap in 10 × 10 × 5.
+  r = buildShape(meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "cut", undefined, ...blockSteps));
+  check("stl: cut from an exact block, which becomes a mesh", !r.errors.im && r.bodies.length === 1 && isMesh(r.bodies[0].shape) && near(volumeOf(r.bodies[0].shape), 500, 1e-2), JSON.stringify([r.errors, r.bodies.map((b) => volumeOf(b.shape))]));
+  r = buildShape(meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "intersect", undefined, ...blockSteps));
+  check("stl: intersected with a block", !r.errors.im && near(volumeOf(r.bodies[0].shape), 500, 1e-2), JSON.stringify([r.errors, r.bodies.map((b) => volumeOf(b.shape))]));
+  r = buildShape(meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "add", undefined, ...blockSteps));
+  check("stl: joined to a block", !r.errors.im && r.bodies.length === 1 && near(volumeOf(r.bodies[0].shape), 1500, 1e-2), JSON.stringify([r.errors, r.bodies.map((b) => volumeOf(b.shape))]));
+  r = buildShape(meshDoc(boxStl([100, 0, 0], [110, 10, 10]), "cut", undefined, ...blockSteps));
+  check("stl: a cut that misses leaves the block exact", !r.errors.im && r.bodies.length === 1 && !isMesh(r.bodies[0].shape) && near(volumeOf(r.bodies[0].shape), 1000, 1e-3), JSON.stringify(r.errors));
+
+  // Exact steps after the mesh: an extruded cut goes through it, a pattern repeats it.
+  const holeSk = newSketch("H", XY);
+  rect(holeSk, 2, 2, 4, 4);
+  const withMesh = meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "add", "new");
+  r = buildShape({ ...withMesh, features: [...withMesh.features, holeSk, { id: "hc", kind: "extrude", name: "Cut", sketchId: holeSk.id, distance: 20, symmetric: false, op: "cut" }] });
+  check("stl: an extruded cut goes through a mesh body", !r.errors.hc && near(volumeOf(r.bodies[0].shape), 960, 1e-2), JSON.stringify([r.errors, r.bodies.map((b) => volumeOf(b.shape))]));
+  r = buildShape({ ...withMesh, features: [...withMesh.features, { id: "pt", kind: "pattern", name: "P", type: "linear", featureIds: ["im"], axis: "X", count: 3, spacing: 20, axis2: "Y", count2: 1, spacing2: 0, angle: 360, offset: 0 }] });
+  check("stl: a pattern repeats a mesh", !r.errors.pt && r.bodies.length === 1 && near(volumeOf(r.bodies[0].shape), 3000, 1e-2) && near(boxOf(r.bodies[0].shape)![1][0], 50), JSON.stringify([r.errors, r.bodies.map((b) => volumeOf(b.shape))]));
+  r = buildShape({ ...withMesh, features: [...withMesh.features, { id: "mi", kind: "pattern", name: "M", type: "mirror", featureIds: ["im"], axis: "X", count: 1, spacing: 0, axis2: "Y", count2: 1, spacing2: 0, angle: 360, offset: 0 }] });
+  check("stl: a mirror keeps the mesh closed", !r.errors.mi && near(volumeOf(r.bodies[0].shape), 2000, 1e-2), JSON.stringify([r.errors, r.bodies.map((b) => volumeOf(b.shape))]));
+
+  // An open mesh: shown, but not joined.
+  const open = meshDoc(boxStl([0, 0, 0], [10, 10, 10], 2), "add", "new");
+  r = buildShape(open);
+  check("stl: an open mesh is still a body", !r.errors.im && r.bodies.length === 1 && isMesh(r.bodies[0].shape) && !(r.bodies[0].shape as { closed: boolean }).closed);
+  r = buildShape(meshDoc(boxStl([0, 0, 0], [10, 10, 10], 2), "cut", undefined, ...blockSteps));
+  check("stl: an open mesh cannot cut", !!r.errors.im && r.errors.im.includes("not closed"), JSON.stringify(r.errors));
+
+  // Shown and exported with the exact bodies.
+  const both = meshDoc(boxStl([30, 0, 0], [40, 10, 10]), "add", "new", ...blockSteps);
+  const res = buildResult(both);
+  const meshGroup = res.mesh?.faceGroups.find((g) => g.faceId < 0);
+  check("stl: shown after the exact bodies, as one face of its own", res.bodies?.length === 2 && !!meshGroup && meshGroup.count === 36 && res.bodies[1].faceIds[0] === meshGroup.faceId && res.edgeGroups.some((g) => g.id === meshGroup.faceId), JSON.stringify(res.bodies));
+  const stl = exportFile(both, "stl")!;
+  const tm = exportFile(both, "3mf");
+  let stepErr = "";
+  try {
+    exportFile(meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "add", "new"), "step");
+  } catch (e) {
+    stepErr = String(e);
+  }
+  const exactStl = exportFile(block(), "stl")!;
+  check("stl: exported in STL and 3MF; STEP refuses a mesh alone", stl.size === exactStl.size + 12 * 50 && !!tm && stepErr.includes("STEP"), JSON.stringify([stl.size, exactStl.size, stepErr]));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

@@ -342,7 +342,9 @@ export interface ImportFeature {
   name: string;
   /** Key of the file's text in the document's `files`. */
   fileId: string;
-  op: "add" | "cut";
+  /** "stl": a mesh (stored as `wmesh1:` text), joined, cut or intersected through Manifold. */
+  format?: "stl";
+  op: "add" | "cut" | "intersect";
   body?: BodyTarget;
 }
 

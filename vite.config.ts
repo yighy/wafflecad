@@ -11,8 +11,8 @@ export default defineConfig({
   base: "./",
   // The version shown in the menu, and the name of the offline cache (a new version replaces it).
   define: { __APP_VERSION__: JSON.stringify(version), __KERNEL_BYTES__: String(kernelBytes) },
-  // OpenCascade and planegcs load their own .wasm files: no pre-bundling.
-  optimizeDeps: { exclude: ["replicad-opencascadejs", "@salusoft89/planegcs"] },
+  // OpenCascade, planegcs and Manifold load their own .wasm files: no pre-bundling.
+  optimizeDeps: { exclude: ["replicad-opencascadejs", "@salusoft89/planegcs", "manifold-3d"] },
   worker: { format: "es" },
   build: { target: "es2022", chunkSizeWarningLimit: 2000 },
 });

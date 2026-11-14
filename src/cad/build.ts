@@ -4,6 +4,7 @@ import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, 
 import type { Axis, BuildResult, CadDocument, Clash, CombineFeature, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, LoftFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, ProfileSegment, PushPullFeature, ShellFeature, SketchFeature, SweepFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
+import { type AnySolid, type MeshSolid, boxesMeet, decodeMesh, displayMesh, isMesh, isMeshText, meshBoolean, meshSolid, mirroring, rotation, stlBlob, transformMesh, translation } from "./mesh";
 import { hasRef } from "./measure";
 import { sketchLineWorld } from "../sketch/model";
 import { findRegions, openPath, sampleSegments } from "../sketch/profiles";
@@ -308,7 +309,7 @@ function holeTool(p: Vec3, dir: Vec3, f: HoleFeature, length: number): Shape3D {
   return (sketch as unknown as { revolve: (axis: Vec3, o: { origin: Vec3 }) => Shape3D }).revolve(dir, { origin: p });
 }
 
-function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeature>): Tool {
+function holes(bounds: [number[], number[]], f: HoleFeature, sketches: Map<string, SketchFeature>): Tool {
   let pts: Vec3[];
   if (f.sketchId) {
     const sk = sketches.get(f.sketchId);
@@ -319,8 +320,9 @@ function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeatu
   if (!pts.length) throw new Error("No hole position");
   const sign = f.flip ? 1 : -1;
   const dir = scale(f.normal, sign / Math.hypot(...f.normal));
-  const bb = shape.boundingBox;
-  const through = Math.hypot(bb.width, bb.height, bb.depth) * 2 + 10;
+  const [lo, hi] = bounds;
+  // Long enough to go through everything from anywhere in or around it.
+  const through = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], ...lo, ...hi) * 2 + 10;
   if (f.depth < 0) throw new Error("The depth must be positive");
   const length = f.depth > 0 ? f.depth : through;
   return { solid: fuseAll(pts.map((p) => holeTool(p, dir, f, length))), op: "cut" };
@@ -328,7 +330,7 @@ function holes(shape: Shape3D, f: HoleFeature, sketches: Map<string, SketchFeatu
 
 /** The material a feature adds or removes, kept so patterns can repeat it (into the same body; none: every body). */
 interface Tool {
-  solid: Shape3D;
+  solid: AnySolid;
   op: "add" | "cut";
   body?: string;
 }
@@ -337,10 +339,11 @@ const AXIS: Record<Axis, Vec3> = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] };
 const MIRROR_PLANE: Record<Axis, "YZ" | "XZ" | "XY"> = { X: "YZ", Y: "XZ", Z: "XY" };
 
 /** Copies of a solid for each instance of the pattern (the original excluded). */
-function patternCopies(solid: Shape3D, f: PatternFeature): Shape3D[] {
-  const out: Shape3D[] = [];
+function patternCopies(solid: AnySolid, f: PatternFeature): AnySolid[] {
+  const out: AnySolid[] = [];
   if (f.type === "mirror") {
-    out.push(solid.clone().mirror(MIRROR_PLANE[f.axis], scale(AXIS[f.axis], f.offset)));
+    const o = scale(AXIS[f.axis], f.offset);
+    out.push(isMesh(solid) ? transformMesh(solid, mirroring(AXIS[f.axis], o)) : solid.clone().mirror(MIRROR_PLANE[f.axis], o));
     return out;
   }
   const n = Math.round(f.count);
@@ -349,7 +352,7 @@ function patternCopies(solid: Shape3D, f: PatternFeature): Shape3D[] {
     if (n < 2) throw new Error("A circular pattern needs at least 2 instances");
     const full = Math.abs(Math.abs(f.angle) - 360) < 1e-9;
     const step = full ? 360 / n : f.angle / (n - 1);
-    for (let i = 1; i < n; i++) out.push(solid.clone().rotate(step * i, [0, 0, 0], AXIS[f.axis]));
+    for (let i = 1; i < n; i++) out.push(isMesh(solid) ? transformMesh(solid, rotation(step * i, AXIS[f.axis])) : solid.clone().rotate(step * i, [0, 0, 0], AXIS[f.axis]));
     return out;
   }
   const n2 = Math.max(1, Math.round(f.count2));
@@ -357,15 +360,24 @@ function patternCopies(solid: Shape3D, f: PatternFeature): Shape3D[] {
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n2; j++) {
       if (i === 0 && j === 0) continue;
-      out.push(solid.clone().translate(add(scale(AXIS[f.axis], f.spacing * i), scale(AXIS[f.axis2], f.spacing2 * j))));
+      const d = add(scale(AXIS[f.axis], f.spacing * i), scale(AXIS[f.axis2], f.spacing2 * j));
+      out.push(isMesh(solid) ? transformMesh(solid, translation(d)) : solid.clone().translate(d));
     }
   }
   return out;
 }
 
-function fuseAll(parts: Shape3D[]): Shape3D {
-  return parts.slice(1).reduce((acc, p) => acc.fuse(p), parts[0]);
+function fuseAll<T extends AnySolid>(parts: T[]): T | AnySolid {
+  return parts.slice(1).reduce<AnySolid>((acc, p) => boolOp(acc, p, "add"), parts[0]);
 }
+
+/** a joined with, cut by or cut down to b: exact when both are, else a mesh. */
+function boolOp(a: AnySolid, b: AnySolid, op: "add" | "cut" | "intersect"): AnySolid {
+  if (!isMesh(a) && !isMesh(b)) return op === "add" ? a.fuse(b) : op === "cut" ? a.cut(b) : a.intersect(b);
+  return meshBoolean(a, b, op);
+}
+
+const boundsOf = (s: AnySolid): [number[], number[]] => (isMesh(s) ? s.bounds() : s.boundingBox.bounds);
 
 /**
  * Repeats the chosen steps' material into the bodies it went into. With no step chosen, every
@@ -373,10 +385,10 @@ function fuseAll(parts: Shape3D[]): Shape3D {
  */
 function pattern(bodies: Bodies, f: PatternFeature, tools: Map<string, Tool>, names: Map<string, string>): Tool | null {
   if (!f.featureIds.length) {
-    for (const [id, b] of bodies) bodies.set(id, fuseAll([b, ...patternCopies(b, f)]).simplify());
+    for (const [id, b] of bodies) setBody(bodies, id, fuseAll([b, ...patternCopies(b, f)]));
     return null;
   }
-  const made: Record<"add" | "cut", Shape3D[]> = { add: [], cut: [] };
+  const made: Record<"add" | "cut", AnySolid[]> = { add: [], cut: [] };
   const into = new Set<string | undefined>();
   // In the timeline's order, whatever order they were picked in: a cut repeated before the block it
   // cuts would be filled again by the block's copies.
@@ -398,7 +410,7 @@ function pattern(bodies: Bodies, f: PatternFeature, tools: Map<string, Tool>, na
 }
 
 /** The part's separate solids by id (the id of the step that started each), in that order. */
-type Bodies = Map<string, Shape3D>;
+type Bodies = Map<string, AnySolid>;
 
 /** Adds or removes a tool's material in its body (or, cutting with no body, in all of them). */
 function applyTool(bodies: Bodies, t: Tool) {
@@ -406,27 +418,30 @@ function applyTool(bodies: Bodies, t: Tool) {
   for (const id of ids) {
     const b = bodies.get(id);
     if (!b) throw new Error("Its body is not there any more");
-    setBody(bodies, id, t.op === "add" ? b.fuse(t.solid) : b.cut(t.solid));
+    // A cut that misses a body leaves it as it is (an exact body is not turned into a mesh).
+    if (t.op === "cut" && (isMesh(b) || isMesh(t.solid)) && !boxesMeet(boundsOf(b), boundsOf(t.solid))) continue;
+    setBody(bodies, id, boolOp(b, t.solid, t.op));
   }
 }
 
 /** Stores a body's new shape; a body cut or intersected down to nothing goes. */
-function setBody(bodies: Bodies, id: string, shape: Shape3D) {
-  const s = shape.simplify();
-  if (s.faces.length) bodies.set(id, s);
+function setBody(bodies: Bodies, id: string, shape: AnySolid) {
+  const s = isMesh(shape) ? shape : shape.simplify();
+  if (isMesh(s) ? s.triangles.length : s.faces.length) bodies.set(id, s);
   else bodies.delete(id);
 }
 
 /** All the bodies as one shape (for display, measures, references and exports). */
 function combined(bodies: Bodies): Shape3D | null {
-  const all = [...bodies.values()];
+  // Only the exact bodies: meshes are shown and exported apart.
+  const all = [...bodies.values()].filter((b): b is Shape3D => !isMesh(b));
   // makeCompound deletes what it is given: copies (sharing the same faces) go in.
   return all.length === 0 ? null : all.length === 1 ? all[0] : (makeCompound(all.map((b) => b.clone())) as Shape3D);
 }
 
 /** The body a face or edge of the combined shape belongs to. */
 function bodyWith(bodies: Bodies, hashCode: number, kind: "faces" | "edges"): string {
-  for (const [id, b] of bodies) if (b[kind].some((x) => x.hashCode === hashCode)) return id;
+  for (const [id, b] of bodies) if (!isMesh(b) && b[kind].some((x) => x.hashCode === hashCode)) return id;
   throw new Error("The face is no longer there (an earlier feature changed it)");
 }
 
@@ -499,6 +514,22 @@ export function readStep(text: string): Shape3D {
   }
 }
 
+/** Meshes of imported STL files, by their text's key (decoding a large one takes a moment). */
+const meshFiles = new Map<string, MeshSolid>();
+
+/** The mesh stored for an imported STL file. */
+export function readMesh(text: string): MeshSolid {
+  const key = `${text.length}:${hash(text.slice(0, 4096) + text.slice(-4096))}`;
+  let m = meshFiles.get(key);
+  if (!m) {
+    const d = decodeMesh(text);
+    m = meshSolid(d.vertices, d.triangles);
+    meshFiles.set(key, m);
+    if (meshFiles.size > 8) meshFiles.delete(meshFiles.keys().next().value!);
+  }
+  return m;
+}
+
 /** Replays the features (from the cache where possible); a failing feature is skipped and reported. */
 export function buildShape(doc: CadDocument): ReturnType<typeof replay> {
   if (doc.kind === "assembly") return assemblyShape(doc);
@@ -537,7 +568,7 @@ function replay(doc: CadDocument) {
   let shape = st.shape;
   const fail = (f: { id: string }, e: unknown) => (errors[f.id] = e instanceof Error ? e.message : String(e));
   /** Material made by a step from a sketch or a file: a new body, joined to one, or cut from them. */
-  const solidStep = (f: { id: string; op: "add" | "cut" | "intersect"; body?: string }, solid: Shape3D) => {
+  const solidStep = (f: { id: string; op: "add" | "cut" | "intersect"; body?: string }, solid: AnySolid) => {
     if (f.op === "add") {
       if (f.body === "new" || !bodies.size) {
         bodies.set(f.id, solid);
@@ -547,7 +578,7 @@ function replay(doc: CadDocument) {
       const id = f.body ?? [...bodies.keys()][0];
       const b = bodies.get(id);
       if (!b) throw new Error("The body it joins is not there");
-      setBody(bodies, id, b.fuse(solid));
+      setBody(bodies, id, boolOp(b, solid, "add"));
       tools.set(f.id, { solid, op: "add", body: id });
       return;
     }
@@ -557,7 +588,7 @@ function replay(doc: CadDocument) {
     if (f.op === "cut") {
       tools.set(f.id, { solid, op: "cut", body: target });
       applyTool(bodies, { solid, op: "cut", body: target });
-    } else for (const id of target ? [target] : [...bodies.keys()]) setBody(bodies, id, bodies.get(id)!.intersect(solid));
+    } else for (const id of target ? [target] : [...bodies.keys()]) setBody(bodies, id, boolOp(bodies.get(id)!, solid, "intersect"));
   };
   const step = (f: CadDocument["features"][number]) => {
     noteMoved = () => (warnings[f.id] = "Its face or edge moved: the closest one was used. Check it, or edit the step to pick again.");
@@ -607,13 +638,13 @@ function replay(doc: CadDocument) {
     }
     try {
       if (f.kind === "pattern") {
-        if (!shape) throw new Error("There is no solid yet");
+        if (!bodies.size) throw new Error("There is no solid yet");
         const t = pattern(bodies, f, tools, names);
         if (t) tools.set(f.id, t);
       } else if (f.kind === "import") {
         const text = doc.files?.[f.fileId];
         if (!text) throw new Error("The imported file is missing");
-        solidStep(f, readStep(text));
+        solidStep(f, isMeshText(text) ? readMesh(text) : readStep(text));
       } else if (f.kind === "combine") {
         // The combined parts come in as material of this part (a body of their own at first);
         // kept apart, each other part is a body of its own too.
@@ -622,8 +653,9 @@ function replay(doc: CadDocument) {
         apart.forEach((s, k) => bodies.set(`${f.id}-${k + 1}`, s));
       } else if (f.kind === "hole") {
         // Holes go through every body in their way (a lid and its box, drilled together).
-        if (!shape) throw new Error("There is no solid yet");
-        const t = holes(shape, f, sketches);
+        if (!bodies.size) throw new Error("There is no solid yet");
+        const all = [...bodies.values()].map(boundsOf);
+        const t = holes([[0, 1, 2].map((k) => Math.min(...all.map((b) => b[0][k]))), [0, 1, 2].map((k) => Math.max(...all.map((b) => b[1][k])))], f, sketches);
         tools.set(f.id, t);
         applyTool(bodies, t);
       } else if (f.kind === "pushpull") {
@@ -637,16 +669,21 @@ function replay(doc: CadDocument) {
         if (!shape) throw new Error("There is no solid yet");
         if (!f.faces.length) throw new Error("Choose at least one face to open");
         const id = bodyWith(bodies, findFace(shape, f.faces[0]).hashCode, "faces");
-        setBody(bodies, id, shell(bodies.get(id)!, f));
+        const b = bodies.get(id)!;
+        if (isMesh(b)) throw new Error("A mesh body cannot be shelled");
+        setBody(bodies, id, shell(b, f));
       } else if (f.kind === "fillet") {
         if (!shape) throw new Error("There is no solid yet");
         if (!f.edges.length) throw new Error("Choose at least one edge");
         // The body holding the first edge (all of a fillet's edges are on one body).
         const p = edgeAnchor(shape, f.edges[0].mid);
-        const id = [...bodies.keys()].find((k) => new EdgeFinder().withinDistance(EDGE_MATCH_TOL, p).find(bodies.get(k)!).length);
+        const id = [...bodies.keys()].find((k) => {
+          const b = bodies.get(k)!;
+          return !isMesh(b) && new EdgeFinder().withinDistance(EDGE_MATCH_TOL, p).find(b).length;
+        });
         if (!id) throw new Error("An edge is no longer there (an earlier feature changed it)");
         // Simplifying after a fillet would merge its faces with flat neighbours: kept as is.
-        const next = fillet(bodies.get(id)!, f);
+        const next = fillet(bodies.get(id)! as Shape3D, f);
         bodies.set(id, next);
       } else if (f.kind === "sweep") {
         const sk = sketches.get(f.sketchId);
@@ -724,6 +761,7 @@ function projectSolid(id: string, body?: string): Shape3D {
   if (building.has(part)) throw new Error("A part cannot use itself");
   const r = buildShape(part);
   const solid = body ? r.bodies.find((b) => b.id === body)?.shape : r.shape;
+  if (isMesh(solid) || (!body && r.bodies.some((b) => isMesh(b.shape)))) throw new Error("A part with a mesh (STL) cannot be combined yet");
   if (!solid) throw new Error(body ? "A body it uses is no longer in its part" : "A part it uses has no solid yet");
   return solid;
 }
@@ -833,13 +871,15 @@ function assemblyShape(doc: CadDocument) {
       continue;
     }
     const r = buildShape(part);
-    if (!r.shape) {
-      errors[inst.id] = "The part has no solid yet";
+    const meshes = r.bodies.some((b) => isMesh(b.shape));
+    if (!r.shape || (inst.body && isMesh(r.bodies.find((b) => b.id === inst.body)?.shape))) {
+      errors[inst.id] = meshes ? "Mesh (STL) bodies cannot be shown in an assembly yet" : "The part has no solid yet";
       continue;
     }
+    if (meshes && !inst.body) warnings[inst.id] = "Its mesh (STL) bodies are not shown in an assembly yet";
     if (Object.keys(r.errors).length) warnings[inst.id] = "Some steps of the part fail: open it to fix them";
     // One body of the part, or all of it.
-    const solid = inst.body ? r.bodies.find((b) => b.id === inst.body)?.shape : r.shape;
+    const solid = (inst.body ? r.bodies.find((b) => b.id === inst.body)?.shape : r.shape) as Shape3D | undefined;
     if (!solid) {
       errors[inst.id] = "Its body is no longer in the part";
       continue;
@@ -877,7 +917,7 @@ function assemblyShape(doc: CadDocument) {
  * boxes meet are intersected; parts that only touch (flush faces) have no volume and are left out.
  */
 export function interferences(doc: CadDocument, skip: string[] = []): Clash[] {
-  const list = buildShape(doc).bodies.filter((b) => !skip.includes(b.id));
+  const list = buildShape(doc).bodies.filter((b): b is { id: string; shape: Shape3D } => !skip.includes(b.id) && !isMesh(b.shape));
   const boxes = list.map((b) => b.shape.boundingBox.bounds);
   const out: Clash[] = [];
   for (let i = 0; i < list.length; i++)
@@ -972,25 +1012,78 @@ export function bodyNames(doc: CadDocument, ids: string[]) {
 
 export function buildResult(doc: CadDocument, opts: { draft?: boolean; planar?: boolean } = {}): BuildResult {
   const { shape, bodies, errors, warnings, movedSketches } = buildShape(doc);
-  if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings, movedSketches };
-  const m = meshed(shape);
+  const meshBodies = bodies.filter((b) => isMesh(b.shape));
+  if (!shape && !meshBodies.length) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings, movedSketches };
+  const exact = bodies.filter((b): b is { id: string; shape: Shape3D } => !isMesh(b.shape));
+  const m = shape ? meshed(shape) : null;
   // A fine mesh already made is used even for a draft.
-  const view = m.fine ?? (opts.draft ? (m.draft ??= meshShape(shape, true)) : (m.fine = meshShape(shape, false)));
-  if (!opts.draft && opts.planar !== false) m.planar ??= planarFaces(shape);
+  const view = m && (m.fine ?? (opts.draft ? (m.draft ??= meshShape(shape!, true)) : (m.fine = meshShape(shape!, false))));
+  if (m && !opts.draft && opts.planar !== false) m.planar ??= planarFaces(shape!);
   // Which faces and edges belong to which body (to colour or hide them apart), when there are several.
   // (An assembly's parts are always told apart: a single one is still picked and moved.)
   const apart = bodies.length > 1 || doc.kind === "assembly";
-  m.bodyFaces ??= apart ? bodies.map((b) => b.shape.faces.map((f) => f.hashCode)) : [];
-  m.bodyEdges ??= apart ? bodies.map((b) => b.shape.edges.map((e) => e.hashCode)) : [];
+  const faces = apart && m ? (m.bodyFaces ??= exact.map((b) => b.shape.faces.map((f) => f.hashCode))) : [];
+  const edges = apart && m ? (m.bodyEdges ??= exact.map((b) => b.shape.edges.map((e) => e.hashCode))) : [];
+  // Mesh bodies come after the exact ones in the arrays, each as a single face and edge (negative
+  // ids: they are not picked as faces or edges of the B-rep).
+  const parts = meshBodies.map((b) => meshDisplay(b.shape as MeshSolid));
+  const vertexCount = (view?.mesh?.vertices.length ?? 0) + parts.reduce((n, p) => n + p.vertices.length, 0);
+  const triCount = (view?.mesh?.triangles.length ?? 0) + parts.reduce((n, p) => n + p.triangles.length, 0);
+  const lineCount = (view?.edges.length ?? 0) + parts.reduce((n, p) => n + p.edges.length, 0);
+  const vertices = new Float32Array(vertexCount);
+  const normals = new Float32Array(vertexCount);
+  const triangles = new Uint32Array(triCount);
+  const lines = new Float32Array(lineCount);
+  const faceGroups = [...(view?.mesh?.faceGroups ?? [])];
+  const edgeGroups = [...(view?.edgeGroups ?? [])];
+  let v = 0;
+  let t = 0;
+  let l = 0;
+  if (view?.mesh) {
+    vertices.set(view.mesh.vertices);
+    normals.set(view.mesh.normals);
+    triangles.set(view.mesh.triangles);
+    v = view.mesh.vertices.length;
+    t = view.mesh.triangles.length;
+  }
+  if (view) {
+    lines.set(view.edges);
+    l = view.edges.length;
+  }
+  const meshIds = new Map<string, number>();
+  parts.forEach((p, k) => {
+    const id = -(k + 1);
+    meshIds.set(meshBodies[k].id, id);
+    vertices.set(p.vertices, v);
+    normals.set(p.normals, v);
+    for (let i = 0; i < p.triangles.length; i++) triangles[t + i] = p.triangles[i] + v / 3;
+    faceGroups.push({ start: t, count: p.triangles.length, faceId: id });
+    lines.set(p.edges, l);
+    edgeGroups.push({ start: l / 3, count: p.edges.length / 3, mid: p.center, id });
+    v += p.vertices.length;
+    t += p.triangles.length;
+    l += p.edges.length;
+  });
   const names = bodyNames(doc, bodies.map((b) => b.id));
-  const bodyInfo = bodies.map((b, i) => ({ id: b.id, name: names[i], faceIds: m.bodyFaces![i] ?? [], edgeIds: m.bodyEdges![i] ?? [] }));
-  const mesh = view.mesh && {
-    vertices: view.mesh.vertices.slice(),
-    normals: view.mesh.normals.slice(),
-    triangles: view.mesh.triangles.slice(),
-    faceGroups: view.mesh.faceGroups,
-  };
-  return { mesh, edges: view.edges.slice(), edgeGroups: view.edgeGroups, planarFaces: m.planar ?? [], bodies: bodyInfo, warnings, errors, movedSketches };
+  let e = 0;
+  const bodyInfo = bodies.map((b, i) => {
+    const id = meshIds.get(b.id);
+    if (id !== undefined) return { id: b.id, name: names[i], faceIds: apart ? [id] : [], edgeIds: apart ? [id] : [] };
+    const k = e++;
+    return { id: b.id, name: names[i], faceIds: faces[k] ?? [], edgeIds: edges[k] ?? [] };
+  });
+  return { mesh: { vertices, normals, triangles, faceGroups }, edges: lines, edgeGroups, planarFaces: m?.planar ?? [], bodies: bodyInfo, warnings, errors, movedSketches };
+}
+
+/** Display data of mesh bodies (they never change: the same object is the same mesh). */
+const meshDisplays = new WeakMap<MeshSolid, ReturnType<typeof displayMesh> & { center: Vec3 }>();
+function meshDisplay(s: MeshSolid) {
+  let d = meshDisplays.get(s);
+  if (!d) {
+    const [lo, hi] = s.bounds();
+    meshDisplays.set(s, (d = { ...displayMesh(s), center: [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2] }));
+  }
+  return d;
 }
 
 /** Planes of the flat faces, so a sketch can be started on them. */
@@ -1090,15 +1183,22 @@ export function layFlat(s: Shape3D): Shape3D {
   return out.translate([-lo[0], -lo[1], -lo[2]]);
 }
 
-/** Every part (or body) laid flat and set out in rows on a 220 mm plate, 5 mm apart. */
-function plate(bodies: { shape: Shape3D }[]): Shape3D[] {
-  const flat = bodies.map((b) => layFlat(b.shape));
-  const size = (s: Shape3D) => {
-    const [lo, hi] = s.boundingBox.bounds;
+/**
+ * Every part (or body) laid flat and set out in rows on a 220 mm plate, 5 mm apart. A mesh is
+ * not turned (it has no flat faces to tell), only set on the plate.
+ */
+function plate(bodies: { shape: AnySolid }[]): AnySolid[] {
+  const flat = bodies.map((b) => {
+    if (!isMesh(b.shape)) return layFlat(b.shape);
+    const [lo] = b.shape.bounds();
+    return transformMesh(b.shape, translation(lo.map((x) => -x)));
+  });
+  const size = (s: AnySolid) => {
+    const [lo, hi] = boundsOf(s);
     return [hi[0] - lo[0], hi[1] - lo[1]];
   };
   const order = flat.map((s, i) => i).sort((a, b) => size(flat[b])[1] - size(flat[a])[1]);
-  const out: Shape3D[] = [];
+  const out: AnySolid[] = [];
   let x = 0;
   let y = 0;
   let row = 0;
@@ -1109,38 +1209,41 @@ function plate(bodies: { shape: Shape3D }[]): Shape3D[] {
       y += row + 5;
       row = 0;
     }
-    out[i] = flat[i].translate([x, y, 0]);
+    const s = flat[i];
+    out[i] = isMesh(s) ? transformMesh(s, translation([x, y, 0])) : s.translate([x, y, 0]);
     x += w + 5;
     row = Math.max(row, d);
   }
   return out;
 }
 
+/** Triangles of a body for a mesh file. */
+const trianglesOf = (s: AnySolid) => (isMesh(s) ? { vertices: s.vertices, triangles: s.triangles } : s.mesh(MESH_OPTS));
+
 export function exportFile(doc: CadDocument, format: ExportFormat, name = "model"): Blob | null {
   const { shape, bodies } = buildShape(doc);
-  if (!shape) return null;
+  if (!bodies.length) return null;
   const apart = bodies.length > 1 || doc.kind === "assembly";
+  const hasMesh = bodies.some((b) => isMesh(b.shape));
   if (format === "plate") {
     const names = apart ? bodyNames(doc, bodies.map((b) => b.id)) : [name];
-    const objects = plate(bodies).map((s, i) => {
-      const m = s.mesh(MESH_OPTS);
-      return { name: names[i], vertices: m.vertices, triangles: m.triangles };
-    });
+    const objects = plate(bodies).map((s, i) => ({ name: names[i], ...trianglesOf(s) }));
     return new Blob([make3mf(objects, name)], { type: "model/3mf" });
-  }
-  if (format === "step" && apart) {
-    // Named and coloured parts, which other CAD software shows as an assembly.
-    const names = bodyNames(doc, bodies.map((b) => b.id));
-    return exportSTEP(bodies.map((b, i) => ({ shape: b.shape.clone(), name: names[i], color: STEP_COLORS[i % STEP_COLORS.length] })));
   }
   if (format === "3mf") {
     // One object per body, so the slicer can place and set each one apart.
     const names = bodies.length > 1 ? bodyNames(doc, bodies.map((b) => b.id)) : [name];
-    const objects = bodies.map((b, i) => {
-      const m = b.shape.mesh(MESH_OPTS);
-      return { name: names[i], vertices: m.vertices, triangles: m.triangles };
-    });
+    const objects = bodies.map((b, i) => ({ name: names[i], ...trianglesOf(b.shape) }));
     return new Blob([make3mf(objects, name)], { type: "model/3mf" });
   }
-  return format === "stl" ? shape.blobSTL({ ...MESH_OPTS, binary: true }) : shape.blobSTEP();
+  if (format === "stl") return hasMesh ? stlBlob(bodies.map((b) => trianglesOf(b.shape))) : shape!.blobSTL({ ...MESH_OPTS, binary: true });
+  // STEP holds exact solids: the mesh bodies are left out.
+  if (!shape) throw new Error("STEP holds exact solids only: export the mesh as STL or 3MF");
+  const exact = bodies.filter((b): b is { id: string; shape: Shape3D } => !isMesh(b.shape));
+  if (exact.length > 1 || doc.kind === "assembly") {
+    // Named and coloured parts, which other CAD software shows as an assembly.
+    const names = bodyNames(doc, bodies.map((b) => b.id));
+    return exportSTEP(exact.map((b, i) => ({ shape: b.shape.clone(), name: names[bodies.indexOf(b)], color: STEP_COLORS[i % STEP_COLORS.length] })));
+  }
+  return shape.blobSTEP();
 }

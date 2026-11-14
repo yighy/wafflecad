@@ -7,6 +7,7 @@ import { S } from "./state";
 import { emptyDoc } from "./util";
 import { freeName, listProjects, newProjectId, putProject, type ProjectMeta } from "../projects";
 import { parseDxf } from "../sketch/dxf";
+import { encodeMesh, parseStl } from "../cad/mesh";
 import { FONTS, loadFont, type FontId } from "../sketch/fonts";
 import { bounds, insertShapes, type ImportOptions, type ImportShape } from "../sketch/importShapes";
 import { uid } from "../sketch/model";
@@ -241,6 +242,33 @@ export function shiftShape(s: ImportShape, dx: number, dy: number): ImportShape 
     case "spline":
       return { ...s, pts: s.pts.map(m) };
   }
+}
+
+/**
+ * An STL file becomes a step of the part: a mesh body of its own, as placed in the file (in mm).
+ * It can then cut the part or be cut down to what it shares with it; exact steps after it (cuts,
+ * holes, patterns) work on it too, through meshes.
+ */
+export async function importStl() {
+  if (isAssembly()) return toast("Open a part to import an STL: an assembly cannot show meshes yet");
+  const file = await pickFile(".stl,model/stl");
+  if (!file) return;
+  let mesh;
+  try {
+    mesh = parseStl(new Uint8Array(await file.arrayBuffer()));
+  } catch (e) {
+    return toast(e instanceof Error ? e.message : String(e));
+  }
+  leaveModes();
+  const fileId = uid();
+  const name = file.name.replace(/\.stl$/i, "") || "Mesh";
+  S.doc.files = { ...S.doc.files, [fileId]: encodeMesh(mesh) };
+  S.doc.features.push({ id: uid(), kind: "import", name, fileId, format: "stl", op: "add", body: "new" });
+  const count = mesh.triangles.length / 3;
+  if (count > 300_000) toast(`${Math.round(count / 1000)}k triangles: cuts and joins with it may take a few seconds`);
+  M.fitNext = true;
+  commit();
+  renderAll();
 }
 
 /**

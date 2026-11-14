@@ -833,7 +833,8 @@ export class Viewport {
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     this.edgeGroups.forEach((g, i) => {
-      if (this.hiddenEdges.has(g.id)) return;
+      // Negative ids: the fold lines of a mesh body, not edges of the B-rep.
+      if (g.id < 0 || this.hiddenEdges.has(g.id)) return;
       for (let k = g.start; k < g.start + g.count; k += 2) {
         a.fromArray(L, k * 3);
         b.fromArray(L, (k + 1) * 3);
