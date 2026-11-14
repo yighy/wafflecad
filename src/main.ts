@@ -31,17 +31,30 @@ import type { ExportFormat, MeasurePick, MeasureResult, MeasureRow } from "./typ
 import { deleteProject, freeName, getProject, listProjects, newProjectId, putProject, type ProjectMeta } from "./projects";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D, type EdgeDim } from "./cad/holePlace";
 import { ago, asDocument, byName, download, emptyDoc, fmtNum } from "./app/util";
+import { toast } from "./ui/toast";
+import { playEnter } from "./ui/enter";
+import { applyPrefs, prefs, savePrefs, type Prefs } from "./app/prefs";
+import { narrow, placePanel, setupPanelDrag } from "./app/panel";
+import { explode, explodeTarget, resetExplode, spreadParts, toggleExplode } from "./app/explode";
+import { endMeasure, measureReq, measureTap, measureValue, measuring, renderMeasurePanel, showMeasurePicks, toggleMeasure } from "./app/measure";
+import { registerApp } from "./app/app";
+import { extrude } from "./app/extrude";
+import { faceTool, pushPull, shell } from "./app/faceTools";
+import { hitRadiusPx, holeDimLabels, holeDown, dropHoleDrag, holeMove, holeSel, holeTool, holeUp, startHoles } from "./app/holes";
+import { axisName, revolveAxisPicker, revolveTool } from "./app/revolve";
+import { allSketches, endSweepLoft, pickSketchLine, renderSweepLoftPanel, startLoft, startSweep } from "./app/sweepLoft";
+import { patternSummary, patternTool, togglePatternFeature } from "./app/patterns";
+import { filletTool, highlightFilletEdges, highlightShellFaces, toggleFilletEdge, toggleShellFace } from "./app/fillet";
+import { S, isOperation, usedSketchIds, type MatePick, type Mode } from "./app/state";
 import { closeProjects, fileName, groupOf, initGallery, newGroup, openFile, saveFile, saveOpenTab, showProjects, tabName } from "./app/gallery";
 
 /** Where versions before projects kept their one document (moved into a project at start). */
 const STORAGE_KEY = "waffle.document";
-const PREFS_KEY = "waffle.prefs";
 
 // The app was called "Touch CAD" first: move what that version saved in this browser.
 try {
   for (const [from, to] of [
     ["touch-cad.document", STORAGE_KEY],
-    ["touch-cad.prefs", PREFS_KEY],
   ]) {
     const v = localStorage.getItem(from);
     if (v !== null && localStorage.getItem(to) === null) localStorage.setItem(to, v);
@@ -57,54 +70,11 @@ const STD_PLANES: PlaneDef[] = [
   { origin: [0, 0, 0], xDir: [1, 0, 0], normal: [0, -1, 0], label: "XZ" },
   { origin: [0, 0, 0], xDir: [0, 1, 0], normal: [1, 0, 0], label: "YZ" },
 ];
-const PLANE_NAMES: Record<string, string> = { XY: "Top (XY)", XZ: "Front (XZ)", YZ: "Right (YZ)" };
+export const PLANE_NAMES: Record<string, string> = { XY: "Top (XY)", XZ: "Front (XZ)", YZ: "Right (YZ)" };
 const PLANE_COLORS: Record<string, string> = { XY: "#4c6ef5", XZ: "#2f9e44", YZ: "#e03131" };
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const buttons = (sel: string) => [...document.querySelectorAll<HTMLButtonElement>(sel)];
-
-// ---------- Preferences ----------
-
-interface Prefs {
-  theme: "light" | "dark";
-  collapsed: boolean;
-  /** Where the user dragged the side panel (top-left corner, CSS px); null = default place. */
-  panelPos: { x: number; y: number } | null;
-  /** The side panel is folded to its title (and its Cancel / Confirm). */
-  panelFolded: boolean;
-  /** How to unfold the panel was said once, the first time it was folded. */
-  panelFoldTold: boolean;
-  perspective: boolean;
-  display: DisplayMode;
-  /** The project open last. */
-  project: string | null;
-  /** How the sketch Select tool picks. */
-  selectMode: SelectMode;
-  /** The selected element's constraint list is folded (sketch panel). */
-  constraintsFolded: boolean;
-  /** Which constraint symbols a sketch shows. */
-  glyphs: SketchEditor["glyphs"];
-}
-const prefs: Prefs = { theme: "light", collapsed: false, panelPos: null, panelFolded: false, panelFoldTold: false, perspective: false, display: "shaded-edges", project: null, selectMode: "box", constraintsFolded: false, glyphs: "all" };
-try {
-  Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}"));
-} catch {
-  // Defaults.
-}
-function savePrefs() {
-  try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-  } catch {
-    // Not remembered: fine.
-  }
-}
-function applyPrefs() {
-  document.documentElement.dataset.theme = prefs.theme;
-  document.body.classList.toggle("collapsed", prefs.collapsed);
-  $<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", cssVar("--bg3d", "#efebe3"));
-}
-applyPrefs();
-
 
 // ---------- Shared parameters ----------
 
@@ -127,66 +97,17 @@ function saveShared() {
 
 // ---------- State ----------
 
-type Mode =
-  | { kind: "part" }
-  | { kind: "pickPlane"; offset: number; tiltX: number; tiltY: number }
-  | { kind: "sketch"; editor: SketchEditor }
-  | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle }
-  | { kind: "pushpull"; feat: PushPullFeature; keypad: KeypadHandle }
-  | { kind: "shell"; feat: ShellFeature; keypad: KeypadHandle }
-  | { kind: "fillet"; feat: FilletFeature; keypad: KeypadHandle }
-  | { kind: "hole"; feat: HoleFeature; keypad: KeypadHandle }
-  | { kind: "pattern"; feat: PatternFeature; keypad: KeypadHandle }
-  | { kind: "revolve"; feat: RevolveFeature; keypad: KeypadHandle }
-  /** Choosing the sketches of a sweep or a loft in the panel (no keypad: nothing to type). */
-  | { kind: "sweep"; feat: SweepFeature }
-  | { kind: "loft"; feat: LoftFeature }
-  | { kind: "place"; feat: PartInstance; keypad: KeypadHandle }
-  /** Choosing the two faces or holes of a new mate. */
-  | { kind: "mate"; picks: MatePick[] }
-  | { kind: "mateEdit"; feat: Mate; keypad: KeypadHandle }
-  /** Lining parts up: the parts chosen, the first one staying put. */
-  | { kind: "align"; ids: string[] }
-  /** Combining parts into a new part: the one it is made from, and the ones it is joined with or cut by. */
-  | { kind: "combine"; target: string | null; tools: string[]; op: CombineFeature["op"]; clearance: number; replace: boolean; existing: ProjectMeta | null };
-
-/** A face or hole chosen for a mate: its plane or axis, and what to highlight. */
-interface MatePick {
-  ref: MateRef;
-  face?: number;
-  edge?: number;
-}
-
-/** Modes where a feature is being edited with the keypad open. */
-const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
-/** The sketches a feature is made from: hidden in the part view once used, deleted with them. */
-const usedSketchIds = (f: Feature): string[] =>
-  f.kind === "extrude" || f.kind === "revolve" ? [f.sketchId] : f.kind === "sweep" ? (f.helix ? [f.sketchId] : [f.sketchId, f.pathSketchId]) : f.kind === "loft" ? f.sketchIds : [];
-
-let doc: CadDocument = emptyDoc();
-/** The open project; null until the saved ones are read (or when this browser cannot store them). */
-let project: ProjectMeta | null = null;
-let mode: Mode = { kind: "part" };
-let selectedFeature: string | null = null;
-let selectedFace: { faceId: number; plane: PlaneDef | null; center: Vec3 | null; hit: Vec3 | null } | null = null;
-/** A face tool chosen before any face was selected: it starts on the next face tapped. */
-let pendingFaceTool: "pushpull" | "shell" | "hole" | null = null;
-/** The right panel shows the parameter list. */
-let showParams = false;
-/** A feature left out of the preview build (the shell, while its faces are being chosen). */
-let previewExclude: string | null = null;
-let lastBuild: BuildResult | null = null;
 let kernelMessage = "Loading geometry kernel…";
 /** The kernel could not load: the status line offers to try again. */
 let kernelBroken = false;
 /** When the kernel last showed signs of life while loading (download progress). */
 let kernelAlive = performance.now();
 /** The document without its imported files (they only ever get added, so undo leaves them be). */
-const snapshot = () => JSON.stringify({ ...doc, files: undefined, sharedNow: shared });
+const snapshot = () => JSON.stringify({ ...S.doc, files: undefined, sharedNow: shared });
 const undoStack: string[] = [snapshot()];
 let undoPos = 0;
 
-const vp = new Viewport($("#view"));
+export const vp = new Viewport($("#view"));
 vp.perspective = prefs.perspective;
 vp.setDisplayMode(prefs.display);
 let solver: Solver;
@@ -220,7 +141,7 @@ function hideSplash() {
 
 /** Gone once the app can be used: an empty project needs no model to be drawn first. */
 function maybeHideSplash() {
-  if (solverReady && (modelShown || (!doc.features.length && !doc.instances?.length))) hideSplash();
+  if (solverReady && (modelShown || (!S.doc.features.length && !S.doc.instances?.length))) hideSplash();
 }
 
 splash?.querySelector("button")?.addEventListener("click", hideSplash);
@@ -232,6 +153,24 @@ setTimeout(hideSplash, 12000);
 const worker = new Worker(new URL("./cad/worker.ts", import.meta.url), { type: "module" });
 let kernelReady = false;
 let reqCounter = 0;
+
+registerApp({
+  vp,
+  doc: () => S.doc,
+  lastBuild: () => S.lastBuild,
+  renderAll,
+  renderPanel,
+  renderPartOverlays,
+  nextReq: () => ++reqCounter,
+  post: (msg) => worker.postMessage(msg),
+  clearPartFocus: () => {
+    S.showParams = false;
+    S.pendingFaceTool = null;
+    S.selectedFeature = null;
+    S.selectedFace = null;
+    vp.highlightFace(null);
+  },
+});
 let latestBuild = 0;
 const pendingFiles = new Map<number, (b: Blob | null, err?: string) => void>();
 const pendingRefs = new Map<number, (ref: Omit<MateRef, "part"> | null) => void>();
@@ -283,28 +222,28 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
       }
     }
     if (m.reqId !== latestBuild) return;
-    const first = lastBuild === null;
-    lastBuild = m;
+    const first = S.lastBuild === null;
+    S.lastBuild = m;
     vp.setModel(m, m.preview);
     if (!modelShown) {
       modelShown = true;
       // One frame to draw it, then the loading screen fades over the model.
       requestAnimationFrame(maybeHideSplash);
     }
-    if (isOperation(mode)) mode.keypad.setNote(m.preview?.error ?? null);
+    if (isOperation(S.mode)) S.mode.keypad.setNote(m.preview?.error ?? null);
     if ((first || fitNext) && m.mesh) {
       fitNext = false;
       vp.fit();
     }
-    if (mode.kind === "sketch") vp.setModelOpacity(0.45);
-    if (mode.kind === "shell") highlightShellFaces(mode.feat);
-    if (mode.kind === "fillet") highlightFilletEdges(mode.feat);
+    if (S.mode.kind === "sketch") vp.setModelOpacity(0.45);
+    if (S.mode.kind === "shell") highlightShellFaces(S.mode.feat);
+    if (S.mode.kind === "fillet") highlightFilletEdges(S.mode.feat);
     renderTimeline();
     renderPanel();
     renderPartOverlays();
     alignShift.clear();
-    if (mode.kind === "align") showAlignPicks();
-    if (mode.kind === "combine") showCombinePicks();
+    if (S.mode.kind === "align") showAlignPicks();
+    if (S.mode.kind === "combine") showCombinePicks();
     if (explode > 0) spreadParts(explode);
     syncGizmo();
     if (thumbStale) scheduleThumb();
@@ -338,16 +277,16 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
 function catchUpFaceSketches(movedList: NonNullable<BuildResult["movedSketches"]>) {
   let grid = false;
   for (const [id, mv] of Object.entries(movedList)) {
-    const f = doc.features.find((x): x is SketchFeature => x.id === id && x.kind === "sketch");
+    const f = S.doc.features.find((x): x is SketchFeature => x.id === id && x.kind === "sketch");
     if (!f) continue;
     f.plane = mv.plane;
     if (f.face) f.face = { ...f.face, center: mv.center };
-    if (mode.kind === "sketch" && mode.editor.sk.id === id) grid = true;
+    if (S.mode.kind === "sketch" && S.mode.editor.sk.id === id) grid = true;
   }
   save();
-  if (grid && mode.kind === "sketch") {
-    vp.setGridPlane(mode.editor.sk.plane);
-    vp.viewNormalTo(mode.editor.sk.plane);
+  if (grid && S.mode.kind === "sketch") {
+    vp.setGridPlane(S.mode.editor.sk.plane);
+    vp.viewNormalTo(S.mode.editor.sk.plane);
   }
 }
 
@@ -357,8 +296,8 @@ let saidLostEdge = false;
 
 /** Model edges copied into sketches follow the model: each is found again by its midpoint and the copy is moved. */
 function catchUpProjections(m: { edges: Float32Array; edgeGroups: EdgeGroup[] }) {
-  if (isOperation(mode) || mode.kind === "sketch" || mode.kind === "sweep" || mode.kind === "loft") return;
-  const sks = doc.features.filter((f): f is SketchFeature => f.kind === "sketch" && !!f.projections?.length);
+  if (isOperation(S.mode) || S.mode.kind === "sketch" || S.mode.kind === "sweep" || S.mode.kind === "loft") return;
+  const sks = S.doc.features.filter((f): f is SketchFeature => f.kind === "sketch" && !!f.projections?.length);
   if (!sks.length || !m.edgeGroups.length || reprojected >= 3) return;
   const L = m.edges;
   let lo = [Infinity, Infinity, Infinity];
@@ -446,7 +385,7 @@ function sendBuild(draft = false) {
       renderStatus();
     }, 250);
   latestBuild = ++reqCounter;
-  worker.postMessage({ type: "build", reqId: latestBuild, doc, pickExclude: previewExclude ?? undefined, draft } satisfies WorkerRequest);
+  worker.postMessage({ type: "build", reqId: latestBuild, doc: S.doc, pickExclude: S.previewExclude ?? undefined, draft } satisfies WorkerRequest);
 }
 
 /**
@@ -459,7 +398,7 @@ let lastChange = 0;
 let settleTimer = 0;
 let draftSent = false;
 const SETTLE_MS = 300;
-function rebuild(now = false) {
+export function rebuild(now = false) {
   const t = performance.now();
   const burst = t - lastChange < SETTLE_MS;
   lastChange = t;
@@ -496,7 +435,7 @@ function exportFile(format: ExportFormat) {
     if (!blob) return toast(err ? "Export failed: " + err : "Nothing to export");
     download(blob, format === "plate" ? `${fileName()}-plate.3mf` : `${fileName()}.${format}`);
   });
-  worker.postMessage({ type: "export", reqId, doc, format, name: project?.name ?? "Model" } satisfies WorkerRequest);
+  worker.postMessage({ type: "export", reqId, doc: S.doc, format, name: S.project?.name ?? "Model" } satisfies WorkerRequest);
 }
 
 // ---------- Document, history, persistence ----------
@@ -508,7 +447,7 @@ let thumbStale = false;
 
 /** Saves the open project shortly after a change (changes in a row are written once). */
 function save() {
-  if (!project) return;
+  if (!S.project) return;
   thumbStale = true;
   clearTimeout(saveTimer);
   saveTimer = window.setTimeout(flushSave, 400);
@@ -516,11 +455,11 @@ function save() {
 
 async function flushSave() {
   clearTimeout(saveTimer);
-  if (!saveTimer || !project) return;
+  if (!saveTimer || !S.project) return;
   saveTimer = 0;
-  project.updated = Date.now();
+  S.project.updated = Date.now();
   try {
-    await putProject({ ...project }, doc);
+    await putProject({ ...S.project }, S.doc);
   } catch {
     toast("Could not save in this browser");
   }
@@ -530,12 +469,12 @@ async function flushSave() {
 function captureThumb() {
   clearTimeout(thumbTimer);
   thumbTimer = 0;
-  if (!project || !thumbStale || mode.kind !== "part" || !lastBuild) return;
-  const thumb = lastBuild.mesh ? vp.thumbnail(320, 220) : undefined;
+  if (!S.project || !thumbStale || S.mode.kind !== "part" || !S.lastBuild) return;
+  const thumb = S.lastBuild.mesh ? vp.thumbnail(320, 220) : undefined;
   if (thumb === null) return; // no view to take it from (app in the background): later
   thumbStale = false;
-  project.thumb = thumb;
-  putProject({ ...project }).catch(() => {});
+  S.project.thumb = thumb;
+  putProject({ ...S.project }).catch(() => {});
 }
 function scheduleThumb() {
   clearTimeout(thumbTimer);
@@ -551,7 +490,7 @@ function resetHistory() {
 /** Leaves sketches and operations, keeping what they did, before another project opens. */
 function leaveModes() {
   for (let i = 0; i < 20 && escape(); i++);
-  pendingFaceTool = null;
+  S.pendingFaceTool = null;
 }
 
 /** `from`: the assembly this part is opened from (offered as the way back). */
@@ -561,24 +500,24 @@ async function openProject(id: string, from: { id: string; name: string } | null
   const p = await getProject(id).catch(() => null);
   if (!p) return toast("This project could not be opened");
   leaveModes();
-  project = p.meta;
-  doc = asDocument(p.doc) ?? emptyDoc();
-  const caughtUp = catchUpShared(doc);
+  S.project = p.meta;
+  S.doc = asDocument(p.doc) ?? emptyDoc();
+  const caughtUp = catchUpShared(S.doc);
   cameFrom = from;
   await loadParts();
   if (isAssembly()) {
     // Assemblies made before mates: the first part holds the others.
-    if (doc.instances?.length && !doc.instances.some((i) => i.fixed)) doc.instances[0].fixed = true;
+    if (S.doc.instances?.length && !S.doc.instances.some((i) => i.fixed)) S.doc.instances[0].fixed = true;
     solveState = null;
   }
-  explode = explodeTarget = 0;
+  resetExplode();
   clashes = null;
   vp.setClashes(null);
   prefs.project = id;
   savePrefs();
-  selectedFeature = null;
-  selectedFace = null;
-  lastBuild = null; // the first build of the project frames it
+  S.selectedFeature = null;
+  S.selectedFace = null;
+  S.lastBuild = null; // the first build of the project frames it
   hiddenBodies = new Set();
   vp.setHiddenBodies(hiddenBodies);
   thumbStale = !p.meta.thumb && (p.doc.features.length > 0 || !!p.doc.instances?.length);
@@ -642,7 +581,7 @@ async function openInitialProject() {
   }
 }
 
-function commit() {
+export function commit() {
   if (clashes) clearClashes();
   reprojected = 0;
   saidLostEdge = false;
@@ -658,22 +597,22 @@ function commit() {
 }
 
 function restore(pos: number) {
-  if (isOperation(mode)) mode.keypad.close();
+  if (isOperation(S.mode)) S.mode.keypad.close();
   undoPos = pos;
   const { sharedNow, ...was } = JSON.parse(undoStack[pos]) as CadDocument & { sharedNow?: Parameter[] };
-  doc = { ...was, files: doc.files };
+  S.doc = { ...was, files: S.doc.files };
   if (sharedNow && JSON.stringify(sharedNow) !== JSON.stringify(shared)) {
     shared = sharedNow;
     saveShared();
   }
   save();
-  if (mode.kind === "sketch") {
-    const id = mode.editor.sk.id;
-    const sk = doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
-    if (sk) mode.editor.load(sk);
+  if (S.mode.kind === "sketch") {
+    const id = S.mode.editor.sk.id;
+    const sk = S.doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
+    if (sk) S.mode.editor.load(sk);
     else exitSketch();
   }
-  if (selectedFeature && !doc.features.some((f) => f.id === selectedFeature)) selectedFeature = null;
+  if (S.selectedFeature && !S.doc.features.some((f) => f.id === S.selectedFeature)) S.selectedFeature = null;
   rebuild();
   renderAll();
 }
@@ -686,18 +625,18 @@ function redo() {
   if (undoPos < undoStack.length - 1) restore(undoPos + 1);
 }
 
-function nextName(prefix: string) {
+export function nextName(prefix: string) {
   let i = 1;
-  while (doc.features.some((f) => f.name === `${prefix} ${i}`)) i++;
+  while (S.doc.features.some((f) => f.name === `${prefix} ${i}`)) i++;
   return `${prefix} ${i}`;
 }
 
 // ---------- Modes ----------
 
 function startNewSketch() {
-  mode = { kind: "pickPlane", offset: 0, tiltX: 0, tiltY: 0 };
-  selectedFeature = null;
-  selectedFace = null;
+  S.mode = { kind: "pickPlane", offset: 0, tiltX: 0, tiltY: 0 };
+  S.selectedFeature = null;
+  S.selectedFace = null;
   vp.highlightFace(null);
   showPickPlanes();
   renderAll();
@@ -705,8 +644,8 @@ function startNewSketch() {
 
 /** The three planes, where the sketch would land with the offset and tilt set. */
 function showPickPlanes() {
-  if (mode.kind !== "pickPlane") return;
-  const m = mode;
+  if (S.mode.kind !== "pickPlane") return;
+  const m = S.mode;
   vp.showPlanes(STD_PLANES.map((def) => ({ def: placedPlane(def, m), color: PLANE_COLORS[def.label] })));
 }
 
@@ -745,8 +684,8 @@ let planeKeypad: KeypadHandle | null = null;
 
 /** Types the offset (mm along the normal) or a tilt (degrees around the plane's X, then its Y axis). */
 async function pickPlaneValue(what: "offset" | "tiltX" | "tiltY") {
-  if (mode.kind !== "pickPlane" || planeKeypad) return;
-  const m = mode;
+  if (S.mode.kind !== "pickPlane" || planeKeypad) return;
+  const m = S.mode;
   const was = { offset: m.offset, tiltX: m.tiltX, tiltY: m.tiltY };
   const kp = openKeypad({
     title: "Sketch plane",
@@ -788,7 +727,7 @@ function pickPlaneAt(p: Ptr) {
   let plane: PlaneDef | undefined;
   let face: FaceRef | undefined;
   if (faceId != null) {
-    const pf = lastBuild?.planarFaces.find((f) => f.faceId === faceId);
+    const pf = S.lastBuild?.planarFaces.find((f) => f.faceId === faceId);
     if (pf) {
       plane = pf.plane;
       face = { center: pf.center, normal: pf.plane.normal };
@@ -799,8 +738,8 @@ function pickPlaneAt(p: Ptr) {
     if (faceId != null) toast("Only flat faces can hold a sketch");
     return;
   }
-  if (mode.kind === "pickPlane" && (mode.offset || mode.tiltX || mode.tiltY)) {
-    plane = placedPlane(plane, mode);
+  if (S.mode.kind === "pickPlane" && (S.mode.offset || S.mode.tiltX || S.mode.tiltY)) {
+    plane = placedPlane(plane, S.mode);
     face = undefined; // off the face, the sketch no longer follows it
   }
   createSketchOn(plane, face);
@@ -810,19 +749,19 @@ function pickPlaneAt(p: Ptr) {
 function createSketchOn(plane: PlaneDef, face?: FaceRef) {
   vp.showPlanes(null);
   vp.highlightFace(null);
-  selectedFace = null;
+  S.selectedFace = null;
   const sk = newSketch(nextName("Sketch"), plane);
   if (face) sk.face = face;
-  doc.features.push(sk);
+  S.doc.features.push(sk);
   commit();
   enterSketch(sk);
 }
 
 function enterSketch(sk: SketchFeature) {
-  if (mode.kind === "sketch") mode.editor.dispose();
+  if (S.mode.kind === "sketch") S.mode.editor.dispose();
   vp.showPlanes(null);
   vp.highlightFace(null);
-  selectedFace = null;
+  S.selectedFace = null;
   const editor = new SketchEditor(vp, solver, sk, {
     commit,
     changed: () => {
@@ -834,24 +773,24 @@ function enterSketch(sk: SketchFeature) {
   });
   editor.selectMode = prefs.selectMode;
   editor.glyphs = prefs.glyphs;
-  mode = { kind: "sketch", editor };
-  selectedFeature = sk.id;
+  S.mode = { kind: "sketch", editor };
+  S.selectedFeature = sk.id;
   vp.setGridPlane(sk.plane);
   vp.viewNormalTo(sk.plane);
   vp.setModelOpacity(0.45);
   renderAll();
 }
 
-function exitSketch() {
-  if (mode.kind !== "sketch") return;
-  const sk = mode.editor.sk;
-  mode.editor.dispose();
-  mode = { kind: "part" };
+export function exitSketch() {
+  if (S.mode.kind !== "sketch") return;
+  const sk = S.mode.editor.sk;
+  S.mode.editor.dispose();
+  S.mode = { kind: "part" };
   vp.setGridPlane(null);
   vp.setModelOpacity(1);
   commit();
   renderAll();
-  const used = doc.features.some((f) => f.kind === "extrude" && f.sketchId === sk.id);
+  const used = S.doc.features.some((f) => f.kind === "extrude" && f.sketchId === sk.id);
   if (!used && findRegions(sk).length)
     toast("Next: Extrude turns this sketch into a solid");
 }
@@ -865,28 +804,28 @@ function escape(): boolean {
     endMeasure();
     return true;
   }
-  if (isOperation(mode)) {
-    mode.keypad.close();
+  if (isOperation(S.mode)) {
+    S.mode.keypad.close();
     return true;
   }
-  if (pendingFaceTool) {
-    pendingFaceTool = null;
+  if (S.pendingFaceTool) {
+    S.pendingFaceTool = null;
     renderAll();
     return true;
   }
-  if (mode.kind === "mate") {
+  if (S.mode.kind === "mate") {
     startMate();
     return true;
   }
-  if (mode.kind === "sweep" || mode.kind === "loft") {
+  if (S.mode.kind === "sweep" || S.mode.kind === "loft") {
     endSweepLoft(false);
     return true;
   }
-  if (mode.kind === "align") {
+  if (S.mode.kind === "align") {
     endAlign();
     return true;
   }
-  if (mode.kind === "combine") {
+  if (S.mode.kind === "combine") {
     endCombine();
     return true;
   }
@@ -898,23 +837,23 @@ function escape(): boolean {
     toggleExplode();
     return true;
   }
-  if (showParams) {
+  if (S.showParams) {
     toggleParams();
     return true;
   }
-  if (mode.kind === "sketch") {
-    if (!mode.editor.escape()) exitSketch();
+  if (S.mode.kind === "sketch") {
+    if (!S.mode.editor.escape()) exitSketch();
     renderAll();
     return true;
   }
-  if (mode.kind === "pickPlane") {
-    mode = { kind: "part" };
+  if (S.mode.kind === "pickPlane") {
+    S.mode = { kind: "part" };
     vp.showPlanes(null);
     vp.highlightFace(null);
     renderAll();
     return true;
   }
-  if (selectedFeature || selectedFace) {
+  if (S.selectedFeature || S.selectedFace) {
     clearPartSelection();
     return true;
   }
@@ -922,114 +861,15 @@ function escape(): boolean {
 }
 
 function clearPartSelection() {
-  selectedFeature = null;
-  selectedFace = null;
+  S.selectedFeature = null;
+  S.selectedFace = null;
   vp.highlightFace(null);
   renderAll();
-}
-
-// ---------- Extrude ----------
-
-async function extrude(existing?: ExtrudeFeature) {
-  if (isOperation(mode)) return;
-  let f = existing;
-  if (!f) {
-    const sk = pickSketchForExtrude();
-    if (!sk) return toast("Draw a closed sketch first");
-    if (mode.kind === "sketch") exitSketch();
-    const onFace = sk.plane.label === "Face";
-    f = { id: uid(), kind: "extrude", name: nextName("Extrude"), sketchId: sk.id, distance: onFace ? 5 : 10, symmetric: false, op: "add" };
-    doc.features.push(f);
-  }
-  const feat = f;
-  const sk = doc.features.find((x): x is SketchFeature => x.id === feat.sketchId && x.kind === "sketch");
-  if (!sk) return toast("This extrusion's sketch is missing");
-  const onFace = sk.plane.label === "Face";
-  const before = { distance: feat.distance, distanceExpr: feat.distanceExpr, symmetric: feat.symmetric, op: feat.op, body: feat.body };
-  selectedFeature = feat.id;
-  selectedFace = null;
-  vp.highlightFace(null);
-
-  let handle: DistanceHandle | null = null;
-  const setDistance = (d: number, fromKeypad = false) => {
-    feat.distance = d;
-    if (!fromKeypad) kp.set(Math.abs(d));
-    handle?.update();
-    renderTimeline();
-    rebuild();
-  };
-  const kp = openKeypad({
-    title: feat.name,
-    subtitle: `${sk.name} · ${sk.plane.label === "Face" ? "on a face" : PLANE_NAMES[sk.plane.label] ?? sk.plane.label}`,
-    label: "Distance",
-    value: Math.abs(feat.distance),
-    expr: feat.distanceExpr,
-    scope: paramScope(),
-    confirmLabel: "Confirm",
-    segments: [
-      {
-        options: [
-          { value: "one", label: "One side" },
-          { value: "sym", label: "Symmetric" },
-        ],
-        get: () => (feat.symmetric ? "sym" : "one"),
-        set: (v) => {
-          feat.symmetric = v === "sym";
-          rebuild();
-        },
-      },
-      {
-        options: [
-          { value: "add", label: "Join" },
-          { value: "cut", label: "Cut" },
-          { value: "intersect", label: "Intersect" },
-        ],
-        get: () => feat.op,
-        set: (v) => {
-          const op = v as ExtrudeOp;
-          // A face normal points out of the solid: cutting goes the other way by default.
-          if (onFace && (op === "cut") !== (feat.op === "cut")) feat.distance = -feat.distance;
-          feat.op = op;
-          handle?.update();
-          rebuild();
-        },
-      },
-      ...bodySegment(feat),
-    ],
-    extras: [{ label: "Flip direction", icon: "flip", run: () => setDistance(-feat.distance) }],
-    onInput: (v) => {
-      if (v > 0) setDistance(Math.sign(feat.distance || 1) * v, true);
-    },
-  });
-  mode = { kind: "extrude", feat, keypad: kp };
-  const arrow = sketchArrow(sk);
-  handle = new DistanceHandle(vp, arrow.base, arrow.normal, () => feat.distance, (d) => setDistance(d));
-  renderAll();
-  rebuild(true);
-
-  const res = await kp.result;
-  const value = res?.value ?? null;
-  handle.dispose();
-  mode = { kind: "part" };
-  if (value === null || value <= 0) {
-    if (value !== null) toast("The distance must be positive");
-    if (existing) Object.assign(feat, before);
-    else {
-      doc.features = doc.features.filter((x) => x !== feat);
-      selectedFeature = null;
-    }
-    rebuild(true);
-    renderAll();
-    return;
-  }
-  feat.distance = Math.sign(feat.distance || 1) * value;
-  feat.distanceExpr = res?.expr;
-  commit();
 }
 
 // ---------- Assemblies: parts from other projects, placed by hand ----------
 
-const isAssembly = () => doc.kind === "assembly";
+const isAssembly = () => S.doc.kind === "assembly";
 /** Documents and names of the parts the open assembly uses (their latest saved versions). */
 let partDocs: Record<string, CadDocument> = {};
 let partNames: Record<string, string> = {};
@@ -1042,7 +882,7 @@ let gizmoFor = "";
 async function loadParts() {
   partDocs = {};
   partNames = {};
-  await loadLinked(doc);
+  await loadLinked(S.doc);
   sendParts();
 }
 
@@ -1074,16 +914,16 @@ async function loadLinked(d: CadDocument) {
 }
 
 function sendParts() {
-  worker.postMessage({ type: "parts", parts: partDocs, open: project?.id } satisfies WorkerRequest);
+  worker.postMessage({ type: "parts", parts: partDocs, open: S.project?.id } satisfies WorkerRequest);
 }
 
-const instanceOf = (id: string | null) => doc.instances?.find((i) => i.id === id) ?? null;
+const instanceOf = (id: string | null) => S.doc.instances?.find((i) => i.id === id) ?? null;
 
 /** Picks a project to place in the assembly (parts only, not the assembly itself). */
 async function showPartPicker() {
   let list: ProjectMeta[];
   try {
-    list = byName((await listProjects()).filter((p) => p.kind !== "assembly" && p.id !== project?.id));
+    list = byName((await listProjects()).filter((p) => p.kind !== "assembly" && p.id !== S.project?.id));
   } catch {
     return toast("This browser cannot keep projects");
   }
@@ -1169,8 +1009,8 @@ async function pickPart(el: HTMLElement, p: ProjectMeta) {
 
 /** A new, empty part, placed at the assembly's origin and opened to be drawn. */
 async function newPartHere() {
-  if (!project || !isAssembly() || isOperation(mode)) return;
-  const here = { id: project.id, name: project.name };
+  if (!S.project || !isAssembly() || isOperation(S.mode)) return;
+  const here = { id: S.project.id, name: S.project.name };
   const names = (await listProjects().catch(() => [])).map((p) => p.name);
   const now = Date.now();
   const meta: ProjectMeta = { id: newProjectId(), name: freeName("Part", names), created: now, updated: now, group: newGroup() };
@@ -1183,8 +1023,8 @@ async function newPartHere() {
   partDocs[meta.id] = d;
   partNames[meta.id] = meta.name;
   sendParts();
-  const inst: PartInstance = { id: uid(), project: meta.id, name: meta.name, at: [0, 0, 0], rot: [0, 0, 0], fixed: !doc.instances?.length || undefined };
-  doc.instances = [...(doc.instances ?? []), inst];
+  const inst: PartInstance = { id: uid(), project: meta.id, name: meta.name, at: [0, 0, 0], rot: [0, 0, 0], fixed: !S.doc.instances?.length || undefined };
+  S.doc.instances = [...(S.doc.instances ?? []), inst];
   commit();
   await flushSave();
   await openProject(meta.id, here);
@@ -1208,8 +1048,8 @@ async function insertPart(p: ProjectMeta, d?: CadDocument, bodies?: { id: string
     sendParts();
     const box = vp.modelBox();
     const at: Vec3 = box ? [Math.round(box.max.x + 10), 0, 0] : [0, 0, 0];
-    const first = !doc.instances?.length;
-    const taken = (doc.instances ?? []).map((i) => i.name);
+    const first = !S.doc.instances?.length;
+    const taken = (S.doc.instances ?? []).map((i) => i.name);
     const made = bodies.map((b, k): PartInstance => {
       // Bodies the part named keep their name; "Body 2" says which part it comes from.
       const base = /^Body \d+$/.test(b.name) ? `${p.name} ${b.name.toLowerCase()}` : b.name;
@@ -1217,8 +1057,8 @@ async function insertPart(p: ProjectMeta, d?: CadDocument, bodies?: { id: string
       taken.push(name);
       return { id: uid(), project: p.id, name, at: [...at] as Vec3, rot: [0, 0, 0], body: b.id, fixed: (first && k === 0) || undefined };
     });
-    doc.instances = [...(doc.instances ?? []), ...made];
-    selectedFeature = made[0].id;
+    S.doc.instances = [...(S.doc.instances ?? []), ...made];
+    S.selectedFeature = made[0].id;
     fitNext = true;
     return commit();
   }
@@ -1230,14 +1070,14 @@ async function insertPart(p: ProjectMeta, d?: CadDocument, bodies?: { id: string
   const inst: PartInstance = {
     id: uid(),
     project: p.id,
-    name: freeName(p.name, (doc.instances ?? []).map((i) => i.name)),
+    name: freeName(p.name, (S.doc.instances ?? []).map((i) => i.name)),
     at: box ? [Math.round(box.max.x + 10), 0, 0] : [0, 0, 0],
     rot: [0, 0, 0],
     // The first part holds still: the others are mated to it.
-    fixed: !doc.instances?.length || undefined,
+    fixed: !S.doc.instances?.length || undefined,
   };
-  doc.instances = [...(doc.instances ?? []), inst];
-  selectedFeature = inst.id;
+  S.doc.instances = [...(S.doc.instances ?? []), inst];
+  S.selectedFeature = inst.id;
   fitNext = true;
   commit();
 }
@@ -1247,21 +1087,21 @@ function duplicateInstance(inst: PartInstance) {
   const copy: PartInstance = {
     ...inst,
     id: uid(),
-    name: freeName(partNames[inst.project] ?? inst.name.replace(/ \d+$/, ""), (doc.instances ?? []).map((i) => i.name)),
+    name: freeName(partNames[inst.project] ?? inst.name.replace(/ \d+$/, ""), (S.doc.instances ?? []).map((i) => i.name)),
     at: [inst.at[0] + (box ? Math.ceil(box.max.x - box.min.x) + 5 : 20), inst.at[1], inst.at[2]],
     rot: [...inst.rot],
     fixed: undefined,
   };
-  doc.instances = [...(doc.instances ?? []), copy];
-  selectedFeature = copy.id;
+  S.doc.instances = [...(S.doc.instances ?? []), copy];
+  S.selectedFeature = copy.id;
   commit();
 }
 
 function removeInstance(inst: PartInstance) {
-  doc.instances = (doc.instances ?? []).filter((i) => i !== inst);
+  S.doc.instances = (S.doc.instances ?? []).filter((i) => i !== inst);
   // Its mates go with it.
-  doc.mates = doc.mates?.filter((m) => m.a.part !== inst.id && m.b.part !== inst.id);
-  if (selectedFeature === inst.id) selectedFeature = null;
+  S.doc.mates = S.doc.mates?.filter((m) => m.a.part !== inst.id && m.b.part !== inst.id);
+  if (S.selectedFeature === inst.id) S.selectedFeature = null;
   commit();
 }
 
@@ -1274,8 +1114,8 @@ function renameInstance(inst: PartInstance) {
 
 /** Opens the part's own project to change it; the assembly follows when it is opened again. */
 async function openPart(inst: PartInstance) {
-  if (!project) return;
-  const from = { id: project.id, name: project.name };
+  if (!S.project) return;
+  const from = { id: S.project.id, name: S.project.name };
   await openProject(inst.project, from);
 }
 
@@ -1293,7 +1133,7 @@ let solveState: { key: string; dof: number; failing: Set<string> } | null = null
 function partFrames() {
   const centers: Record<string, Vec3> = {};
   const radii: Record<string, number> = {};
-  for (const i of doc.instances ?? []) {
+  for (const i of S.doc.instances ?? []) {
     const b = vp.bodyBox(i.id);
     if (!b) continue;
     centers[i.id] = b.getCenter(new THREE.Vector3()).toArray() as Vec3;
@@ -1305,18 +1145,18 @@ function partFrames() {
 /** Moves the parts so the mates hold (nothing moves when they cannot all hold). */
 function applyMates() {
   const f = partFrames();
-  const sol = solveMates(doc.instances ?? [], doc.mates ?? [], f.centers, f.radii);
+  const sol = solveMates(S.doc.instances ?? [], S.doc.mates ?? [], f.centers, f.radii);
   for (const [id, p] of sol.placed) Object.assign(instanceOf(id)!, p);
   solveState = { key: mateKey(), dof: sol.dof, failing: new Set(sol.failing) };
 }
 
-const mateKey = () => JSON.stringify([doc.instances, doc.mates]);
+const mateKey = () => JSON.stringify([S.doc.instances, S.doc.mates]);
 
 /** The mates' state, worked out again when the parts or mates changed (undo, opening). */
 function mateState() {
   if (!solveState || solveState.key !== mateKey()) {
     const f = partFrames();
-    const sol = solveMates(doc.instances ?? [], doc.mates ?? [], f.centers, f.radii);
+    const sol = solveMates(S.doc.instances ?? [], S.doc.mates ?? [], f.centers, f.radii);
     solveState = { key: mateKey(), dof: sol.dof, failing: new Set(sol.failing) };
   }
   return solveState;
@@ -1325,23 +1165,23 @@ function mateState() {
 const MATE_KINDS: Record<Mate["kind"], string> = { touch: "Touch", align: "Flush", axis: "Axis", angle: "Angle" };
 
 function mateName(kind: Mate["kind"]) {
-  return freeName(MATE_KINDS[kind], (doc.mates ?? []).map((m) => m.name));
+  return freeName(MATE_KINDS[kind], (S.doc.mates ?? []).map((m) => m.name));
 }
 
-const mateOf = (id: string | null) => doc.mates?.find((m) => m.id === id) ?? null;
+const mateOf = (id: string | null) => S.doc.mates?.find((m) => m.id === id) ?? null;
 
 function startMate() {
-  if (isOperation(mode)) return;
-  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
-  if (mode.kind === "mate") {
-    mode = { kind: "part" };
+  if (isOperation(S.mode)) return;
+  if ((S.doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if (S.mode.kind === "mate") {
+    S.mode = { kind: "part" };
     vp.highlightFaces([]);
     vp.highlightEdges([]);
     return renderAll();
   }
   if (measuring) endMeasure();
-  selectedFeature = null;
-  mode = { kind: "mate", picks: [] };
+  S.selectedFeature = null;
+  S.mode = { kind: "mate", picks: [] };
   renderAll();
 }
 
@@ -1350,15 +1190,15 @@ function askRef(pick: { kind: "face" | "edge"; id: number }) {
   const reqId = ++reqCounter;
   return new Promise<Omit<MateRef, "part"> | null>((resolve) => {
     pendingRefs.set(reqId, resolve);
-    worker.postMessage({ type: "ref", reqId, doc, pick } satisfies WorkerRequest);
+    worker.postMessage({ type: "ref", reqId, doc: S.doc, pick } satisfies WorkerRequest);
   });
 }
 
 /** A tap while choosing a mate: a hole or round edge near the tap, else the face under it. */
 async function mateTap(p: Ptr) {
-  if (mode.kind !== "mate") return;
-  const m = mode;
-  const bodies = lastBuild?.bodies ?? [];
+  if (S.mode.kind !== "mate") return;
+  const m = S.mode;
+  const bodies = S.lastBuild?.bodies ?? [];
   const ei = vp.pickEdge(p.x, p.y, hitRadiusPx(p));
   const face = vp.pickFace(p.x, p.y);
   let pick: MatePick | null = null;
@@ -1368,7 +1208,7 @@ async function mateTap(p: Ptr) {
     const inst = instanceOf(body?.id ?? null);
     if (!inst) continue;
     const g = await askRef(k);
-    if (mode !== m) return; // left meanwhile
+    if (S.mode !== m) return; // left meanwhile
     if (!g) continue;
     pick = { ref: { part: inst.id, kind: g.kind, ...localRef(g.origin, g.dir, instanceMatrix(inst)) }, face: k.kind === "face" ? k.id : undefined, edge: k.kind === "edge" ? (ei ?? undefined) : undefined };
     break;
@@ -1383,12 +1223,12 @@ async function mateTap(p: Ptr) {
   const [a, b] = m.picks.map((x) => x.ref);
   const kind: Mate["kind"] = a.kind === "axis" ? "axis" : "touch";
   const mate: Mate = { id: uid(), name: mateName(kind), kind, a, b, value: 0 };
-  mode = { kind: "part" };
+  S.mode = { kind: "part" };
   showMatePicks([]);
-  doc.mates = [...(doc.mates ?? []), mate];
+  S.doc.mates = [...(S.doc.mates ?? []), mate];
   if (kind === "axis") {
     applyMates();
-    selectedFeature = mate.id;
+    S.selectedFeature = mate.id;
     if (mateState().failing.has(mate.id)) toast("This mate cannot hold with the others");
     return commit();
   }
@@ -1402,9 +1242,9 @@ function showMatePicks(picks: MatePick[]) {
 
 /** A mate between faces: how (facing, flush or at an angle) and the gap or angle, on the keypad. */
 async function mateTool(mate: Mate, isNew = false) {
-  if (isOperation(mode) || mate.kind === "axis") return;
+  if (isOperation(S.mode) || mate.kind === "axis") return;
   const before = JSON.stringify(mate);
-  const places = JSON.stringify(doc.instances);
+  const places = JSON.stringify(S.doc.instances);
   const unit = () => (mate.kind === "angle" ? "°" : "mm");
   /** What the keypad types: the exact value, or one of the limits. */
   let field: "value" | "min" | "max" = mate.min !== undefined ? "min" : "value";
@@ -1446,7 +1286,7 @@ async function mateTool(mate: Mate, isNew = false) {
         // Turning to an angle starts at a right angle; back to faces, at contact.
         mate.value = kind === "angle" ? 90 : 0;
         if (mate.min !== undefined) [mate.min, mate.max] = kind === "angle" ? [0, 90] : [0, 10];
-        if (isNew) mate.name = freeName(MATE_KINDS[kind], (doc.mates ?? []).filter((x) => x !== mate).map((x) => x.name));
+        if (isNew) mate.name = freeName(MATE_KINDS[kind], (S.doc.mates ?? []).filter((x) => x !== mate).map((x) => x.name));
         mate.kind = kind;
         choose(field);
         update();
@@ -1491,17 +1331,17 @@ async function mateTool(mate: Mate, isNew = false) {
       update();
     },
   });
-  mode = { kind: "mateEdit", feat: mate, keypad: kp };
-  selectedFeature = mate.id;
+  S.mode = { kind: "mateEdit", feat: mate, keypad: kp };
+  S.selectedFeature = mate.id;
   update();
   renderAll();
   const res = await kp.result;
-  mode = { kind: "part" };
+  S.mode = { kind: "part" };
   if (!res) {
-    doc.instances = JSON.parse(places);
+    S.doc.instances = JSON.parse(places);
     if (isNew) {
-      doc.mates = doc.mates?.filter((x) => x !== mate);
-      selectedFeature = null;
+      S.doc.mates = S.doc.mates?.filter((x) => x !== mate);
+      S.selectedFeature = null;
     } else {
       // Limits added meanwhile go too.
       delete mate.min;
@@ -1522,8 +1362,8 @@ async function mateTool(mate: Mate, isNew = false) {
 }
 
 function deleteMate(mate: Mate) {
-  doc.mates = doc.mates?.filter((m) => m !== mate);
-  if (selectedFeature === mate.id) selectedFeature = null;
+  S.doc.mates = S.doc.mates?.filter((m) => m !== mate);
+  if (S.selectedFeature === mate.id) S.selectedFeature = null;
   applyMates();
   commit();
 }
@@ -1532,7 +1372,7 @@ function deleteMate(mate: Mate) {
 function flipMate(mate: Mate) {
   mate.kind = mate.kind === "touch" ? "align" : "touch";
   // A name it was given by default follows what it now is.
-  if (/^(Touch|Flush) \d+$/.test(mate.name)) mate.name = freeName(MATE_KINDS[mate.kind], (doc.mates ?? []).filter((x) => x !== mate).map((x) => x.name));
+  if (/^(Touch|Flush) \d+$/.test(mate.name)) mate.name = freeName(MATE_KINDS[mate.kind], (S.doc.mates ?? []).filter((x) => x !== mate).map((x) => x.name));
   applyMates();
   commit();
 }
@@ -1547,8 +1387,8 @@ const partLabel = (id: string) => instanceOf(id)?.name ?? "a removed part";
 
 /** The faces or axes of the selected mate (or of the picks being made), drawn over the model. */
 function mateMarks(batch: LineBatch) {
-  const refs = mode.kind === "mate" ? mode.picks.map((k) => k.ref) : (() => {
-    const m = mateOf(selectedFeature) ?? (mode.kind === "mateEdit" ? mode.feat : null);
+  const refs = S.mode.kind === "mate" ? S.mode.picks.map((k) => k.ref) : (() => {
+    const m = mateOf(S.selectedFeature) ?? (S.mode.kind === "mateEdit" ? S.mode.feat : null);
     return m ? [m.a, m.b] : [];
   })();
   const acc = rgb("--accent");
@@ -1576,7 +1416,7 @@ function mateMarks(batch: LineBatch) {
 
 /** The handles on the selected part, while nothing else is going on. */
 function syncGizmo() {
-  const inst = isAssembly() && mode.kind === "part" && !measuring && !explodeTarget && !clashes && !dragging ? instanceOf(selectedFeature) : null;
+  const inst = isAssembly() && S.mode.kind === "part" && !measuring && !explodeTarget && !clashes && !dragging ? instanceOf(S.selectedFeature) : null;
   if (inst?.fixed) {
     gizmo?.dispose();
     gizmo = null;
@@ -1613,7 +1453,7 @@ function syncGizmo() {
 let dragging: { insts: PartInstance[]; built: Map<string, THREE.Matrix4>; centers: Record<string, Vec3>; radii: Record<string, number>; lead: string } | null = null;
 
 function beginDrag(id: string) {
-  const insts = structuredClone(doc.instances ?? []);
+  const insts = structuredClone(S.doc.instances ?? []);
   dragging = { insts, built: new Map(insts.map((i) => [i.id, instanceMatrix(i)])), ...partFrames(), lead: id };
 }
 
@@ -1634,7 +1474,7 @@ function dragBy(step: THREE.Matrix4) {
     const c = d.centers[i.id];
     if (c) centers[i.id] = new THREE.Vector3(...c).applyMatrix4(instanceMatrix(i).multiply(d.built.get(i.id)!.clone().invert())).toArray() as Vec3;
   }
-  const sol = solveMates(trial, doc.mates ?? [], centers, d.radii);
+  const sol = solveMates(trial, S.doc.mates ?? [], centers, d.radii);
   if (sol.failing.length) return; // no way there: it stays where it was
   for (const [id, p] of sol.placed) Object.assign(trial.find((i) => i.id === id)!, p);
   d.insts = trial;
@@ -1652,7 +1492,7 @@ function endDrag(keep: boolean) {
     renderAll();
     return;
   }
-  doc.instances = d.insts;
+  S.doc.instances = d.insts;
   applyMates();
   commit();
 }
@@ -1665,9 +1505,9 @@ let fingerDrag: { id: string; plane: THREE.Plane; flat: boolean; last: THREE.Vec
 
 function fingerDown(p: Ptr) {
   fingerDrag = null;
-  if (!isAssembly() || mode.kind !== "part" || measuring || explode > 0 || clashes) return;
+  if (!isAssembly() || S.mode.kind !== "part" || measuring || explode > 0 || clashes) return;
   const hit = vp.pickPoint(p.x, p.y);
-  const body = hit?.faceId == null ? null : lastBuild?.bodies?.find((b) => b.faceIds.includes(hit.faceId!));
+  const body = hit?.faceId == null ? null : S.lastBuild?.bodies?.find((b) => b.faceIds.includes(hit.faceId!));
   const inst = instanceOf(body?.id ?? null);
   if (!hit || !inst || inst.fixed) return;
   const at = new THREE.Vector3(...hit.point);
@@ -1687,7 +1527,7 @@ function fingerMove(p: Ptr) {
     // A finger waits a little longer: a second one may still come and make it a camera move.
     if (Math.hypot(p.x - f.x0, p.y - f.y0) < (p.kind === "touch" ? 16 : 6)) return;
     f.moved = true;
-    selectedFeature = f.id;
+    S.selectedFeature = f.id;
     gizmo?.dispose();
     gizmo = null;
     gizmoFor = "";
@@ -1707,28 +1547,28 @@ function fingerMove(p: Ptr) {
 const alignShift = new Map<string, THREE.Vector3>();
 
 function startAlign() {
-  if (isOperation(mode)) return;
-  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
-  if (mode.kind === "align") return endAlign();
+  if (isOperation(S.mode)) return;
+  if ((S.doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if (S.mode.kind === "align") return endAlign();
   if (measuring) endMeasure();
   if (clashes) clearClashes();
   // The selected part, if any, is the one the others line up with.
-  const first = instanceOf(selectedFeature);
-  mode = { kind: "align", ids: first ? [first.id] : [] };
-  selectedFeature = null;
+  const first = instanceOf(S.selectedFeature);
+  S.mode = { kind: "align", ids: first ? [first.id] : [] };
+  S.selectedFeature = null;
   showAlignPicks();
   renderAll();
 }
 
 function endAlign() {
-  mode = { kind: "part" };
+  S.mode = { kind: "part" };
   vp.highlightFaces([]);
   renderAll();
 }
 
 function toggleAlignPart(id: string) {
-  if (mode.kind !== "align") return;
-  const ids = mode.ids;
+  if (S.mode.kind !== "align") return;
+  const ids = S.mode.ids;
   const i = ids.indexOf(id);
   if (i >= 0) ids.splice(i, 1);
   else ids.push(id);
@@ -1737,9 +1577,9 @@ function toggleAlignPart(id: string) {
 }
 
 function showAlignPicks() {
-  if (mode.kind !== "align") return;
-  const ids = new Set(mode.ids);
-  vp.highlightFaces((lastBuild?.bodies ?? []).filter((b) => ids.has(b.id)).flatMap((b) => b.faceIds));
+  if (S.mode.kind !== "align") return;
+  const ids = new Set(S.mode.ids);
+  vp.highlightFaces((S.lastBuild?.bodies ?? []).filter((b) => ids.has(b.id)).flatMap((b) => b.faceIds));
 }
 
 /** A part's box where it is drawn (moves waiting for a build are already drawn). */
@@ -1776,14 +1616,14 @@ const AXIS_INDEX = { X: 0, Y: 1, Z: 2 } as const;
 
 /** Lines the chosen parts up with the reference one, on one axis: their min, centre or max. */
 function alignParts(axis: keyof typeof AXIS_INDEX, where: "min" | "mid" | "max") {
-  if (mode.kind !== "align" || mode.ids.length < 2) return toast("Choose at least two parts");
+  if (S.mode.kind !== "align" || S.mode.ids.length < 2) return toast("Choose at least two parts");
   const k = AXIS_INDEX[axis];
   const at = (b: THREE.Box3) => (where === "min" ? b.min.getComponent(k) : where === "max" ? b.max.getComponent(k) : (b.min.getComponent(k) + b.max.getComponent(k)) / 2);
-  const ref = alignReference(mode.ids);
+  const ref = alignReference(S.mode.ids);
   const rb = alignBox(ref);
   if (!rb) return;
   const moves = new Map<string, THREE.Vector3>();
-  for (const id of mode.ids) {
+  for (const id of S.mode.ids) {
     const b = alignBox(id);
     if (id === ref || !b) continue;
     moves.set(id, new THREE.Vector3().setComponent(k, at(rb) - at(b)));
@@ -1793,9 +1633,9 @@ function alignParts(axis: keyof typeof AXIS_INDEX, where: "min" | "mid" | "max")
 
 /** Spreads three or more parts evenly on one axis: the two at the ends stay, the gaps match. */
 function distributeParts(axis: keyof typeof AXIS_INDEX) {
-  if (mode.kind !== "align" || mode.ids.length < 3) return toast("Choose at least three parts");
+  if (S.mode.kind !== "align" || S.mode.ids.length < 3) return toast("Choose at least three parts");
   const k = AXIS_INDEX[axis];
-  const parts = mode.ids.flatMap((id) => {
+  const parts = S.mode.ids.flatMap((id) => {
     const b = alignBox(id);
     return b ? [{ id, lo: b.min.getComponent(k), hi: b.max.getComponent(k) }] : [];
   });
@@ -1813,8 +1653,8 @@ function distributeParts(axis: keyof typeof AXIS_INDEX) {
 
 /** Puts each chosen part (all of them if none is chosen) on the plate: its bottom at z = 0. */
 function dropParts() {
-  if (mode.kind !== "align") return;
-  const ids = mode.ids.length ? mode.ids : (doc.instances ?? []).map((i) => i.id);
+  if (S.mode.kind !== "align") return;
+  const ids = S.mode.ids.length ? S.mode.ids : (S.doc.instances ?? []).map((i) => i.id);
   // Parts held together by mates go down as one piece (a cube under another stays under it,
   // fixed one included): only the lowest of them comes to rest on the plate.
   const moves = new Map<string, THREE.Vector3>();
@@ -1832,13 +1672,13 @@ function dropParts() {
 
 /** `ids` split into the sets of parts that mates join (directly or through other parts). */
 function matedGroups(ids: string[]): string[][] {
-  const all = (doc.instances ?? []).map((i) => i.id);
+  const all = (S.doc.instances ?? []).map((i) => i.id);
   const root = new Map(all.map((id) => [id, id]));
   const find = (id: string): string => {
     while (root.get(id) !== id) id = root.get(id)!;
     return id;
   };
-  for (const m of doc.mates ?? []) if (root.has(m.a.part) && root.has(m.b.part)) root.set(find(m.a.part), find(m.b.part));
+  for (const m of S.doc.mates ?? []) if (root.has(m.a.part) && root.has(m.b.part)) root.set(find(m.a.part), find(m.b.part));
   // A chosen part brings the whole piece it belongs to.
   const groups = new Map<string, string[]>();
   for (const id of all) {
@@ -1850,8 +1690,8 @@ function matedGroups(ids: string[]): string[][] {
 }
 
 function renderAlignPanel(el: HTMLElement, head: (title: string, sub?: string) => void, actions: (items: [string, string, () => void, string?][]) => void) {
-  if (mode.kind !== "align") return;
-  const ids = mode.ids;
+  if (S.mode.kind !== "align") return;
+  const ids = S.mode.ids;
   const ref = alignReference(ids);
   head("Align", ids.length ? `${ids.length} part${ids.length > 1 ? "s" : ""} · ${partLabel(ref)} stays put` : "Tap the parts to line up");
   const row = (label: string, buttons: [string, () => void, boolean][]) => {
@@ -1912,20 +1752,20 @@ const COMBINE_PLAY = [0, 0.1, 0.2, 0.3, 0.5];
  * tapped come into a new part as they are, each a body of its own, where the assembly has them.
  */
 function startCombine(copy = false) {
-  if (isOperation(mode)) return;
-  if (!copy && (doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
-  if (!doc.instances?.length) return toast("Insert a part first");
-  if (mode.kind === "combine") {
-    const was = mode.op === "keep";
+  if (isOperation(S.mode)) return;
+  if (!copy && (S.doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if (!S.doc.instances?.length) return toast("Insert a part first");
+  if (S.mode.kind === "combine") {
+    const was = S.mode.op === "keep";
     endCombine();
     if (was === copy) return;
   }
   if (measuring) endMeasure();
   if (clashes) clearClashes();
-  if (mode.kind === "align") endAlign();
+  if (S.mode.kind === "align") endAlign();
   // The selected part, if any, is the one the new part is made from.
-  mode = { kind: "combine", target: instanceOf(selectedFeature)?.id ?? null, tools: [], op: copy ? "keep" : "cut", clearance: 0, replace: false, existing: null };
-  selectedFeature = null;
+  S.mode = { kind: "combine", target: instanceOf(S.selectedFeature)?.id ?? null, tools: [], op: copy ? "keep" : "cut", clearance: 0, replace: false, existing: null };
+  S.selectedFeature = null;
   showCombinePicks();
   renderAll();
   void lookForCombined();
@@ -1933,9 +1773,9 @@ function startCombine(copy = false) {
 
 /** The part already made by a Combine from this assembly's target, if any: it can be updated. */
 async function lookForCombined() {
-  if (mode.kind !== "combine" || !project) return;
-  const m = mode;
-  const asm = project.id;
+  if (S.mode.kind !== "combine" || !S.project) return;
+  const m = S.mode;
+  const asm = S.project.id;
   const target = m.target;
   let found: ProjectMeta | null = null;
   if (target)
@@ -1947,24 +1787,24 @@ async function lookForCombined() {
       }
     }
   // Only if still combining the same target.
-  if (mode !== m || m.target !== target) return;
+  if (S.mode !== m || m.target !== target) return;
   m.existing = found;
   renderPanel();
 }
 
 function endCombine() {
-  mode = { kind: "part" };
+  S.mode = { kind: "part" };
   vp.highlightFaces([]);
   renderAll();
 }
 
 /** The first part tapped is the target; the next ones are tools. Tapping one again lets it go. */
 function toggleCombinePart(id: string) {
-  if (mode.kind !== "combine") return;
-  if (mode.target === id) mode.target = mode.op === "keep" ? (mode.tools.shift() ?? null) : null;
-  else if (mode.tools.includes(id)) mode.tools = mode.tools.filter((t) => t !== id);
-  else if (!mode.target) mode.target = id;
-  else mode.tools.push(id);
+  if (S.mode.kind !== "combine") return;
+  if (S.mode.target === id) S.mode.target = S.mode.op === "keep" ? (S.mode.tools.shift() ?? null) : null;
+  else if (S.mode.tools.includes(id)) S.mode.tools = S.mode.tools.filter((t) => t !== id);
+  else if (!S.mode.target) S.mode.target = id;
+  else S.mode.tools.push(id);
   showCombinePicks();
   renderAll();
   void lookForCombined();
@@ -1972,15 +1812,15 @@ function toggleCombinePart(id: string) {
 
 /** The target is marked as a selected body; the tools take the colour of what they do to it. */
 function showCombinePicks() {
-  if (mode.kind !== "combine") return;
-  const tools = new Set(mode.tools);
-  const colour = mode.op === "cut" ? cssVar("--danger", "#c92a2a") : mode.op === "intersect" ? cssVar("--sk-selected", "#1971c2") : cssVar("--accent", "#dc4c12");
-  vp.highlightFaces((lastBuild?.bodies ?? []).filter((b) => tools.has(b.id)).flatMap((b) => b.faceIds), colour);
+  if (S.mode.kind !== "combine") return;
+  const tools = new Set(S.mode.tools);
+  const colour = S.mode.op === "cut" ? cssVar("--danger", "#c92a2a") : S.mode.op === "intersect" ? cssVar("--sk-selected", "#1971c2") : cssVar("--accent", "#dc4c12");
+  vp.highlightFaces((S.lastBuild?.bodies ?? []).filter((b) => tools.has(b.id)).flatMap((b) => b.faceIds), colour);
 }
 
 function renderCombinePanel(el: HTMLElement, head: (title: string, sub?: string) => void, actions: (items: [string, string, () => void, string?][]) => void) {
-  if (mode.kind !== "combine") return;
-  const m = mode;
+  if (S.mode.kind !== "combine") return;
+  const m = S.mode;
   const n = m.tools.length;
   if (m.op === "keep") {
     const count = (m.target ? 1 : 0) + n;
@@ -2042,9 +1882,9 @@ function renderCombinePanel(el: HTMLElement, head: (title: string, sub?: string)
 
 /** Puts the parts and operation chosen into the part a Combine made before from the same target. */
 async function updateCombined(meta: ProjectMeta) {
-  if (mode.kind !== "combine" || !project) return;
-  const m = mode;
-  const asm = project.id;
+  if (S.mode.kind !== "combine" || !S.project) return;
+  const m = S.mode;
+  const asm = S.project.id;
   const target = instanceOf(m.target);
   if (!target) return;
   const got = await getProject(meta.id).catch(() => null);
@@ -2070,7 +1910,7 @@ async function updateCombined(meta: ProjectMeta) {
     target.project = meta.id;
     delete target.body;
     commit();
-    selectedFeature = target.id;
+    S.selectedFeature = target.id;
   }
   sendParts();
   renderAll();
@@ -2115,26 +1955,26 @@ function combineNames(f: CombineFeature) {
 
 /** Saves the combination as a new part project, and offers to open it. */
 async function createCombined() {
-  if (mode.kind !== "combine" || !project) return;
-  const target = instanceOf(mode.target);
-  if (!target) return toast(mode.op === "keep" ? "Tap the parts to copy" : "Tap the part to make the new part from");
-  if (!mode.tools.length && mode.op !== "keep") return toast("Tap at least one other part");
-  const here = { id: project.id, name: project.name };
+  if (S.mode.kind !== "combine" || !S.project) return;
+  const target = instanceOf(S.mode.target);
+  if (!target) return toast(S.mode.op === "keep" ? "Tap the parts to copy" : "Tap the part to make the new part from");
+  if (!S.mode.tools.length && S.mode.op !== "keep") return toast("Tap at least one other part");
+  const here = { id: S.project.id, name: S.project.name };
   await flushSave();
-  const word = { cut: "cut", add: "joined", intersect: "overlap", keep: "copy" }[mode.op];
+  const word = { cut: "cut", add: "joined", intersect: "overlap", keep: "copy" }[S.mode.op];
   const names = (await listProjects().catch(() => [])).map((p) => p.name);
   // A copy of several parts is named after the assembly.
-  const base = mode.op === "keep" && mode.tools.length ? here.name : (partNames[target.project] ?? target.name);
+  const base = S.mode.op === "keep" && S.mode.tools.length ? here.name : (partNames[target.project] ?? target.name);
   const name = freeName(`${base} (${word})`, names);
   const feat: CombineFeature = {
     id: uid(),
     kind: "combine",
-    name: COMBINE_NAMES[mode.op],
+    name: COMBINE_NAMES[S.mode.op],
     assembly: here.id,
     target: { instance: target.id, project: target.project, body: target.body },
-    tools: [...mode.tools],
-    op: mode.op,
-    clearance: mode.op === "cut" && mode.clearance ? mode.clearance : undefined,
+    tools: [...S.mode.tools],
+    op: S.mode.op,
+    clearance: S.mode.op === "cut" && S.mode.clearance ? S.mode.clearance : undefined,
   };
   const now = Date.now();
   const meta: ProjectMeta = { id: newProjectId(), name, created: now, updated: now, group: newGroup() };
@@ -2144,7 +1984,7 @@ async function createCombined() {
   } catch {
     return toast("Could not save in this browser");
   }
-  const replace = mode.replace;
+  const replace = S.mode.replace;
   endCombine();
   if (replace) {
     // The new part goes where the target was: its origin is the target's, so its place and mates hold.
@@ -2154,50 +1994,10 @@ async function createCombined() {
     delete target.body;
     sendParts();
     commit();
-    selectedFeature = target.id;
+    S.selectedFeature = target.id;
     renderAll();
   }
   chooseProject(replace ? `${name} took the place of ${target.name}` : `${name} is ready`, [meta], (p) => void openProject(p.id, here));
-}
-
-// ---------- Exploded view ----------
-
-/** How far the parts are spread (0: assembled, 1: exploded), and where it is heading. */
-let explode = 0;
-let explodeTarget = 0;
-
-/** Spreads the parts away from the middle of the assembly, each by its own distance from it. */
-function spreadParts(t: number) {
-  const bodies = lastBuild?.bodies ?? [];
-  const all = vp.modelBox();
-  if (!all || bodies.length < 2) return;
-  const mid = all.getCenter(new THREE.Vector3());
-  const moves = new Map<string, THREE.Matrix4>();
-  for (const b of bodies) {
-    const box = vp.bodyBox(b.id);
-    if (box) moves.set(b.id, new THREE.Matrix4().makeTranslation(box.getCenter(new THREE.Vector3()).sub(mid).multiplyScalar(t)));
-  }
-  vp.moveBodies(moves);
-}
-
-function toggleExplode() {
-  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
-  explodeTarget = explodeTarget ? 0 : 1;
-  const from = explode;
-  const to = explodeTarget;
-  const t0 = performance.now();
-  const frame = () => {
-    if (explodeTarget !== to) return; // turned round meanwhile
-    const k = Math.min(1, (performance.now() - t0) / 450);
-    explode = from + (to - from) * (1 - (1 - k) ** 3);
-    // The spread is measured from the parts as built, so it always starts from there.
-    vp.moveBodies(new Map());
-    spreadParts(explode);
-    if (k < 1) requestAnimationFrame(frame);
-    else renderAll();
-  };
-  requestAnimationFrame(frame);
-  renderAll();
 }
 
 // ---------- Interference ----------
@@ -2207,9 +2007,9 @@ let clashes: { list: Clash[]; running: boolean; error?: string } | null = null;
 
 function checkInterference() {
   if (!kernelReady) return toast("The geometry kernel is still loading");
-  if ((doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
+  if ((S.doc.instances?.length ?? 0) < 2) return toast("Insert at least two parts first");
   if (measuring) endMeasure();
-  selectedFeature = null;
+  S.selectedFeature = null;
   const reqId = ++reqCounter;
   const state: NonNullable<typeof clashes> = { list: [], running: true };
   clashes = state;
@@ -2220,7 +2020,7 @@ function checkInterference() {
     vp.setClashes(list);
     renderAll();
   });
-  worker.postMessage({ type: "clash", reqId, doc, skip: [...hiddenBodies] } satisfies WorkerRequest);
+  worker.postMessage({ type: "clash", reqId, doc: S.doc, skip: [...hiddenBodies] } satisfies WorkerRequest);
   renderAll();
 }
 
@@ -2232,7 +2032,7 @@ function clearClashes() {
 
 /** Position and turns of a part, typed on the keypad (one value at a time). */
 async function placeTool(inst: PartInstance) {
-  if (isOperation(mode)) return;
+  if (isOperation(S.mode)) return;
   const before = { at: [...inst.at] as Vec3, rot: [...inst.rot] as Vec3 };
   const LABELS = ["X", "Y", "Z", "Turn X", "Turn Y", "Turn Z"];
   let field = 0;
@@ -2271,10 +2071,10 @@ async function placeTool(inst: PartInstance) {
     ],
     onInput: (v) => set(field, v),
   });
-  mode = { kind: "place", feat: inst, keypad: kp };
+  S.mode = { kind: "place", feat: inst, keypad: kp };
   renderAll();
   const res = await kp.result;
-  mode = { kind: "part" };
+  S.mode = { kind: "part" };
   if (!res) {
     inst.at = before.at;
     inst.rot = before.rot;
@@ -2304,27 +2104,27 @@ function toggleBody(id: string) {
   const next = new Set(hiddenBodies);
   if (!next.delete(id)) next.add(id);
   // Hiding every body would leave nothing to look at: hiding the last one shows the others.
-  const all = lastBuild?.bodies ?? [];
+  const all = S.lastBuild?.bodies ?? [];
   if (all.length && all.every((b) => next.has(b.id))) setHiddenBodies(all.filter((b) => b.id !== id).map((b) => b.id));
   else setHiddenBodies(next);
 }
 
 /** Shows only that body; again on the same body, shows them all. */
 function isolateBody(id: string) {
-  const others = (lastBuild?.bodies ?? []).filter((b) => b.id !== id).map((b) => b.id);
+  const others = (S.lastBuild?.bodies ?? []).filter((b) => b.id !== id).map((b) => b.id);
   const isolated = !hiddenBodies.has(id) && others.every((o) => hiddenBodies.has(o));
   setHiddenBodies(isolated ? [] : others);
 }
 
 function anyBodyHidden() {
-  return (lastBuild?.bodies ?? []).some((b) => hiddenBodies.has(b.id));
+  return (S.lastBuild?.bodies ?? []).some((b) => hiddenBodies.has(b.id));
 }
 
 /** The part's bodies started before this step (the ones it can join or cut). */
 function bodiesBefore(featId: string) {
-  const at = doc.features.findIndex((x) => x.id === featId);
-  return (lastBuild?.bodies ?? []).filter((b) => {
-    const i = doc.features.findIndex((x) => x.id === b.id);
+  const at = S.doc.features.findIndex((x) => x.id === featId);
+  return (S.lastBuild?.bodies ?? []).filter((b) => {
+    const i = S.doc.features.findIndex((x) => x.id === b.id);
     return i >= 0 && (at < 0 || i < at);
   });
 }
@@ -2333,7 +2133,7 @@ function bodiesBefore(featId: string) {
  * The keypad row choosing a step's body: joining makes a New body or joins one; cutting works on
  * All bodies or one. None while there is no body yet (the first solid is the first body).
  */
-function bodySegment(feat: { id: string; op: string; body?: string }): Segmented[] {
+export function bodySegment(feat: { id: string; op: string; body?: string }): Segmented[] {
   const earlier = bodiesBefore(feat.id);
   if (!earlier.length) return [];
   const each = earlier.map((b) => ({ value: b.id, label: b.name }));
@@ -2353,7 +2153,7 @@ function bodySegment(feat: { id: string; op: string; body?: string }): Segmented
 
 /** "· New body", "· into Lid", "· all bodies"… for a step's summary, when the part has several bodies. */
 function bodyNote(f: { id: string; op: string; body?: string }) {
-  const bodies = lastBuild?.bodies ?? [];
+  const bodies = S.lastBuild?.bodies ?? [];
   if (bodies.length < 2) return "";
   // A step that starts a body (the first solid too, which has no body setting) is named after it.
   if (f.op === "add") return f.body === "new" || bodies.some((b) => b.id === f.id) ? ` · ${bodyName(f.id)}` : f.body ? ` · into ${bodyName(f.body)}` : "";
@@ -2361,1103 +2161,21 @@ function bodyNote(f: { id: string; op: string; body?: string }) {
 }
 
 function bodyName(id: string) {
-  return lastBuild?.bodies?.find((b) => b.id === id)?.name ?? doc.bodyNames?.[id] ?? "Body";
+  return S.lastBuild?.bodies?.find((b) => b.id === id)?.name ?? S.doc.bodyNames?.[id] ?? "Body";
 }
 
 function renameBody(id: string) {
   const name = prompt("Body name", bodyName(id))?.trim();
   if (!name) return;
-  doc.bodyNames = { ...doc.bodyNames, [id]: name };
+  S.doc.bodyNames = { ...S.doc.bodyNames, [id]: name };
   commit();
   renderAll();
-}
-
-// ---------- Press Pull and Shell (on faces of the solid) ----------
-
-function faceRefOfSelection(): FaceRef | null {
-  if (!selectedFace?.plane || !selectedFace.center) return null;
-  return { center: selectedFace.center, normal: selectedFace.plane.normal };
-}
-
-/** Starts a face tool on the selected face, or waits for a face to be tapped. */
-function faceTool(tool: "pushpull" | "shell" | "hole") {
-  if (mode.kind !== "part") return;
-  if (!hasSolid()) return toast(NEED_SOLID);
-  const ref = faceRefOfSelection();
-  if (!ref) {
-    pendingFaceTool = tool;
-    selectedFeature = null;
-    renderAll();
-    return;
-  }
-  pendingFaceTool = null;
-  if (tool === "pushpull") void pushPull(undefined, ref);
-  else if (tool === "shell") void shell(undefined, ref);
-  else void holeTool(undefined, { normal: ref.normal, at: (selectedFace?.hit ?? ref.center).map((c) => Math.round(c * 100) / 100) as Vec3 });
-}
-
-async function pushPull(existing?: PushPullFeature, ref?: FaceRef) {
-  const feat: PushPullFeature = existing ?? { id: uid(), kind: "pushpull", name: nextName("Press Pull"), face: ref!, distance: 5 };
-  const before = { distance: feat.distance, distanceExpr: feat.distanceExpr };
-  if (!existing) doc.features.push(feat);
-  selectedFeature = feat.id;
-  selectedFace = null;
-  vp.highlightFace(null);
-
-  let handle: DistanceHandle | null = null;
-  const setDistance = (d: number, fromKeypad = false) => {
-    feat.distance = d;
-    if (!fromKeypad) kp.set(d);
-    handle?.update();
-    renderTimeline();
-    rebuild();
-  };
-  const kp = openKeypad({
-    title: feat.name,
-    subtitle: "Positive pulls the face out, negative pushes it in",
-    label: "Distance",
-    value: feat.distance,
-    expr: feat.distanceExpr,
-    scope: paramScope(),
-    confirmLabel: "Confirm",
-    segments: [
-      {
-        options: [
-          { value: "pull", label: "Pull (add)" },
-          { value: "push", label: "Push (cut)" },
-        ],
-        get: () => (feat.distance >= 0 ? "pull" : "push"),
-        set: (v) => {
-          if ((v === "push") !== feat.distance < 0) setDistance(-feat.distance);
-        },
-      },
-    ],
-    onInput: (v) => {
-      if (v !== 0) setDistance(v, true);
-    },
-  });
-  mode = { kind: "pushpull", feat, keypad: kp };
-  // The arrow starts on the face as it was before this feature.
-  handle = new DistanceHandle(
-    vp,
-    new THREE.Vector3(...feat.face.center),
-    new THREE.Vector3(...feat.face.normal),
-    () => feat.distance,
-    (d) => setDistance(d),
-  );
-  renderAll();
-  rebuild(true);
-
-  const res = await kp.result;
-  const value = res?.value ?? null;
-  handle.dispose();
-  mode = { kind: "part" };
-  if (value === null || value === 0) {
-    if (existing) Object.assign(feat, before);
-    else {
-      doc.features = doc.features.filter((x) => x !== feat);
-      selectedFeature = null;
-    }
-    rebuild(true);
-    renderAll();
-    return;
-  }
-  feat.distance = value;
-  feat.distanceExpr = res?.expr;
-  commit();
-}
-
-async function shell(existing?: ShellFeature, ref?: FaceRef) {
-  const feat: ShellFeature = existing ?? { id: uid(), kind: "shell", name: nextName("Shell"), faces: [ref!], thickness: 2 };
-  const before = { thickness: feat.thickness, thicknessExpr: feat.thicknessExpr, faces: [...feat.faces] };
-  if (!existing) doc.features.push(feat);
-  selectedFeature = feat.id;
-  selectedFace = null;
-  // Faces are chosen on the solid as it is before the shell.
-  previewExclude = feat.id;
-  const kp = openKeypad({
-    title: feat.name,
-    subtitle: "Tap faces to open or close them",
-    label: "Wall thickness",
-    value: feat.thickness,
-    expr: feat.thicknessExpr,
-    scope: paramScope(),
-    confirmLabel: "Confirm",
-    onInput: (v) => {
-      if (v > 0) feat.thickness = v;
-      rebuild();
-    },
-  });
-  mode = { kind: "shell", feat, keypad: kp };
-  renderAll();
-  rebuild(true);
-
-  const res = await kp.result;
-  const value = res?.value ?? null;
-  previewExclude = null;
-  mode = { kind: "part" };
-  vp.highlightFace(null);
-  if (value === null || value <= 0 || !feat.faces.length) {
-    if (value !== null && !feat.faces.length) toast("A shell needs at least one open face");
-    if (existing) Object.assign(feat, before);
-    else {
-      doc.features = doc.features.filter((x) => x !== feat);
-      selectedFeature = null;
-    }
-    rebuild(true);
-    renderAll();
-    return;
-  }
-  feat.thickness = value;
-  feat.thicknessExpr = res?.expr;
-  commit();
-}
-
-// ---------- Holes ----------
-
-/** Starts the hole tool: from the selected sketch's free points, the selected face, or the next face tapped. */
-function startHoles() {
-  if (mode.kind !== "part") return;
-  const sel = doc.features.find((f) => f.id === selectedFeature);
-  if (sel?.kind === "sketch") {
-    if (!sketchHolePoints(sel).length) return toast("This sketch has no free points: add points where the holes go");
-    return void holeTool(undefined, { sketch: sel });
-  }
-  faceTool("hole");
-}
-
-async function holeTool(existing?: HoleFeature, from?: { sketch: SketchFeature } | { normal: Vec3; at: Vec3 }) {
-  if (mode.kind !== "part") return;
-  const feat: HoleFeature =
-    existing ??
-    (from && "sketch" in from
-      ? { id: uid(), kind: "hole", name: nextName("Hole"), sketchId: from.sketch.id, normal: from.sketch.plane.normal, size: "M3", fit: "clearance", head: "none", depth: 0 }
-      : { id: uid(), kind: "hole", name: nextName("Hole"), points: [from!.at], normal: from!.normal, size: "M3", fit: "clearance", head: "none", depth: 0 });
-  const before = structuredClone(feat);
-  if (!existing) doc.features.push(feat);
-  selectedFeature = feat.id;
-  selectedFace = null;
-  showParams = false;
-  vp.highlightFace(null);
-  // Positions are chosen on the solid as it is before the holes.
-  previewExclude = feat.id;
-  holeField = null;
-  holeDrag = null;
-  holeSnapLabel = null;
-  holeSel = feat.points?.length && !existing ? feat.points.length - 1 : null;
-  if (!existing && feat.points?.length) {
-    const ctx = holeContext(feat);
-    const s = snapHole(to2D(ctx.frame, feat.points[0]), ctx.edges, nearestCenter(ctx, feat.points[0]), 24 * vp.wpp);
-    feat.points[0] = to3D(ctx.frame, s.at);
-    holeSnapLabel = s.label;
-  }
-  const kp = openKeypad({
-    title: feat.name,
-    subtitle: feat.sketchId ? "At the free points of the sketch" : "Tap to add · drag to move · tap a distance to type it",
-    label: "Depth (0 = through)",
-    value: feat.depth,
-    expr: feat.depthExpr,
-    scope: paramScope(),
-    confirmLabel: "Confirm",
-    segments: [
-      {
-        options: HOLE_SIZES.map((s) => ({ value: s, label: s })),
-        get: () => feat.size,
-        set: (v) => {
-          feat.size = v as HoleFeature["size"];
-          rebuild();
-        },
-      },
-      {
-        options: [
-          { value: "none", label: "Plain" },
-          // Soft hyphens: on a narrow panel the words break as Counter-bore / Counter-sink.
-          { value: "counterbore", label: "Counter­bore" },
-          { value: "countersink", label: "Counter­sink" },
-        ],
-        get: () => feat.head,
-        set: (v) => {
-          feat.head = v as HoleFeature["head"];
-          rebuild();
-        },
-      },
-      {
-        options: [
-          { value: "clearance", label: "Screw passes" },
-          { value: "plastic", label: "Screw into plastic" },
-        ],
-        get: () => feat.fit,
-        set: (v) => {
-          feat.fit = v as HoleFeature["fit"];
-          rebuild();
-        },
-      },
-    ],
-    extras: !feat.sketchId
-      ? [{ label: "Remove hole", icon: "trash", run: () => removeSelectedHole(feat) }]
-      : [
-          {
-            label: "Flip direction",
-            icon: "flip",
-            run: () => {
-              feat.flip = !feat.flip;
-              rebuild();
-              toast(feat.flip ? "Drilling along the sketch normal" : "Drilling against the sketch normal");
-            },
-          },
-        ],
-    onInput: (v) => {
-      if (v < 0) return;
-      if (holeField && holeSel !== null && feat.points?.[holeSel]) {
-        // The keypad is editing a distance to an edge: move the hole square to it.
-        const ctx = holeContext(feat);
-        feat.points[holeSel] = to3D(ctx.frame, atDistance(holeField.dim, v));
-        holeSnapLabel = null;
-        renderPartOverlays();
-      } else feat.depth = v;
-      rebuild();
-    },
-  });
-  mode = { kind: "hole", feat, keypad: kp };
-  renderAll();
-  rebuild(true);
-
-  const typed = await kp.result;
-  // Confirmed while a distance was being typed: the depth is the one set before.
-  const res = typed && holeField ? { value: feat.depth, expr: feat.depthExpr } : typed;
-  holeField = null;
-  holeSel = null;
-  holeDrag = null;
-  const value = res?.value ?? null;
-  previewExclude = null;
-  mode = { kind: "part" };
-  const hasPoints = feat.sketchId ? true : !!feat.points?.length;
-  if (value === null || value < 0 || !hasPoints) {
-    if (value !== null && !hasPoints) toast("Tap at least one place on the face");
-    if (value !== null && value < 0) toast("The depth cannot be negative");
-    if (existing) Object.assign(feat, before);
-    else {
-      doc.features = doc.features.filter((x) => x !== feat);
-      selectedFeature = null;
-    }
-    rebuild(true);
-    renderAll();
-    return;
-  }
-  feat.depth = value;
-  feat.depthExpr = res?.expr;
-  commit();
-}
-
-// Placing holes on a face: tap to add (snapped), tap a hole to select it, drag it to move it,
-// and tap one of its distances to edges to type an exact value.
-
-/** The selected hole (index in its feature's points). */
-let holeSel: number | null = null;
-/** Set while the keypad edits a distance to an edge instead of the depth. */
-let holeField: { dim: EdgeDim } | null = null;
-let holeDrag: { index: number; moved: boolean } | null = null;
-/** What the last placed or moved hole snapped to, shown next to it. */
-let holeSnapLabel: string | null = null;
-
-const hitRadiusPx = (p: Ptr) => (p.kind === "touch" ? 24 : p.kind === "pen" ? 14 : 9);
-
-function holeContext(feat: HoleFeature) {
-  const frame = faceFrame(feat.normal, feat.points?.[0] ?? [0, 0, 0]);
-  const edges = lastBuild ? edgesInPlane(frame, lastBuild.edges, lastBuild.edgeGroups) : { segments: [], circles: [] };
-  return { frame, edges };
-}
-
-/** Centre of the flat face (in the holes' plane) closest to a point, in the plane's 2D coordinates. */
-function nearestCenter(ctx: ReturnType<typeof holeContext>, at: Vec3): [number, number] | null {
-  const n = ctx.frame.normal;
-  const off = (w: Vec3) => (w[0] - at[0]) * n[0] + (w[1] - at[1]) * n[1] + (w[2] - at[2]) * n[2];
-  const a = to2D(ctx.frame, at);
-  let best: [number, number] | null = null;
-  for (const pf of lastBuild?.planarFaces ?? []) {
-    const m = pf.plane.normal;
-    if (m[0] * n[0] + m[1] * n[1] + m[2] * n[2] < 0.999 || Math.abs(off(pf.center)) > 1e-3) continue;
-    const c = to2D(ctx.frame, pf.center);
-    if (!best || Math.hypot(c[0] - a[0], c[1] - a[1]) < Math.hypot(best[0] - a[0], best[1] - a[1])) best = c;
-  }
-  return best;
-}
-
-/** The snapped place under the pointer, on the holes' plane. */
-function holeSnapAt(feat: HoleFeature, p: Ptr) {
-  const ctx = holeContext(feat);
-  const raw = vp.screenToPlane(p.x, p.y, ctx.frame);
-  if (!raw) return null;
-  return snapHole(raw, ctx.edges, nearestCenter(ctx, to3D(ctx.frame, raw)), hitRadiusPx(p) * vp.wpp);
-}
-
-function holeUnder(feat: HoleFeature, p: Ptr): number | null {
-  let best: number | null = null;
-  let bestD = hitRadiusPx(p) + 6;
-  (feat.points ?? []).forEach((q, i) => {
-    const [x, y] = vp.toScreen(new THREE.Vector3(...q));
-    const d = Math.hypot(x - p.x, y - p.y);
-    if (d < bestD) [best, bestD] = [i, d];
-  });
-  return best;
-}
-
-function selectHole(feat: HoleFeature, i: number | null) {
-  holeSel = i;
-  if (holeField && mode.kind === "hole") {
-    holeField = null;
-    mode.keypad.setLabel("Depth (0 = through)", "mm");
-    mode.keypad.set(feat.depth);
-  }
-  renderPartOverlays();
-  renderStatus();
-}
-
-function holeDown(feat: HoleFeature, p: Ptr) {
-  if (feat.sketchId) return;
-  const i = holeUnder(feat, p);
-  holeDrag = i === null ? null : { index: i, moved: false };
-}
-
-function holeMove(feat: HoleFeature, p: Ptr) {
-  if (!holeDrag || !feat.points) return;
-  const s = holeSnapAt(feat, p);
-  if (!s) return;
-  if (!holeDrag.moved) selectHole(feat, holeDrag.index);
-  holeDrag.moved = true;
-  feat.points[holeDrag.index] = to3D(holeContext(feat).frame, s.at);
-  holeSnapLabel = s.label;
-  renderPartOverlays();
-  rebuild();
-}
-
-/** A tap: selects the hole under it, or adds one there (snapped). */
-function holeUp(feat: HoleFeature, p: Ptr) {
-  if (feat.sketchId) return toast("These holes follow the sketch points: edit the sketch to move them");
-  const drag = holeDrag;
-  holeDrag = null;
-  if (drag?.moved) return;
-  if (drag) return selectHole(feat, drag.index);
-  const hit = vp.pickPoint(p.x, p.y);
-  if (!hit) return selectHole(feat, null);
-  const pts = (feat.points ??= []);
-  const n = feat.normal;
-  const pf = hit.faceId == null ? undefined : lastBuild?.planarFaces.find((f) => f.faceId === hit.faceId);
-  const sameNormal = pf && pf.plane.normal[0] * n[0] + pf.plane.normal[1] * n[1] + pf.plane.normal[2] * n[2] > 0.999;
-  const ref = pts[0] ?? hit.point;
-  const offPlane = Math.abs((hit.point[0] - ref[0]) * n[0] + (hit.point[1] - ref[1]) * n[1] + (hit.point[2] - ref[2]) * n[2]);
-  if (!sameNormal || offPlane > 1e-3) return toast("All holes of one feature go on the same flat face");
-  const s = holeSnapAt(feat, p);
-  if (!s) return;
-  pts.push(to3D(holeContext(feat).frame, s.at));
-  holeSnapLabel = s.label;
-  selectHole(feat, pts.length - 1);
-  rebuild();
-}
-
-function removeSelectedHole(feat: HoleFeature) {
-  const pts = feat.points ?? [];
-  if (holeSel === null || !pts[holeSel]) return toast("Tap a hole first to select it");
-  if (pts.length === 1) return toast("This is the last hole: Cancel drops the whole feature");
-  pts.splice(holeSel, 1);
-  selectHole(feat, null);
-  rebuild();
-}
-
-/** Distances from the selected hole to the face's edges, as tappable labels. */
-function holeDimLabels(feat: HoleFeature, batch: LineBatch) {
-  const at = holeSel === null ? undefined : feat.points?.[holeSel];
-  if (!at || feat.sketchId) return [];
-  const ctx = holeContext(feat);
-  const p = to2D(ctx.frame, at);
-  const acc = rgb("--accent");
-  const items: { el: HTMLElement; at: THREE.Vector3; dx?: number; dy?: number }[] = [];
-  for (const dim of holeDims(p, ctx.edges)) {
-    const foot = to3D(ctx.frame, dim.foot);
-    batch.positions.push(...foot, ...at);
-    batch.colors.push(...acc, ...acc);
-    const el = document.createElement("button");
-    el.className = "sk-label dim";
-    if (holeField && Math.hypot(holeField.dim.dir[0] - dim.dir[0], holeField.dim.dir[1] - dim.dir[1]) < 1e-6) el.classList.add("sel");
-    el.textContent = fmtNum(Math.round(dim.dist * 100) / 100);
-    el.addEventListener("pointerdown", (e) => e.stopPropagation());
-    el.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (mode.kind !== "hole") return;
-      holeField = { dim };
-      mode.keypad.setLabel("Distance to this edge", "mm");
-      mode.keypad.set(Math.round(dim.dist * 100) / 100);
-      renderPartOverlays();
-    });
-    const mid = to3D(ctx.frame, [(dim.foot[0] + p[0]) / 2, (dim.foot[1] + p[1]) / 2]);
-    items.push({ el, at: new THREE.Vector3(...mid) });
-  }
-  if (holeSnapLabel) {
-    const el = document.createElement("div");
-    el.className = "sk-label hint";
-    el.textContent = holeSnapLabel;
-    items.push({ el, at: new THREE.Vector3(...at), dx: 0, dy: -28 });
-  }
-  return items;
-}
-
-// ---------- Revolve ----------
-
-function axisName(sk: SketchFeature, lineId: string) {
-  if (lineId === "AX") return "the sketch X axis";
-  if (lineId === "AY") return "the sketch Y axis";
-  return sk.entities.some((e) => e.id === lineId) ? "a line of the sketch" : "a missing line";
-}
-
-async function revolveTool(existing?: RevolveFeature) {
-  if (isOperation(mode)) return;
-  let feat = existing;
-  if (!feat) {
-    const sk = pickSketchForExtrude();
-    if (!sk) return toast("Draw a closed sketch first (half of the profile, next to the axis)");
-    if (mode.kind === "sketch") exitSketch();
-    // A construction line is the usual way to draw a revolve axis.
-    const axis = sk.entities.find((e) => e.type === "line" && e.construction && !e.axis)?.id ?? "AY";
-    feat = { id: uid(), kind: "revolve", name: nextName("Revolve"), sketchId: sk.id, axisLine: axis, angle: 360, symmetric: false, op: "add" };
-    doc.features.push(feat);
-  }
-  const f = feat;
-  const sk = doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
-  if (!sk) return toast("This revolve's sketch is missing");
-  const before = structuredClone(f);
-  selectedFeature = f.id;
-  selectedFace = null;
-  showParams = false;
-  vp.highlightFace(null);
-  let drawnLine = f.axisLine !== "AX" && f.axisLine !== "AY" ? f.axisLine : null;
-  const subtitle = () => `${sk.name} · around ${axisName(sk, f.axisLine)}`;
-  const kp = openKeypad({
-    title: f.name,
-    subtitle: subtitle(),
-    label: "Angle (360 = full turn)",
-    unit: "°",
-    value: Math.abs(f.angle),
-    expr: f.angleExpr,
-    scope: paramScope(),
-    confirmLabel: "Confirm",
-    segments: [
-      {
-        options: [
-          { value: "AX", label: "Sketch X" },
-          { value: "AY", label: "Sketch Y" },
-          { value: "line", label: "Tapped line" },
-        ],
-        get: () => (f.axisLine === "AX" || f.axisLine === "AY" ? f.axisLine : "line"),
-        set: (v) => {
-          if (v === "line") {
-            if (!drawnLine) return toast("Tap a line of the sketch to use it as the axis");
-            f.axisLine = drawnLine;
-          } else f.axisLine = v;
-          kp.setSubtitle(subtitle());
-          renderPartOverlays();
-          rebuild();
-        },
-      },
-      {
-        options: [
-          { value: "one", label: "One side" },
-          { value: "sym", label: "Symmetric" },
-        ],
-        get: () => (f.symmetric ? "sym" : "one"),
-        set: (v) => {
-          f.symmetric = v === "sym";
-          rebuild();
-        },
-      },
-      {
-        options: [
-          { value: "add", label: "Join" },
-          { value: "cut", label: "Cut" },
-          { value: "intersect", label: "Intersect" },
-        ],
-        get: () => f.op,
-        set: (v) => {
-          f.op = v as ExtrudeOp;
-          rebuild();
-        },
-      },
-      ...bodySegment(f),
-    ],
-    extras: [
-      {
-        label: "Flip direction",
-        icon: "flip",
-        run: () => {
-          f.angle = -f.angle;
-          rebuild();
-        },
-      },
-    ],
-    onInput: (v) => {
-      if (v > 0 && v <= 360) {
-        f.angle = Math.sign(f.angle || 1) * v;
-        rebuild();
-      }
-    },
-  });
-  mode = { kind: "revolve", feat: f, keypad: kp };
-  const pickAxis = (lineId: string) => {
-    drawnLine = lineId;
-    f.axisLine = lineId;
-    kp.setSubtitle(subtitle());
-    renderPartOverlays();
-    rebuild();
-  };
-  revolveAxisPicker = pickAxis;
-  renderAll();
-  rebuild(true);
-
-  const res = await kp.result;
-  revolveAxisPicker = null;
-  mode = { kind: "part" };
-  const value = res?.value ?? null;
-  if (value === null || value <= 0 || value > 360) {
-    if (value !== null) toast("The angle must be between 0 and 360°");
-    if (existing) Object.assign(f, before);
-    else {
-      doc.features = doc.features.filter((x) => x !== f);
-      selectedFeature = null;
-    }
-    rebuild(true);
-    renderAll();
-    return;
-  }
-  f.angle = Math.sign(f.angle || 1) * value;
-  f.angleExpr = res?.expr;
-  commit();
-}
-
-/** Set while a revolve is being edited: receives the line tapped as the new axis. */
-let revolveAxisPicker: ((lineId: string) => void) | null = null;
-
-// ---------- Sweep and loft ----------
-
-const allSketches = () => doc.features.filter((f): f is SketchFeature => f.kind === "sketch");
-/** The feature as it was before editing began (null: it is new, cancelling removes it). */
-let sweepLoftBefore: SweepFeature | LoftFeature | null = null;
-
-/** A profile sketch pushed along a path drawn in another sketch. */
-function startSweep(existing?: SweepFeature) {
-  if (isOperation(mode) || mode.kind === "sweep" || mode.kind === "loft") return;
-  let f = existing;
-  if (!f) {
-    const sketches = allSketches();
-    if (!sketches.length) return toast("Draw the profile first");
-    if (mode.kind === "sketch") exitSketch();
-    // The profile: the sketch chosen if closed, else the last closed one; the path: the latest other sketch, open if there is one.
-    const chosen = pickSketchForExtrude();
-    const profile = (chosen && findRegions(chosen).length ? chosen : null) ?? [...sketches].reverse().find((s) => findRegions(s).length) ?? sketches[sketches.length - 1];
-    const others = sketches.filter((s) => s.id !== profile.id);
-    const path = [...others].reverse().find((s) => !findRegions(s).length);
-    // No open path drawn: a coil around the profile's sketch Y axis (a spring standing up when drawn on XZ).
-    f = path
-      ? { id: uid(), kind: "sweep", name: nextName("Sweep"), sketchId: profile.id, pathSketchId: path.id, op: "add" }
-      : { id: uid(), kind: "sweep", name: nextName("Sweep"), sketchId: profile.id, pathSketchId: "", helix: defaultHelix(profile), op: "add" };
-    doc.features.push(f);
-  } else if (mode.kind === "sketch") exitSketch();
-  sweepLoftBefore = existing ? structuredClone(existing) : null;
-  beginSweepLoft({ kind: "sweep", feat: f });
-}
-
-/** A coil with room between its turns: the pitch is twice the profile's width. */
-function defaultHelix(profile: SketchFeature): NonNullable<SweepFeature["helix"]> {
-  const outer = findRegions(profile)[0]?.outer;
-  const width = outer?.kind === "circle" ? 2 * outer.r : outer?.kind === "ellipse" ? 2 * Math.max(outer.ra, outer.rb) : 2;
-  return { axisLine: "AY", pitch: Math.max(1, Math.round(width * 2 * 10) / 10), turns: 5, leftHand: false };
-}
-
-/** Types a helix's pitch or number of turns. */
-async function helixValue(f: SweepFeature, what: "pitch" | "turns") {
-  const h = f.helix;
-  if (!h) return;
-  const was = { ...h };
-  const kp = openKeypad({
-    title: f.name,
-    subtitle: what === "pitch" ? "Rise per turn" : "How many times it goes round",
-    label: what === "pitch" ? "Pitch" : "Turns",
-    unit: what === "pitch" ? "mm" : "",
-    value: what === "pitch" ? Math.abs(h.pitch) : h.turns,
-    scope: paramScope(),
-    confirmLabel: "Confirm",
-    onInput: (v) => {
-      if (!(v > 0)) return;
-      if (what === "pitch") h.pitch = Math.sign(h.pitch || 1) * v;
-      else h.turns = v;
-      rebuild();
-    },
-  });
-  const res = await kp.result;
-  if (!res || !(res.value > 0)) Object.assign(h, was);
-  else if (what === "pitch") h.pitch = Math.sign(h.pitch || 1) * res.value;
-  else h.turns = res.value;
-  rebuild();
-  renderPanel();
-  renderTimeline();
-}
-
-/** A solid through two or more sketches, in order. */
-function startLoft(existing?: LoftFeature) {
-  if (isOperation(mode) || mode.kind === "sweep" || mode.kind === "loft") return;
-  let f = existing;
-  if (!f) {
-    const sketches = allSketches();
-    if (sketches.length < 2) return toast("Draw two sketches on different planes first");
-    if (mode.kind === "sketch") exitSketch();
-    // The last two sketches not used yet, else the last two.
-    const used = new Set(doc.features.flatMap(usedSketchIds));
-    const free = sketches.filter((s) => !used.has(s.id));
-    const pick = (free.length >= 2 ? free : sketches).slice(-2);
-    f = { id: uid(), kind: "loft", name: nextName("Loft"), sketchIds: pick.map((s) => s.id), ruled: false, op: "add" };
-    doc.features.push(f);
-  } else if (mode.kind === "sketch") exitSketch();
-  sweepLoftBefore = existing ? structuredClone(existing) : null;
-  beginSweepLoft({ kind: "loft", feat: f });
-}
-
-function beginSweepLoft(m: Extract<Mode, { kind: "sweep" | "loft" }>) {
-  if (measuring) endMeasure();
-  selectedFeature = m.feat.id;
-  selectedFace = null;
-  showParams = false;
-  vp.highlightFace(null);
-  mode = m;
-  renderAll();
-  rebuild(true);
-}
-
-/** Confirm keeps the step as set; Cancel puts it back as it was, or removes it if it is new. */
-function endSweepLoft(keep: boolean) {
-  if (mode.kind !== "sweep" && mode.kind !== "loft") return;
-  const f = mode.feat;
-  if (keep && f.kind === "loft" && f.sketchIds.length < 2) return toast("Choose at least two sketches");
-  if (keep && f.kind === "sweep" && !f.helix && (!f.pathSketchId || f.sketchId === f.pathSketchId)) return toast("Choose a path: another sketch than the profile");
-  mode = { kind: "part" };
-  if (keep) return commit();
-  if (sweepLoftBefore) Object.assign(f, sweepLoftBefore);
-  else {
-    doc.features = doc.features.filter((x) => x !== f);
-    selectedFeature = null;
-  }
-  sweepLoftBefore = null;
-  rebuild(true);
-  renderAll();
-}
-
-function renderSweepLoftPanel(el: HTMLElement, head: (title: string, sub?: string, err?: boolean) => void, actions: (items: [string, string, () => void, string?][]) => void) {
-  if (mode.kind !== "sweep" && mode.kind !== "loft") return;
-  const f = mode.feat;
-  const err = lastBuild?.errors[f.id];
-  head(f.name, err ?? (f.kind === "sweep" ? (f.helix ? "A profile coiled around an axis" : "A profile pushed along a path") : "A solid through the sketches, in their order"), !!err);
-  const sketches = allSketches();
-  const nameOf = (id: string) => sketches.find((s) => s.id === id)?.name ?? "Missing sketch";
-  const changed = () => {
-    rebuild();
-    renderPanel();
-    renderTimeline();
-    renderPartOverlays();
-  };
-  const row = (label: string, ...items: HTMLElement[]) => {
-    const r = document.createElement("div");
-    r.className = "align-row sl-row";
-    r.innerHTML = "<span></span>";
-    r.querySelector("span")!.textContent = label;
-    r.append(...items);
-    el.appendChild(r);
-  };
-  // A sketch chosen in a list: the ones taken elsewhere in this step are left out.
-  const picker = (current: string | null, taken: string[], pick: (id: string) => void) => {
-    const b = document.createElement("button");
-    b.className = "pick" + (current ? "" : " empty");
-    b.innerHTML = `<span></span>${icon("chevron", 16)}`;
-    b.querySelector("span")!.textContent = current ? nameOf(current) : "Choose a sketch…";
-    b.onclick = () => {
-      const choices = sketches.filter((s) => !taken.includes(s.id) && s.id !== current);
-      if (!choices.length) return toast("No other sketch to choose");
-      toggleBarMenu(b, choices.map((s): [string, () => void] => [s.name, () => pick(s.id)]));
-    };
-    return b;
-  };
-  const segRow = (label: string, options: { value: string; label: string }[], get: () => string, set: (v: string) => void) => {
-    const seg = document.createElement("div");
-    seg.className = "seg";
-    for (const o of options) {
-      const b = document.createElement("button");
-      b.textContent = o.label;
-      b.classList.toggle("on", get() === o.value);
-      b.onclick = () => {
-        set(o.value);
-        changed();
-      };
-      seg.appendChild(b);
-    }
-    row(label, seg);
-  };
-  if (f.kind === "sweep") {
-    row("Profile", picker(f.sketchId, f.helix ? [] : [f.pathSketchId], (id) => void ((f.sketchId = id), changed())));
-    segRow("Along", [{ value: "path", label: "A drawn path" }, { value: "helix", label: "A helix" }], () => (f.helix ? "helix" : "path"), (v) => {
-      if (v === "helix" && !f.helix) {
-        const sk = sketches.find((s) => s.id === f.sketchId);
-        f.helix = sk ? defaultHelix(sk) : { axisLine: "AY", pitch: 5, turns: 5, leftHand: false };
-      } else if (v === "path") {
-        delete f.helix;
-        if (!f.pathSketchId || f.pathSketchId === f.sketchId) f.pathSketchId = sketches.find((s) => s.id !== f.sketchId && !findRegions(s).length)?.id ?? "";
-      }
-    });
-    const h = f.helix;
-    if (!h) row("Path", picker(f.pathSketchId || null, [f.sketchId], (id) => void ((f.pathSketchId = id), changed())));
-    else {
-      // The axis: one of the profile sketch's axes, or a line drawn in it (as for a revolve).
-      const profile = sketches.find((s) => s.id === f.sketchId);
-      const lines = (profile?.entities ?? []).filter((e) => e.type === "line" && !e.axis);
-      const axisLabel = h.axisLine === "AX" ? "Sketch X" : h.axisLine === "AY" ? "Sketch Y" : "A drawn line";
-      const ax = document.createElement("button");
-      ax.className = "pick";
-      ax.innerHTML = `<span></span>${icon("chevron", 16)}`;
-      ax.querySelector("span")!.textContent = axisLabel;
-      ax.onclick = () =>
-        toggleBarMenu(ax, [
-          ["Sketch X", () => void ((h.axisLine = "AX"), changed())],
-          ["Sketch Y", () => void ((h.axisLine = "AY"), changed())],
-          ...lines.map((l, i): [string, () => void] => [`${l.type === "line" && l.construction ? "Construction line" : "Line"} ${i + 1}`, () => void ((h.axisLine = l.id), changed())]),
-        ]);
-      row("Axis", ax);
-      const value = (text: string, run: () => void) => {
-        const b = document.createElement("button");
-        b.className = "pick";
-        b.innerHTML = `<span></span>${icon("chevron", 16)}`;
-        b.querySelector("span")!.textContent = text;
-        b.onclick = run;
-        return b;
-      };
-      row("Pitch", value(`${fmtNum(Math.abs(h.pitch))} mm per turn`, () => void helixValue(f, "pitch")));
-      row("Turns", value(`${fmtNum(h.turns)} · ${fmtNum(Math.abs(h.pitch) * h.turns)} mm long`, () => void helixValue(f, "turns")));
-      segRow("Hand", [{ value: "right", label: "Right" }, { value: "left", label: "Left" }], () => (h.leftHand ? "left" : "right"), (v) => (h.leftHand = v === "left"));
-      segRow("Goes", [{ value: "up", label: "Along the axis" }, { value: "down", label: "The other way" }], () => (h.pitch < 0 ? "down" : "up"), (v) => (h.pitch = (v === "down" ? -1 : 1) * Math.abs(h.pitch)));
-    }
-  } else {
-    f.sketchIds.forEach((id, i) => {
-      const drop = document.createElement("button");
-      drop.className = "drop";
-      drop.innerHTML = icon("close", 18);
-      drop.setAttribute("aria-label", `Remove ${nameOf(id)}`);
-      drop.onclick = () => {
-        f.sketchIds.splice(i, 1);
-        changed();
-      };
-      // Two are the least a loft can have: one of them cannot be dropped, only replaced.
-      row(String(i + 1), picker(id, f.sketchIds, (next) => void ((f.sketchIds[i] = next), changed())), ...(f.sketchIds.length > 2 ? [drop] : []));
-    });
-    if (f.sketchIds.length < sketches.length) row("", picker(null, f.sketchIds, (id) => void (f.sketchIds.push(id), changed())));
-    segRow("Surface", [{ value: "smooth", label: "Smooth" }, { value: "ruled", label: "Ruled" }], () => (f.ruled ? "ruled" : "smooth"), (v) => (f.ruled = v === "ruled"));
-  }
-  segRow("Result", [{ value: "add", label: "Join" }, { value: "cut", label: "Cut" }, { value: "intersect", label: "Intersect" }], () => f.op, (v) => (f.op = v as ExtrudeOp));
-  for (const s of bodySegment(f)) segRow("Body", s.options, s.get, s.set);
-  const hint = document.createElement("p");
-  hint.className = "p-hint";
-  hint.textContent =
-    f.kind === "sweep"
-      ? f.helix
-        ? "The profile winds around the axis, at the distance it is drawn from it: for a spring, draw a small circle on XZ beside the sketch Y axis. Keep the pitch wider than the profile so the turns do not touch."
-        : "Draw the profile across the start of the path, on a plane facing along it. The path is one chain of lines, arcs or curves; a bend tighter than the profile is wide cannot be swept."
-      : "Each sketch gives one closed outline; the solid goes from the first to the last. Sketches on offset planes, one above the other, loft best.";
-  el.appendChild(hint);
-  actions([
-    ["close", "Cancel", () => endSweepLoft(false)],
-    ["check", "Confirm", () => endSweepLoft(true), "primary"],
-  ]);
-}
-
-/** A line of the sketch near a screen point (drawn and construction lines). */
-function pickSketchLine(sk: SketchFeature, p: Ptr): string | null {
-  const R = p.kind === "touch" ? 24 : p.kind === "pen" ? 14 : 9;
-  let best: { id: string; d: number } | null = null;
-  for (const e of sk.entities) {
-    if (e.type !== "line" || e.axis) continue;
-    const [a, b] = sketchLineWorld(sk, e.id).map((q) => vp.toScreen(new THREE.Vector3(...q)));
-    const dx = b[0] - a[0];
-    const dy = b[1] - a[1];
-    const L2 = dx * dx + dy * dy;
-    const t = L2 > 0 ? Math.max(0, Math.min(1, ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / L2)) : 0;
-    const d = Math.hypot(a[0] + t * dx - p.x, a[1] + t * dy - p.y);
-    if (d < R && (!best || d < best.d)) best = { id: e.id, d };
-  }
-  return best?.id ?? null;
-}
-
-// ---------- Mirror and patterns ----------
-
-/** Features whose material can be repeated by a pattern. */
-const repeatable = (f: Feature) => (f.kind === "extrude" && f.op !== "intersect") || f.kind === "pushpull" || f.kind === "hole" || f.kind === "pattern";
-
-type PatternField = "count" | "spacing" | "count2" | "spacing2" | "angle" | "offset";
-const FIELD_LABEL: Record<PatternField, [string, string]> = {
-  count: ["Count (original included)", ""],
-  spacing: ["Spacing", "mm"],
-  count2: ["Count, 2nd direction", ""],
-  spacing2: ["Spacing, 2nd direction", "mm"],
-  angle: ["Total angle (360 = all around)", "°"],
-  offset: ["Plane position", "mm"],
-};
-
-function patternSummary(f: PatternFeature) {
-  const n = f.featureIds.length;
-  const what = n ? `${n} feature${n > 1 ? "s" : ""}` : "whole solid";
-  if (f.type === "mirror") return `${what} · ${{ X: "YZ", Y: "XZ", Z: "XY" }[f.axis]} plane at ${fmtNum(f.offset)} mm`;
-  if (f.type === "circular") return `${what} · ${f.count} around ${f.axis} · ${fmtNum(f.angle)}°`;
-  const second = f.count2 > 1 ? ` × ${f.count2} along ${f.axis2}` : "";
-  return `${what} · ${f.count} along ${f.axis}${second}`;
-}
-
-async function patternTool(type: PatternFeature["type"], existing?: PatternFeature) {
-  if (mode.kind !== "part") return;
-  if (!existing && !hasSolid()) return toast(NEED_SOLID);
-  const sel = doc.features.find((f) => f.id === selectedFeature);
-  const prefix = { linear: "Linear pattern", circular: "Circular pattern", mirror: "Mirror" }[type];
-  const feat: PatternFeature = existing ?? {
-    id: uid(),
-    kind: "pattern",
-    name: nextName(prefix),
-    type,
-    featureIds: sel && repeatable(sel) ? [sel.id] : [],
-    axis: type === "circular" ? "Z" : "X",
-    count: type === "circular" ? 6 : 3,
-    spacing: 10,
-    axis2: "Y",
-    count2: 1,
-    spacing2: 10,
-    angle: 360,
-    offset: 0,
-  };
-  const before = structuredClone(feat);
-  if (!existing) doc.features.push(feat);
-  selectedFeature = feat.id;
-  selectedFace = null;
-  showParams = false;
-  vp.highlightFace(null);
-
-  let field: PatternField = type === "mirror" ? "offset" : "count";
-  const axisSeg = (get: () => Axis, set: (a: Axis) => void, labels: [string, string, string]) => ({
-    options: (["X", "Y", "Z"] as Axis[]).map((a, i) => ({ value: a, label: labels[i] })),
-    get,
-    set: (v: string) => {
-      set(v as Axis);
-      update();
-    },
-  });
-  const fieldSeg = (fields: PatternField[], labels: string[]) => ({
-    options: fields.map((f, i) => ({ value: f, label: labels[i] })),
-    get: () => field,
-    set: (v: string) => {
-      field = v as PatternField;
-      kp.set(feat[field]);
-      kp.setLabel(...FIELD_LABEL[field]);
-    },
-  });
-  // What is repeated: the steps tapped in the timeline, or the whole solid when none is.
-  let picked = [...feat.featureIds];
-  const whatSeg = {
-    options: [
-      { value: "steps", label: "Chosen steps" },
-      { value: "whole", label: "Whole solid" },
-    ],
-    get: () => (feat.featureIds.length ? "steps" : "whole"),
-    set: (v: string) => {
-      if (v === "whole") {
-        if (feat.featureIds.length) picked = [...feat.featureIds];
-        feat.featureIds = [];
-      } else if (!feat.featureIds.length) {
-        if (picked.length) feat.featureIds = [...picked];
-        else toast("Tap the features to repeat in the timeline");
-      }
-      update();
-    },
-  };
-  const segments: Segmented[] = [whatSeg];
-  segments.push(
-    ...(type === "mirror"
-      ? [axisSeg(() => feat.axis, (a) => (feat.axis = a), ["YZ plane", "XZ plane", "XY plane"])]
-      : type === "circular"
-        ? [fieldSeg(["count", "angle"], ["Count", "Angle"]), axisSeg(() => feat.axis, (a) => (feat.axis = a), ["X axis", "Y axis", "Z axis"])]
-        : [
-            fieldSeg(["count", "spacing", "count2", "spacing2"], ["Count", "Spacing", "Count 2", "Spacing 2"]),
-            axisSeg(() => feat.axis, (a) => (feat.axis = a), ["Along X", "Along Y", "Along Z"]),
-            axisSeg(() => feat.axis2, (a) => (feat.axis2 = a), ["2nd X", "2nd Y", "2nd Z"]),
-          ]),
-  );
-  const setField = (v: number) => {
-    feat[field] = field === "count" || field === "count2" ? Math.max(1, Math.round(v)) : v;
-  };
-  const update = () => {
-    kp.setSubtitle(patternSummary(feat));
-    renderTimeline();
-    rebuild();
-  };
-  const kp = openKeypad({
-    title: feat.name,
-    subtitle: patternSummary(feat),
-    label: FIELD_LABEL[field][0],
-    unit: FIELD_LABEL[field][1],
-    value: feat[field],
-    confirmLabel: "Confirm",
-    segments,
-    onInput: (v) => {
-      setField(v);
-      update();
-    },
-  });
-  mode = { kind: "pattern", feat, keypad: kp };
-  renderAll();
-  rebuild(true);
-
-  const res = await kp.result;
-  mode = { kind: "part" };
-  if (res === null) {
-    if (existing) Object.assign(feat, before);
-    else {
-      doc.features = doc.features.filter((x) => x !== feat);
-      selectedFeature = null;
-    }
-    rebuild(true);
-    renderAll();
-    return;
-  }
-  setField(res.value);
-  commit();
-}
-
-/** In a pattern, tapping a timeline step adds it to (or removes it from) the repeated features. */
-function togglePatternFeature(feat: PatternFeature, f: Feature) {
-  const idx = doc.features.indexOf(feat);
-  if (doc.features.indexOf(f) >= idx) return toast("Only earlier features can be repeated");
-  if (!repeatable(f)) return toast(`${f.name} cannot be repeated (only extrusions, Press Pull, holes and patterns)`);
-  const i = feat.featureIds.indexOf(f.id);
-  if (i >= 0) feat.featureIds.splice(i, 1);
-  else feat.featureIds.push(f.id);
-  if (mode.kind === "pattern") {
-    mode.keypad.setSubtitle(patternSummary(feat));
-    mode.keypad.refresh();
-  }
-  renderTimeline();
-  renderStatus();
-  rebuild();
-}
-
-// ---------- Fillet / chamfer (on edges of the solid) ----------
-
-async function filletTool(existing?: FilletFeature) {
-  if (mode.kind !== "part") return;
-  if (!existing && !hasSolid()) return toast(NEED_SOLID);
-  const feat: FilletFeature = existing ?? { id: uid(), kind: "fillet", name: nextName("Fillet"), mode: "fillet", edges: [], radius: 1 };
-  const before = { mode: feat.mode, radius: feat.radius, radiusExpr: feat.radiusExpr, edges: [...feat.edges], name: feat.name };
-  if (!existing) doc.features.push(feat);
-  selectedFeature = feat.id;
-  selectedFace = null;
-  showParams = false;
-  vp.highlightFace(null);
-  // Edges are chosen on the solid as it is before the fillet.
-  previewExclude = feat.id;
-  const kp = openKeypad({
-    title: feat.name,
-    subtitle: "Tap the edges to round or bevel",
-    label: "Size",
-    value: feat.radius,
-    expr: feat.radiusExpr,
-    scope: paramScope(),
-    confirmLabel: "Confirm",
-    segments: [
-      {
-        options: [
-          { value: "fillet", label: "Fillet (round)" },
-          { value: "chamfer", label: "Chamfer (bevel)" },
-        ],
-        get: () => feat.mode,
-        set: (v) => {
-          feat.mode = v as FilletFeature["mode"];
-          rebuild();
-          // Keep the default names in step with the choice.
-          if (!existing && /^(Fillet|Chamfer) \d+$/.test(feat.name)) {
-            feat.name = nextName(feat.mode === "fillet" ? "Fillet" : "Chamfer");
-            renderTimeline();
-          }
-        },
-      },
-    ],
-    onInput: (v) => {
-      if (v > 0) feat.radius = v;
-      rebuild();
-    },
-  });
-  mode = { kind: "fillet", feat, keypad: kp };
-  renderAll();
-  rebuild(true);
-
-  const res = await kp.result;
-  const value = res?.value ?? null;
-  previewExclude = null;
-  mode = { kind: "part" };
-  vp.highlightEdges([]);
-  if (value === null || value <= 0 || !feat.edges.length) {
-    if (value !== null && !feat.edges.length) toast("Tap at least one edge");
-    if (existing) Object.assign(feat, before);
-    else {
-      doc.features = doc.features.filter((x) => x !== feat);
-      selectedFeature = null;
-    }
-    rebuild(true);
-    renderAll();
-    return;
-  }
-  feat.radius = value;
-  feat.radiusExpr = res?.expr;
-  commit();
-}
-
-function highlightFilletEdges(feat: FilletFeature) {
-  vp.highlightEdges(feat.edges.map((e) => vp.edgeAt(e.mid)).filter((i): i is number => i !== null));
-}
-
-function toggleFilletEdge(feat: FilletFeature, p: Ptr) {
-  const i = vp.pickEdge(p.x, p.y, p.kind === "touch" ? 24 : p.kind === "pen" ? 14 : 9);
-  if (i === null) return;
-  const mid = vp.edgeMid(i);
-  const k = feat.edges.findIndex((e) => Math.hypot(e.mid[0] - mid[0], e.mid[1] - mid[1], e.mid[2] - mid[2]) < 0.05);
-  if (k >= 0) feat.edges.splice(k, 1);
-  else feat.edges.push({ mid });
-  highlightFilletEdges(feat);
-  rebuild();
-  renderStatus();
-}
-
-const sameFace = (a: FaceRef, center: Vec3, normal: Vec3) =>
-  Math.hypot(a.center[0] - center[0], a.center[1] - center[1], a.center[2] - center[2]) < 1e-3 &&
-  a.normal[0] * normal[0] + a.normal[1] * normal[1] + a.normal[2] * normal[2] > 0.999;
-
-function highlightShellFaces(feat: ShellFeature) {
-  const ids = (lastBuild?.planarFaces ?? [])
-    .filter((pf) => feat.faces.some((r) => sameFace(r, pf.center, pf.plane.normal)))
-    .map((pf) => pf.faceId);
-  vp.highlightFaces(ids);
-}
-
-function toggleShellFace(feat: ShellFeature, faceId: number) {
-  const pf = lastBuild?.planarFaces.find((f) => f.faceId === faceId);
-  if (!pf) return toast("Only flat faces can be opened");
-  const i = feat.faces.findIndex((r) => sameFace(r, pf.center, pf.plane.normal));
-  if (i >= 0) feat.faces.splice(i, 1);
-  else feat.faces.push({ center: pf.center, normal: pf.plane.normal });
-  highlightShellFaces(feat);
-  rebuild();
 }
 
 // ---------- Parameters ----------
 
-function paramScope() {
-  return resolveParameters(partParameters(doc, shared)).scope;
+export function paramScope() {
+  return resolveParameters(partParameters(S.doc, shared)).scope;
 }
 
 /**
@@ -3479,12 +2197,12 @@ function catchUpShared(d: CadDocument): boolean {
 
 /** Re-evaluates the whole document after a parameter change; undoes it if something breaks. */
 function applyParamChange(change: () => void) {
-  const backup = JSON.stringify(doc);
+  const backup = JSON.stringify(S.doc);
   const sharedBefore = JSON.stringify(shared);
   change();
-  const problems = applyParameters(doc, solver, shared);
+  const problems = applyParameters(S.doc, solver, shared);
   if (problems.length) {
-    doc = JSON.parse(backup);
+    S.doc = JSON.parse(backup);
     shared = JSON.parse(sharedBefore);
     toast(problems[0]);
     reloadSketch();
@@ -3497,19 +2215,19 @@ function applyParamChange(change: () => void) {
   return true;
 }
 
-const findParam = (id: string) => doc.parameters?.find((x) => x.id === id) ?? shared.find((x) => x.id === id);
+const findParam = (id: string) => S.doc.parameters?.find((x) => x.id === id) ?? shared.find((x) => x.id === id);
 const isShared = (p: Parameter) => shared.some((x) => x.id === p.id);
 
 /** The sketch being edited takes the document's version of it again (after parameters changed it). */
 function reloadSketch() {
-  if (mode.kind !== "sketch") return;
-  const id = mode.editor.sk.id;
-  const sk = doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
-  if (sk) mode.editor.load(sk);
+  if (S.mode.kind !== "sketch") return;
+  const id = S.mode.editor.sk.id;
+  const sk = S.doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
+  if (sk) S.mode.editor.load(sk);
 }
 
 /** `among`: the parameters the name must differ from (the part's own, or the shared ones). */
-function askName(title: string, initial: string, except?: string, among = doc.parameters ?? []): string | null {
+function askName(title: string, initial: string, except?: string, among = S.doc.parameters ?? []): string | null {
   const name = prompt(title, initial)?.trim();
   if (!name) return null;
   if (!NAME_RE.test(name)) {
@@ -3524,7 +2242,7 @@ function askName(title: string, initial: string, except?: string, among = doc.pa
 }
 
 async function newParameter() {
-  const params = (doc.parameters ??= []);
+  const params = (S.doc.parameters ??= []);
   let n = params.length + 1;
   while (params.some((p) => p.name === `p${n}`)) n++;
   const name = askName("Parameter name (e.g. width, wall, hole_d)", `p${n}`);
@@ -3532,7 +2250,7 @@ async function newParameter() {
   const res = await openKeypad({ title: name, subtitle: "New parameter", label: "Value", value: 10, scope: paramScope(), confirmLabel: "Add" }).result;
   if (!res) return;
   const p: Parameter = { id: uid(), name, expr: res.expr ?? String(res.value) };
-  if (applyParamChange(() => (doc.parameters ??= []).push(p)) && shared.some((x) => x.name === name)) toast(`In this part, ${name} is this value instead of the shared one`);
+  if (applyParamChange(() => (S.doc.parameters ??= []).push(p)) && shared.some((x) => x.name === name)) toast(`In this part, ${name} is this value instead of the shared one`);
 }
 
 async function editParameter(p: Parameter) {
@@ -3559,8 +2277,8 @@ function renameParameter(p: Parameter) {
   if (isShared(p)) return void renameShared(p);
   const name = askName("New name", p.name, p.name);
   if (!name || name === p.name) return;
-  for (const slot of expressionSlots(doc)) slot.set(renameInExpr(slot.get(), p.name, name));
-  const live = doc.parameters?.find((x) => x.id === p.id);
+  for (const slot of expressionSlots(S.doc)) slot.set(renameInExpr(slot.get(), p.name, name));
+  const live = S.doc.parameters?.find((x) => x.id === p.id);
   if (live) live.name = name;
   reloadSketch();
   commit();
@@ -3570,20 +2288,20 @@ function deleteParameter(p: Parameter) {
   if (isShared(p)) return void deleteShared(p);
   // It was replacing a shared one here: the part goes back to that one.
   if (shared.some((x) => x.name === p.name)) {
-    if (applyParamChange(() => (doc.parameters = (doc.parameters ?? []).filter((x) => x.id !== p.id)))) toast(`${p.name} is the shared value again here`);
+    if (applyParamChange(() => (S.doc.parameters = (S.doc.parameters ?? []).filter((x) => x.id !== p.id)))) toast(`${p.name} is the shared value again here`);
     return;
   }
-  const used = usedNames(doc, p.name).has(p.name);
+  const used = usedNames(S.doc, p.name).has(p.name);
   if (used && !confirm(`${p.name} is used. Replace it by its current value everywhere?`)) return;
   const value = paramScope()[p.name];
   applyParamChange(() => {
-    doc.parameters = (doc.parameters ?? []).filter((x) => x.id !== p.id);
-    for (const slot of expressionSlots(doc)) {
+    S.doc.parameters = (S.doc.parameters ?? []).filter((x) => x.id !== p.id);
+    for (const slot of expressionSlots(S.doc)) {
       const e = renameInExpr(slot.get(), p.name, value === undefined ? "0" : `(${value})`);
       slot.set(e);
     }
     // Feature values that no longer use any parameter become plain numbers.
-    for (const f of doc.features) {
+    for (const f of S.doc.features) {
       if (f.kind === "sketch") for (const c of f.constraints) if (c.expr && !hasNames(c.expr)) c.expr = undefined;
       if ((f.kind === "extrude" || f.kind === "pushpull") && f.distanceExpr && !hasNames(f.distanceExpr)) f.distanceExpr = undefined;
       if (f.kind === "shell" && f.thicknessExpr && !hasNames(f.thicknessExpr)) f.thicknessExpr = undefined;
@@ -3594,12 +2312,12 @@ function deleteParameter(p: Parameter) {
 /** A part's parameter becomes shared: every part can use it. */
 async function shareParameter(p: Parameter) {
   if (shared.some((x) => x.name === p.name)) return toast(`A shared ${p.name} exists already`);
-  const own = new Set((doc.parameters ?? []).map((x) => x.name));
+  const own = new Set((S.doc.parameters ?? []).map((x) => x.name));
   const local = identifiers(p.expr).find((n) => own.has(n) && n !== p.name);
   if (local) return toast(`${p.name} uses ${local}, which is only in this part: share ${local} first`);
   if (
     !applyParamChange(() => {
-      doc.parameters = (doc.parameters ?? []).filter((x) => x.id !== p.id);
+      S.doc.parameters = (S.doc.parameters ?? []).filter((x) => x.id !== p.id);
       shared.push({ ...p });
     })
   )
@@ -3620,7 +2338,7 @@ async function changeOtherParts(change: (d: CadDocument) => boolean): Promise<nu
   let n = 0;
   const list = await listProjects().catch(() => []);
   for (const meta of list) {
-    if (meta.id === project?.id || meta.kind === "assembly") continue;
+    if (meta.id === S.project?.id || meta.kind === "assembly") continue;
     const got = await getProject(meta.id).catch(() => null);
     const d = got && asDocument(got.doc);
     if (!d || !change(d)) continue;
@@ -3646,7 +2364,7 @@ async function renameShared(p: Parameter) {
     return true;
   };
   await flushSave();
-  rename(doc);
+  rename(S.doc);
   for (const x of shared) x.expr = renameInExpr(x.expr, from, name);
   const live = findParam(p.id);
   if (live) live.name = name;
@@ -3672,7 +2390,7 @@ async function deleteShared(p: Parameter) {
   await flushSave();
   if (
     !applyParamChange(() => {
-      keep(doc);
+      keep(S.doc);
       shared = shared.filter((x) => x.id !== p.id);
       for (const x of shared) x.expr = renameInExpr(x.expr, p.name, `(${expr})`);
     })
@@ -3684,18 +2402,18 @@ async function deleteShared(p: Parameter) {
 }
 
 function toggleParams() {
-  showParams = !showParams;
-  if (showParams) {
-    selectedFeature = null;
-    selectedFace = null;
+  S.showParams = !S.showParams;
+  if (S.showParams) {
+    S.selectedFeature = null;
+    S.selectedFace = null;
     vp.highlightFace(null);
   }
   renderAll();
 }
 
 function renderParamsPanel(el: HTMLElement) {
-  const params = doc.parameters ?? [];
-  const { scope, errors } = resolveParameters(partParameters(doc, shared));
+  const params = S.doc.parameters ?? [];
+  const { scope, errors } = resolveParameters(partParameters(S.doc, shared));
   // Shared ones show their own value, even where this part has one of the same name.
   const common = resolveParameters(shared);
   const h = document.createElement("div");
@@ -3786,7 +2504,7 @@ async function showSharedUse(rows: Map<string, HTMLElement>) {
   const list = byName(await listProjects().catch(() => []));
   const users = new Map<string, string[]>();
   for (const m of list) {
-    const d = m.id === project?.id ? doc : (await getProject(m.id).catch(() => null))?.doc;
+    const d = m.id === S.project?.id ? S.doc : (await getProject(m.id).catch(() => null))?.doc;
     if (!d) continue;
     for (const p of sharedUsed(d, shared)) users.set(p.id, [...(users.get(p.id) ?? []), m.name]);
   }
@@ -3798,15 +2516,15 @@ async function showSharedUse(rows: Map<string, HTMLElement>) {
 }
 
 /** The selected sketch, or the last sketch not yet used by a feature. */
-const NEED_SOLID = "Make a solid first (Sketch, then Extrude)";
-const hasSolid = () => doc.features.some((f) => f.kind === "extrude" || f.kind === "revolve" || f.kind === "sweep" || f.kind === "loft" || f.kind === "import" || f.kind === "combine");
+export const NEED_SOLID = "Make a solid first (Sketch, then Extrude)";
+export const hasSolid = () => S.doc.features.some((f) => f.kind === "extrude" || f.kind === "revolve" || f.kind === "sweep" || f.kind === "loft" || f.kind === "import" || f.kind === "combine");
 
-function pickSketchForExtrude(): SketchFeature | null {
-  if (mode.kind === "sketch") return mode.editor.sk;
-  const sel = doc.features.find((f) => f.id === selectedFeature);
+export function pickSketchForExtrude(): SketchFeature | null {
+  if (S.mode.kind === "sketch") return S.mode.editor.sk;
+  const sel = S.doc.features.find((f) => f.id === S.selectedFeature);
   if (sel?.kind === "sketch") return sel;
-  const used = new Set(doc.features.flatMap(usedSketchIds));
-  const free = doc.features.filter((f): f is SketchFeature => f.kind === "sketch" && !used.has(f.id));
+  const used = new Set(S.doc.features.flatMap(usedSketchIds));
+  const free = S.doc.features.filter((f): f is SketchFeature => f.kind === "sketch" && !used.has(f.id));
   return free[free.length - 1] ?? null;
 }
 
@@ -3819,25 +2537,11 @@ function renameFeature(f: Feature) {
 }
 
 function deleteFeature(f: Feature) {
-  const dependents = doc.features.filter((x) => usedSketchIds(x).includes(f.id));
-  doc.features = doc.features.filter((x) => x !== f && !dependents.includes(x));
-  selectedFeature = null;
+  const dependents = S.doc.features.filter((x) => usedSketchIds(x).includes(f.id));
+  S.doc.features = S.doc.features.filter((x) => x !== f && !dependents.includes(x));
+  S.selectedFeature = null;
   if (dependents.length) toast(`Also deleted ${dependents.map((d) => d.name).join(", ")}`);
   commit();
-}
-
-// ---------- Rendering ----------
-
-/** What each area last showed: enter animations play only when it changes, not on every refresh. */
-const shownKey = new Map<string, string>();
-function playEnter(slot: string, key: string, el: HTMLElement) {
-  if (shownKey.get(slot) === key) return;
-  shownKey.set(slot, key);
-  el.classList.remove("enter");
-  void el.offsetWidth; // restart the animation
-  el.classList.add("enter");
-  // Played once: showing the panel again later must not replay it.
-  el.addEventListener("animationend", () => el.classList.remove("enter"), { once: true });
 }
 
 // ---------- Workspace bar: Sketch · Part · Assembly ----------
@@ -3850,7 +2554,7 @@ const WORKSPACES: [Workspace, string, string][] = [
 ];
 
 function currentWorkspace(): Workspace {
-  return mode.kind === "sketch" || mode.kind === "pickPlane" ? "sketch" : isAssembly() ? "assembly" : "part";
+  return S.mode.kind === "sketch" || S.mode.kind === "pickPlane" ? "sketch" : isAssembly() ? "assembly" : "part";
 }
 
 /** The top bar: the file actions, as icons (their names as tips). */
@@ -3866,7 +2570,7 @@ function renderWorkspace() {
   el.replaceChildren();
   el.setAttribute("aria-label", "File");
   // In the middle of a step, finish it first.
-  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align" || mode.kind === "combine" || mode.kind === "sweep" || mode.kind === "loft";
+  const busy = isOperation(S.mode) || S.mode.kind === "mate" || S.mode.kind === "align" || S.mode.kind === "combine" || S.mode.kind === "sweep" || S.mode.kind === "loft";
   const items: [string, string, (() => void) | [string, () => void][]][] = [
     ["folder", "Projects", () => void showProjects()],
     [
@@ -3881,8 +2585,8 @@ function renderWorkspace() {
       "save",
       "Save",
       [
-        ...(project ? [["This project and the ones it uses", () => void saveFile()] as [string, () => void]] : []),
-        [`The whole tab "${tabName(project ? groupOf(project) : "")}"`, () => void saveOpenTab()],
+        ...(S.project ? [["This project and the ones it uses", () => void saveFile()] as [string, () => void]] : []),
+        [`The whole tab "${tabName(S.project ? groupOf(S.project) : "")}"`, () => void saveOpenTab()],
       ],
     ],
     [
@@ -3891,7 +2595,7 @@ function renderWorkspace() {
       [
         ["STEP", () => void importStep()],
         // A drawing goes into the sketch open.
-        ...(mode.kind === "sketch" ? [["DXF / SVG", () => void importDrawing()] as [string, () => void]] : []),
+        ...(S.mode.kind === "sketch" ? [["DXF / SVG", () => void importDrawing()] as [string, () => void]] : []),
         ["WaffleCAD file (.json)", openFile],
       ],
     ],
@@ -3914,7 +2618,7 @@ function renderWorkspace() {
 let barMenuFor: HTMLElement | null = null;
 
 /** A small list of choices under a button (New, Export, a parameter's ⋯). A third `true`: it destroys. */
-function toggleBarMenu(anchor: HTMLElement, choices: [string, () => void, boolean?][]) {
+export function toggleBarMenu(anchor: HTMLElement, choices: [string, () => void, boolean?][]) {
   const open = document.getElementById("bar-menu");
   open?.remove();
   if (open && barMenuFor === anchor) return void (barMenuFor = null);
@@ -3953,10 +2657,10 @@ export function renderWorkspaceTabs() {
   el.replaceChildren();
   const cur = currentWorkspace();
   // In the middle of a step (keypad open, choosing a mate…), finish it first.
-  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align" || mode.kind === "combine" || mode.kind === "sweep" || mode.kind === "loft";
+  const busy = isOperation(S.mode) || S.mode.kind === "mate" || S.mode.kind === "align" || S.mode.kind === "combine" || S.mode.kind === "sweep" || S.mode.kind === "loft";
   const tips: Record<Workspace, string> = {
     sketch: isAssembly() ? "Open a part in its last sketch" : "Edit the selected sketch, or start one",
-    part: mode.kind === "sketch" ? "Finish the sketch" : isAssembly() ? "Open a part of this assembly" : "The part",
+    part: S.mode.kind === "sketch" ? "Finish the sketch" : isAssembly() ? "Open a part of this assembly" : "The part",
     assembly: cameFrom ? `Back to ${cameFrom.name}` : isAssembly() ? "The assembly" : "Assemblies using this part",
   };
   for (const [w, label, ic] of WORKSPACES) {
@@ -3979,13 +2683,13 @@ async function goWorkspace(w: Workspace) {
   if (w === "sketch") {
     if (isAssembly()) return openPartOfAssembly(true);
     // The selected sketch (or the one an extrusion or revolution uses), else a new one.
-    const sel = doc.features.find((f) => f.id === selectedFeature);
+    const sel = S.doc.features.find((f) => f.id === S.selectedFeature);
     const id = sel?.kind === "sketch" ? sel.id : sel ? (usedSketchIds(sel)[0] ?? null) : null;
-    const sk = doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
+    const sk = S.doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
     return sk ? enterSketch(sk) : startNewSketch();
   }
-  if (mode.kind === "sketch") exitSketch();
-  else if (mode.kind === "pickPlane") escape();
+  if (S.mode.kind === "sketch") exitSketch();
+  else if (S.mode.kind === "pickPlane") escape();
   if (w === "part") return isAssembly() ? openPartOfAssembly(false) : undefined;
   if (cameFrom) {
     // The assembly may have been deleted since.
@@ -3998,16 +2702,16 @@ async function goWorkspace(w: Workspace) {
 /** From an assembly: the selected part's project, or one picked from those it uses. */
 async function openPartOfAssembly(sketch: boolean) {
   const go = async (id: string) => {
-    if (!project) return;
-    await openProject(id, { id: project.id, name: project.name });
+    if (!S.project) return;
+    await openProject(id, { id: S.project.id, name: S.project.name });
     if (!sketch) return;
-    const last = [...doc.features].reverse().find((f): f is SketchFeature => f.kind === "sketch");
+    const last = [...S.doc.features].reverse().find((f): f is SketchFeature => f.kind === "sketch");
     if (last) enterSketch(last);
     else startNewSketch();
   };
-  const inst = instanceOf(selectedFeature);
+  const inst = instanceOf(S.selectedFeature);
   if (inst) return partDocs[inst.project] ? go(inst.project) : toast(`${inst.name} is neither in your projects nor in this file`);
-  const ids = [...new Set((doc.instances ?? []).map((i) => i.project))].filter((id) => partDocs[id]);
+  const ids = [...new Set((S.doc.instances ?? []).map((i) => i.project))].filter((id) => partDocs[id]);
   if (!ids.length) return toast("Insert a part first");
   if (ids.length === 1) return go(ids[0]);
   const metas = (await listProjects().catch(() => [])).filter((p) => ids.includes(p.id));
@@ -4016,8 +2720,8 @@ async function openPartOfAssembly(sketch: boolean) {
 
 /** From a part: the assemblies that use it, or a new one with it. */
 async function chooseAssembly() {
-  if (!project) return;
-  const here = project;
+  if (!S.project) return;
+  const here = S.project;
   await flushSave();
   const all = await listProjects().catch(() => []);
   const using: ProjectMeta[] = [];
@@ -4090,10 +2794,10 @@ function chooseProject(title: string, list: ProjectMeta[], go: (p: ProjectMeta) 
   return el;
 }
 
-function renderAll() {
-  document.body.dataset.mode = mode.kind;
-  vp.forceOrtho = mode.kind === "sketch";
-  document.body.classList.toggle("busy", mode.kind !== "part");
+export function renderAll() {
+  document.body.dataset.mode = S.mode.kind;
+  vp.forceOrtho = S.mode.kind === "sketch";
+  document.body.classList.toggle("busy", S.mode.kind !== "part");
   renderTools();
   renderPanel();
   renderTimeline();
@@ -4107,11 +2811,11 @@ function renderAll() {
 
 /** The body selected, to mark in the view: an assembly's part, or a part's body when it has several. */
 function selectedBody(): string | null {
-  if (mode.kind === "combine") return mode.target;
-  if (mode.kind !== "part" || !selectedFeature || clashes) return null;
-  const bodies = lastBuild?.bodies ?? [];
+  if (S.mode.kind === "combine") return S.mode.target;
+  if (S.mode.kind !== "part" || !S.selectedFeature || clashes) return null;
+  const bodies = S.lastBuild?.bodies ?? [];
   if (!isAssembly() && bodies.length < 2) return null;
-  return bodies.some((b) => b.id === selectedFeature) ? selectedFeature : null;
+  return bodies.some((b) => b.id === S.selectedFeature) ? S.selectedFeature : null;
 }
 
 const SKETCH_TOOLS: { tool: SketchToolName; icon: string; label: string; key: string }[] = [
@@ -4281,9 +2985,9 @@ function section(title: string) {
 function renderTools() {
   const el = $("#tools");
   el.replaceChildren();
-  if (mode.kind !== "sketch") closeSelectModes();
+  if (S.mode.kind !== "sketch") closeSelectModes();
   // During an operation everything (confirm, cancel, options) is in the right panel.
-  el.hidden = isOperation(mode);
+  el.hidden = isOperation(S.mode);
   if (el.hidden) return;
   const collapse = document.createElement("button");
   collapse.id = "collapse";
@@ -4300,8 +3004,8 @@ function renderTools() {
   };
   el.appendChild(collapse);
 
-  if (mode.kind === "sketch") {
-    const ed = mode.editor;
+  if (S.mode.kind === "sketch") {
+    const ed = S.mode.editor;
     el.appendChild(section("Draw"));
     for (const t of SKETCH_TOOLS) {
       if (t.tool === "trim") el.appendChild(section("Modify"));
@@ -4339,15 +3043,15 @@ function renderTools() {
     el.appendChild(toolRow("text", "Text", () => void insertText(), { key: "X" }));
     el.appendChild(toolRow("import", "Import DXF / SVG", () => void importDrawing()));
     el.appendChild(section("Options"));
-    el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams }));
+    el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: S.showParams }));
     el.appendChild(
       toolRow("construction", "Construction", () => {
         ed.construction = !ed.construction;
         renderTools();
       }, { on: ed.construction, key: "G" }),
     );
-  } else if (mode.kind === "pickPlane") {
-    const m = mode;
+  } else if (S.mode.kind === "pickPlane") {
+    const m = S.mode;
     el.appendChild(section("Sketch plane"));
     for (const p of STD_PLANES)
       el.appendChild(toolRow("plane" + p.label, PLANE_NAMES[p.label], () => createSketchOn(placedPlane(p, m)), { tint: PLANE_COLORS[p.label], tag: p.label }));
@@ -4360,18 +3064,18 @@ function renderTools() {
     el.appendChild(section("Parts"));
     el.appendChild(toolRow("plus", "Insert part", () => void showPartPicker(), { key: "I" }));
     el.appendChild(toolRow("part", "New part", () => void newPartHere()));
-    if (doc.instances?.length) el.appendChild(toolRow("copy", "Copy as part", () => startCombine(true), { active: mode.kind === "combine" && mode.op === "keep" }));
+    if (S.doc.instances?.length) el.appendChild(toolRow("copy", "Copy as part", () => startCombine(true), { active: S.mode.kind === "combine" && S.mode.op === "keep" }));
     el.appendChild(toolRow("import", "Import STEP", () => void importStep()));
-    if ((doc.instances?.length ?? 0) > 1 || mode.kind === "mate") {
-      el.appendChild(toolRow("align", "Align", startAlign, { active: mode.kind === "align", key: "A" }));
-      el.appendChild(toolRow("combine", "Combine", () => startCombine(), { active: mode.kind === "combine" && mode.op !== "keep", key: "B" }));
+    if ((S.doc.instances?.length ?? 0) > 1 || S.mode.kind === "mate") {
+      el.appendChild(toolRow("align", "Align", startAlign, { active: S.mode.kind === "align", key: "A" }));
+      el.appendChild(toolRow("combine", "Combine", () => startCombine(), { active: S.mode.kind === "combine" && S.mode.op !== "keep", key: "B" }));
       el.appendChild(section("Mates"));
-      el.appendChild(toolRow("mate", "Mate", startMate, { active: mode.kind === "mate", key: "M" }));
+      el.appendChild(toolRow("mate", "Mate", startMate, { active: S.mode.kind === "mate", key: "M" }));
     }
-    if (doc.instances?.length) {
+    if (S.doc.instances?.length) {
       el.appendChild(section("Check"));
       el.appendChild(toolRow("measure", "Measure", toggleMeasure, { active: !!measuring, key: "D" }));
-      if (doc.instances.length > 1) {
+      if (S.doc.instances.length > 1) {
         el.appendChild(toolRow("clash", "Interference", () => (clashes ? clearClashes() : checkInterference()), { active: !!clashes, key: "C" }));
         el.appendChild(toolRow("explode", "Exploded view", toggleExplode, { active: explodeTarget > 0, key: "X" }));
       }
@@ -4381,7 +3085,7 @@ function renderTools() {
     el.appendChild(toolRow("sketch", "New sketch", startNewSketch, { key: "S" }));
     // Tools appear as the document grows: a sketch brings Extrude and Revolve, a solid brings
     // the rest. From then on the layout stays put; a tool unavailable for a moment is greyed.
-    const anySketch = doc.features.some((f) => f.kind === "sketch");
+    const anySketch = S.doc.features.some((f) => f.kind === "sketch");
     const solid = hasSolid();
     if (!anySketch && !solid) {
       const hint = document.createElement("p");
@@ -4395,20 +3099,20 @@ function renderTools() {
       el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { key: "E", disabled: needSketch }));
       el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { key: "V", disabled: needSketch }));
       const two = allSketches().length >= 2 ? undefined : "Draw a second sketch first";
-      el.appendChild(toolRow("sweep", "Sweep", () => startSweep(), { active: mode.kind === "sweep", disabled: needSketch }));
-      el.appendChild(toolRow("loft", "Loft", () => startLoft(), { active: mode.kind === "loft", disabled: two }));
+      el.appendChild(toolRow("sweep", "Sweep", () => startSweep(), { active: S.mode.kind === "sweep", disabled: needSketch }));
+      el.appendChild(toolRow("loft", "Loft", () => startLoft(), { active: S.mode.kind === "loft", disabled: two }));
     }
     if (solid) {
       // A tool waiting for a face is put down by tapping it again.
-      const faceToggle = (tool: NonNullable<typeof pendingFaceTool>, start: () => void) => () => {
-        if (pendingFaceTool !== tool) return start();
-        pendingFaceTool = null;
+      const faceToggle = (tool: NonNullable<typeof S.pendingFaceTool>, start: () => void) => () => {
+        if (S.pendingFaceTool !== tool) return start();
+        S.pendingFaceTool = null;
         renderAll();
       };
-      el.appendChild(toolRow("pushpull", "Press Pull", faceToggle("pushpull", () => faceTool("pushpull")), { active: pendingFaceTool === "pushpull", key: "Q" }));
-      el.appendChild(toolRow("shell", "Shell", faceToggle("shell", () => faceTool("shell")), { active: pendingFaceTool === "shell", key: "K" }));
+      el.appendChild(toolRow("pushpull", "Press Pull", faceToggle("pushpull", () => faceTool("pushpull")), { active: S.pendingFaceTool === "pushpull", key: "Q" }));
+      el.appendChild(toolRow("shell", "Shell", faceToggle("shell", () => faceTool("shell")), { active: S.pendingFaceTool === "shell", key: "K" }));
       el.appendChild(toolRow("fillet", "Fillet / Chamfer", () => void filletTool(), { key: "R" }));
-      el.appendChild(toolRow("hole", "Hole", faceToggle("hole", startHoles), { active: pendingFaceTool === "hole", key: "H" }));
+      el.appendChild(toolRow("hole", "Hole", faceToggle("hole", startHoles), { active: S.pendingFaceTool === "hole", key: "H" }));
       el.appendChild(section("Repeat"));
       el.appendChild(toolRow("mirror", "Mirror", () => void patternTool("mirror"), { key: "M" }));
       el.appendChild(toolRow("linear", "Linear pattern", () => void patternTool("linear"), { key: "L" }));
@@ -4416,7 +3120,7 @@ function renderTools() {
     }
     el.appendChild(section("Design"));
     if (solid) el.appendChild(toolRow("measure", "Measure", toggleMeasure, { active: !!measuring, key: "D" }));
-    el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: showParams, key: "P" }));
+    el.appendChild(toolRow("variable", "Parameters", toggleParams, { active: S.showParams, key: "P" }));
   }
   // Consecutive tools of a section share one icon column; their labels stay separate cards.
   let group: HTMLElement | null = null;
@@ -4465,22 +3169,22 @@ function animateNewTools(el: HTMLElement) {
 }
 
 /** Right panel: what can be done with the current selection. */
-function renderPanel() {
+export function renderPanel() {
   const el = $("#panel-content");
   el.replaceChildren();
   // Animate when the kind of panel changes, not when the same kind shows another face or step.
   const what =
-    mode.kind === "sketch"
-      ? `sketch:${mode.editor.sk.id}`
-      : isOperation(mode) || mode.kind === "sweep" || mode.kind === "loft"
-        ? `op:${mode.feat.id}`
+    S.mode.kind === "sketch"
+      ? `sketch:${S.mode.editor.sk.id}`
+      : isOperation(S.mode) || S.mode.kind === "sweep" || S.mode.kind === "loft"
+        ? `op:${S.mode.feat.id}`
         : measuring
           ? "measure"
-          : showParams
+          : S.showParams
           ? "params"
-          : selectedFace
+          : S.selectedFace
             ? "face"
-            : selectedFeature
+            : S.selectedFeature
               ? "feature"
               : "none";
   playEnter("panel", what, el);
@@ -4516,9 +3220,9 @@ function renderPanel() {
     el.appendChild(box);
   };
 
-  if (mode.kind === "sketch") {
-    if (showParams) return renderParamsPanel(el);
-    const ed = mode.editor;
+  if (S.mode.kind === "sketch") {
+    if (S.showParams) return renderParamsPanel(el);
+    const ed = S.mode.editor;
     head(ed.sk.name, dofText(ed.dof));
     const acts = ed.actions();
     if (ed.tool === "line")
@@ -4571,12 +3275,12 @@ function renderPanel() {
     actions([["check", "Finish sketch", exitSketch, "primary"]]);
     return;
   }
-  if (mode.kind === "align") return renderAlignPanel(el, head, actions);
-  if (mode.kind === "combine") return renderCombinePanel(el, head, actions);
-  if (mode.kind === "sweep" || mode.kind === "loft") return renderSweepLoftPanel(el, head, actions);
-  if (mode.kind === "mate") {
-    const n = mode.picks.length;
-    head("New mate", n ? `On ${partLabel(mode.picks[0].ref.part)} · now the other part` : "Tap a face or a hole of a part");
+  if (S.mode.kind === "align") return renderAlignPanel(el, head, actions);
+  if (S.mode.kind === "combine") return renderCombinePanel(el, head, actions);
+  if (S.mode.kind === "sweep" || S.mode.kind === "loft") return renderSweepLoftPanel(el, head, actions);
+  if (S.mode.kind === "mate") {
+    const n = S.mode.picks.length;
+    head("New mate", n ? `On ${partLabel(S.mode.picks[0].ref.part)} · now the other part` : "Tap a face or a hole of a part");
     const hint = document.createElement("p");
     hint.className = "p-hint";
     hint.textContent = n
@@ -4586,14 +3290,14 @@ function renderPanel() {
     actions([["close", "Cancel", () => startMate()]]);
     return;
   }
-  if (mode.kind !== "part") return;
+  if (S.mode.kind !== "part") return;
   if (measuring) {
     head("Measure", "", false);
     renderMeasurePanel(el);
     actions([["check", "Done", endMeasure, "primary"]]);
     return;
   }
-  if (showParams) return renderParamsPanel(el);
+  if (S.showParams) return renderParamsPanel(el);
 
   if (isAssembly() && clashes) {
     const c = clashes;
@@ -4621,10 +3325,10 @@ function renderPanel() {
     return;
   }
   if (isAssembly()) {
-    const mate = mateOf(selectedFeature);
+    const mate = mateOf(S.selectedFeature);
     if (mate) {
       const failing = mateState().failing.has(mate.id);
-      const err = failing ? "Cannot hold with the other mates" : lastBuild?.warnings?.[mate.id];
+      const err = failing ? "Cannot hold with the other mates" : S.lastBuild?.warnings?.[mate.id];
       const unitOf = mate.kind === "angle" ? "°" : " mm";
       const how =
         mate.kind === "axis"
@@ -4646,18 +3350,18 @@ function renderPanel() {
       actions(items);
       return;
     }
-    const inst = instanceOf(selectedFeature);
+    const inst = instanceOf(S.selectedFeature);
     if (!inst) {
-      if (doc.instances?.length) {
+      if (S.doc.instances?.length) {
         const st = mateState();
-        head(project?.name ?? "Assembly", st.failing.size ? `${st.failing.size} mate${st.failing.size > 1 ? "s" : ""} cannot hold` : st.dof ? `${st.dof} degree${st.dof > 1 ? "s" : ""} of freedom left` : "Fully placed", st.failing.size > 0);
+        head(S.project?.name ?? "Assembly", st.failing.size ? `${st.failing.size} mate${st.failing.size > 1 ? "s" : ""} cannot hold` : st.dof ? `${st.dof} degree${st.dof > 1 ? "s" : ""} of freedom left` : "Fully placed", st.failing.size > 0);
         const hint = document.createElement("p");
         hint.className = "p-hint";
         hint.textContent = "Tap a part to move it. Mate ties two parts: tap a face or hole on each.";
         el.appendChild(hint);
         return;
       }
-      head(project?.name ?? "Assembly", "No parts yet");
+      head(S.project?.name ?? "Assembly", "No parts yet");
       const hint = document.createElement("p");
       hint.className = "p-hint";
       hint.textContent = "Insert parts from your other projects, then drag the arrows and rings to place them.";
@@ -4665,7 +3369,7 @@ function renderPanel() {
       actions([["plus", "Insert part", () => void showPartPicker(), "primary"]]);
       return;
     }
-    const err = lastBuild?.errors[inst.id] ?? lastBuild?.warnings?.[inst.id];
+    const err = S.lastBuild?.errors[inst.id] ?? S.lastBuild?.warnings?.[inst.id];
     const where = `${inst.at.map(fmtNum).join(", ")} mm${inst.rot.some((r) => r) ? ` · turned ${inst.rot.map((r) => fmtNum(r) + "°").join(", ")}` : ""}`;
     head(inst.name, err ?? `${inst.fixed ? "Fixed · " : ""}${partNames[inst.project] ?? "Missing project"}${inst.body ? " (one body)" : ""} · ${where}`, !!err, true);
     const hidden = hiddenBodies.has(inst.id);
@@ -4676,8 +3380,8 @@ function renderPanel() {
       ["rename", "Rename", () => renameInstance(inst)],
       [hidden ? "eye" : "eyeOff", hidden ? "Show" : "Hide", () => toggleBody(inst.id)],
     ];
-    if ((lastBuild?.bodies?.length ?? 0) > 1) {
-      const others = lastBuild!.bodies!.filter((b) => b.id !== inst.id);
+    if ((S.lastBuild?.bodies?.length ?? 0) > 1) {
+      const others = S.lastBuild!.bodies!.filter((b) => b.id !== inst.id);
       const isolated = !hidden && others.every((b) => hiddenBodies.has(b.id));
       items.push(["eye", isolated ? "Show all parts" : "Show only this part", () => isolateBody(inst.id)]);
     }
@@ -4687,21 +3391,21 @@ function renderPanel() {
     return;
   }
 
-  if (selectedFace) {
-    const plane = selectedFace.plane;
+  if (S.selectedFace) {
+    const plane = S.selectedFace.plane;
     head("Face", plane ? "Flat face" : "Curved face", false, true);
     const items: [string, string, () => void, string?][] = [];
     if (plane) {
-      const anchor = selectedFace.center ?? undefined;
+      const anchor = S.selectedFace.center ?? undefined;
       items.push(["sketch", "Sketch on this face", () => createSketchOn(plane, anchor && { center: anchor, normal: plane.normal })]);
       items.push(["lookAt", "Look at", () => vp.viewNormalTo(plane)]);
     }
     actions(items);
     return;
   }
-  const f = doc.features.find((x) => x.id === selectedFeature);
+  const f = S.doc.features.find((x) => x.id === S.selectedFeature);
   if (f) {
-    const err = lastBuild?.errors[f.id] ?? lastBuild?.warnings?.[f.id];
+    const err = S.lastBuild?.errors[f.id] ?? S.lastBuild?.warnings?.[f.id];
     head(f.name, err ?? featureDetail(f), !!err, true);
     const items: [string, string, () => void, string?][] = [];
     if (f.kind === "combine") {
@@ -4738,10 +3442,10 @@ function renderPanel() {
       ]);
     else if (f.kind === "shell") items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
-    if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "sweep" || f.kind === "loft" || f.kind === "import") && lastBuild?.bodies?.some((b) => b.id === f.id) && lastBuild.bodies.length > 1) {
+    if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "sweep" || f.kind === "loft" || f.kind === "import") && S.lastBuild?.bodies?.some((b) => b.id === f.id) && S.lastBuild.bodies.length > 1) {
       items.push(["rename", "Rename body", () => renameBody(f.id)]);
       items.push([hiddenBodies.has(f.id) ? "eye" : "eyeOff", hiddenBodies.has(f.id) ? "Show body" : "Hide body", () => toggleBody(f.id)]);
-      const others = lastBuild.bodies.filter((b) => b.id !== f.id);
+      const others = S.lastBuild.bodies.filter((b) => b.id !== f.id);
       const isolated = !hiddenBodies.has(f.id) && others.every((b) => hiddenBodies.has(b.id));
       items.push(["eye", isolated ? "Show all bodies" : "Show only this body", () => isolateBody(f.id)]);
     }
@@ -4846,7 +3550,7 @@ function featureDetail(f: Feature) {
   if (f.kind === "shell") return `${fmtNum(f.thickness)} mm walls · ${f.faces.length} open face${f.faces.length > 1 ? "s" : ""}`;
   if (f.kind === "pattern") return patternSummary(f);
   if (f.kind === "revolve") {
-    const sk = doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
+    const sk = S.doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
     const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
     return `${op} · ${fmtNum(Math.abs(f.angle))}°${f.symmetric ? " symmetric" : ""} around ${sk ? axisName(sk, f.axisLine) : "?"}${bodyNote(f)}`;
   }
@@ -4865,7 +3569,7 @@ function featureDetail(f: Feature) {
   if (f.kind === "fillet")
     return `${f.mode === "fillet" ? "Radius" : "Chamfer"} ${fmtNum(f.radius)} mm · ${f.edges.length} edge${f.edges.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
-  const skName = (id: string) => doc.features.find((x) => x.id === id)?.name ?? "?";
+  const skName = (id: string) => S.doc.features.find((x) => x.id === id)?.name ?? "?";
   if (f.kind === "sweep")
     return f.helix
       ? `${op} · ${skName(f.sketchId)} coiled · ${fmtNum(f.helix.turns)} turns, ${fmtNum(Math.abs(f.helix.pitch))} mm pitch${f.helix.leftHand ? ", left hand" : ""}${bodyNote(f)}`
@@ -4892,18 +3596,18 @@ function featureIcon(f: Feature) {
 /** Steps shown at the last refresh (null before the first one: nothing pops in on load). */
 let chipsShown: Set<string> | null = null;
 
-function renderTimeline() {
+export function renderTimeline() {
   const el = $("#chips");
   el.replaceChildren();
   if (isAssembly()) return renderPartList(el);
-  if (!doc.features.length) {
+  if (!S.doc.features.length) {
     const e = document.createElement("span");
     e.className = "empty";
     e.textContent = "Your feature history appears here. Start with New sketch.";
     el.appendChild(e);
   }
-  const current = mode.kind === "sketch" ? mode.editor.sk.id : isOperation(mode) ? mode.feat.id : selectedFeature;
-  doc.features.forEach((f, i) => {
+  const current = S.mode.kind === "sketch" ? S.mode.editor.sk.id : isOperation(S.mode) ? S.mode.feat.id : S.selectedFeature;
+  S.doc.features.forEach((f, i) => {
     if (i > 0) {
       const sep = document.createElement("span");
       sep.className = "chip-sep";
@@ -4915,66 +3619,66 @@ function renderTimeline() {
     // A step that was not there at the last refresh pops in.
     if (chipsShown && !chipsShown.has(f.id)) b.classList.add("pop");
     if (f.id === current) b.classList.add("sel");
-    if (mode.kind === "pattern" && mode.feat.featureIds.includes(f.id)) b.classList.add("picked");
-    if (lastBuild?.errors[f.id]) b.classList.add("error");
-    else if (lastBuild?.warnings?.[f.id]) b.classList.add("warn");
+    if (S.mode.kind === "pattern" && S.mode.feat.featureIds.includes(f.id)) b.classList.add("picked");
+    if (S.lastBuild?.errors[f.id]) b.classList.add("error");
+    else if (S.lastBuild?.warnings?.[f.id]) b.classList.add("warn");
     b.innerHTML = icon(featureIcon(f), 20) + "<span></span>";
     b.querySelector("span")!.textContent = f.kind === "extrude" ? `${f.name} · ${fmtNum(Math.abs(f.distance))}` : f.name;
     b.onclick = () => {
-      if (mode.kind === "pattern") return togglePatternFeature(mode.feat, f);
-      if (mode.kind !== "part") return toast("Finish the current step first");
-      selectedFace = null;
+      if (S.mode.kind === "pattern") return togglePatternFeature(S.mode.feat, f);
+      if (S.mode.kind !== "part") return toast("Finish the current step first");
+      S.selectedFace = null;
       vp.highlightFace(null);
-      selectedFeature = selectedFeature === f.id ? null : f.id;
-      showParams = false;
+      S.selectedFeature = S.selectedFeature === f.id ? null : f.id;
+      S.showParams = false;
       renderAll();
     };
     el.appendChild(b);
     if (f.id === current) requestAnimationFrame(() => b.scrollIntoView({ inline: "nearest", block: "nearest" }));
   });
-  chipsShown = new Set(doc.features.map((f) => f.id));
+  chipsShown = new Set(S.doc.features.map((f) => f.id));
   for (const b of buttons(".undo-btn")) b.disabled = undoPos === 0;
   for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
 }
 
 /** An assembly's timeline: its parts, in the order they were inserted. */
 function renderPartList(el: HTMLElement) {
-  const list = doc.instances ?? [];
+  const list = S.doc.instances ?? [];
   if (!list.length) {
     const e = document.createElement("span");
     e.className = "empty";
     e.textContent = "The parts of the assembly appear here. Insert one from your projects.";
     el.appendChild(e);
   }
-  const current = isOperation(mode) ? mode.feat.id : selectedFeature;
+  const current = isOperation(S.mode) ? S.mode.feat.id : S.selectedFeature;
   for (const inst of list) {
     const b = document.createElement("button");
     b.className = "chip";
     if (chipsShown && !chipsShown.has(inst.id)) b.classList.add("pop");
-    if (mode.kind === "align") {
-      if (inst.id === alignReference(mode.ids)) b.classList.add("sel");
-      else if (mode.ids.includes(inst.id)) b.classList.add("picked");
-    } else if (mode.kind === "combine") {
-      if (inst.id === mode.target) b.classList.add("sel");
-      else if (mode.tools.includes(inst.id)) b.classList.add("picked");
+    if (S.mode.kind === "align") {
+      if (inst.id === alignReference(S.mode.ids)) b.classList.add("sel");
+      else if (S.mode.ids.includes(inst.id)) b.classList.add("picked");
+    } else if (S.mode.kind === "combine") {
+      if (inst.id === S.mode.target) b.classList.add("sel");
+      else if (S.mode.tools.includes(inst.id)) b.classList.add("picked");
     } else if (inst.id === current) b.classList.add("sel");
-    if (lastBuild?.errors[inst.id]) b.classList.add("error");
-    else if (lastBuild?.warnings?.[inst.id]) b.classList.add("warn");
+    if (S.lastBuild?.errors[inst.id]) b.classList.add("error");
+    else if (S.lastBuild?.warnings?.[inst.id]) b.classList.add("warn");
     if (hiddenBodies.has(inst.id)) b.classList.add("muted");
     b.innerHTML = icon(hiddenBodies.has(inst.id) ? "eyeOff" : "part", 20) + "<span></span>";
     b.querySelector("span")!.textContent = inst.name;
     b.onclick = () => {
-      if (mode.kind === "align") return toggleAlignPart(inst.id);
-      if (mode.kind === "combine") return toggleCombinePart(inst.id);
-      if (mode.kind !== "part") return toast("Finish the current step first");
+      if (S.mode.kind === "align") return toggleAlignPart(inst.id);
+      if (S.mode.kind === "combine") return toggleCombinePart(inst.id);
+      if (S.mode.kind !== "part") return toast("Finish the current step first");
       if (measuring) endMeasure();
-      selectedFeature = selectedFeature === inst.id ? null : inst.id;
+      S.selectedFeature = S.selectedFeature === inst.id ? null : inst.id;
       renderAll();
     };
     el.appendChild(b);
     if (inst.id === current) requestAnimationFrame(() => b.scrollIntoView({ inline: "nearest", block: "nearest" }));
   }
-  const mates = doc.mates ?? [];
+  const mates = S.doc.mates ?? [];
   if (mates.length) {
     const sep = document.createElement("span");
     sep.className = "chip-sep";
@@ -4987,13 +3691,13 @@ function renderPartList(el: HTMLElement) {
     if (chipsShown && !chipsShown.has(m.id)) b.classList.add("pop");
     if (m.id === current) b.classList.add("sel");
     if (failing.has(m.id)) b.classList.add("error");
-    else if (lastBuild?.warnings?.[m.id]) b.classList.add("warn");
+    else if (S.lastBuild?.warnings?.[m.id]) b.classList.add("warn");
     b.innerHTML = icon("mate", 20) + "<span></span>";
     b.querySelector("span")!.textContent = m.kind === "touch" || m.kind === "align" ? (m.value ? `${m.name} · ${fmtNum(m.value)}` : m.name) : m.kind === "angle" ? `${m.name} · ${fmtNum(m.value)}°` : m.name;
     b.onclick = () => {
-      if (mode.kind !== "part") return toast("Finish the current step first");
+      if (S.mode.kind !== "part") return toast("Finish the current step first");
       if (measuring) endMeasure();
-      selectedFeature = selectedFeature === m.id ? null : m.id;
+      S.selectedFeature = S.selectedFeature === m.id ? null : m.id;
       renderAll();
     };
     el.appendChild(b);
@@ -5003,43 +3707,43 @@ function renderPartList(el: HTMLElement) {
   for (const b of buttons(".redo-btn")) b.disabled = undoPos >= undoStack.length - 1;
 }
 
-function renderStatus() {
+export function renderStatus() {
   let s = kernelMessage;
-  if (mode.kind === "pickPlane")
-    s = mode.offset || mode.tiltX || mode.tiltY ? "New sketch · tap a plane or a face: the sketch lands on it moved as set" : "New sketch · tap a plane or a flat face";
-  else if (mode.kind === "sketch") {
-    const ed = mode.editor;
+  if (S.mode.kind === "pickPlane")
+    s = S.mode.offset || S.mode.tiltX || S.mode.tiltY ? "New sketch · tap a plane or a face: the sketch lands on it moved as set" : "New sketch · tap a plane or a flat face";
+  else if (S.mode.kind === "sketch") {
+    const ed = S.mode.editor;
     const tool = SKETCH_TOOLS.find((t) => t.tool === ed.tool)!.label;
     s = `${ed.sk.name} · ${tool} · ${dofText(ed.dof).toLowerCase()}`;
-  } else if (mode.kind === "extrude") s = "Extrude · drag the handle or type a value";
-  else if (mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
-  else if (mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
-  else if (mode.kind === "revolve") s = "Revolve · tap a line of the sketch to use it as the axis";
-  else if (mode.kind === "sweep") s = mode.feat.helix ? "Sweep · a coil: set its axis, pitch and turns in the panel" : "Sweep · choose the profile and the path in the panel";
-  else if (mode.kind === "loft") s = "Loft · choose the sketches, in order, in the panel";
-  else if (mode.kind === "pattern") {
-    const f = mode.feat;
+  } else if (S.mode.kind === "extrude") s = "Extrude · drag the handle or type a value";
+  else if (S.mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
+  else if (S.mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
+  else if (S.mode.kind === "revolve") s = "Revolve · tap a line of the sketch to use it as the axis";
+  else if (S.mode.kind === "sweep") s = S.mode.feat.helix ? "Sweep · a coil: set its axis, pitch and turns in the panel" : "Sweep · choose the profile and the path in the panel";
+  else if (S.mode.kind === "loft") s = "Loft · choose the sketches, in order, in the panel";
+  else if (S.mode.kind === "pattern") {
+    const f = S.mode.feat;
     s = f.featureIds.length ? `${f.name} · tap timeline steps to add or remove them` : `${f.name} · the whole solid, or tap the steps to repeat in the timeline`;
-  } else if (mode.kind === "hole") {
-    const f = mode.feat;
+  } else if (S.mode.kind === "hole") {
+    const f = S.mode.feat;
     s = f.sketchId ? `Hole · ${f.size} at the sketch points` : `Hole · ${f.size} × ${f.points?.length ?? 0} · tap to add, drag a hole to move it`;
-  } else if (mode.kind === "fillet") {
-    const n = mode.feat.edges.length;
-    s = `${mode.feat.mode === "fillet" ? "Fillet" : "Chamfer"} · ${n ? `${n} edge${n > 1 ? "s" : ""} chosen` : "tap the edges"}, type the size`;
+  } else if (S.mode.kind === "fillet") {
+    const n = S.mode.feat.edges.length;
+    s = `${S.mode.feat.mode === "fillet" ? "Fillet" : "Chamfer"} · ${n ? `${n} edge${n > 1 ? "s" : ""} chosen` : "tap the edges"}, type the size`;
   }
-  else if (pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[pendingFaceTool]} · tap a flat face`;
-  else if (mode.kind === "place") s = `${mode.feat.name} · choose a value and type it`;
-  else if (mode.kind === "align") s = mode.ids.length < 2 ? "Align · tap the parts to line up" : "Align · choose an axis and where to line them up";
-  else if (mode.kind === "combine")
-    s = mode.op === "keep" ? "Copy as part · tap the parts to copy" : !mode.target ? "Combine · tap the part to make the new part from" : "Combine · tap the parts to join or cut it with";
-  else if (mode.kind === "mate") s = mode.picks.length ? "Mate · now the face or hole on the other part" : "Mate · tap a flat face, a hole or a round edge of a part";
-  else if (mode.kind === "mateEdit") s = `${mode.feat.name} · facing, flush or at an angle; type the gap, or limits`;
+  else if (S.pendingFaceTool) s = `${{ shell: "Shell", pushpull: "Press Pull", hole: "Hole" }[S.pendingFaceTool]} · tap a flat face`;
+  else if (S.mode.kind === "place") s = `${S.mode.feat.name} · choose a value and type it`;
+  else if (S.mode.kind === "align") s = S.mode.ids.length < 2 ? "Align · tap the parts to line up" : "Align · choose an axis and where to line them up";
+  else if (S.mode.kind === "combine")
+    s = S.mode.op === "keep" ? "Copy as part · tap the parts to copy" : !S.mode.target ? "Combine · tap the part to make the new part from" : "Combine · tap the parts to join or cut it with";
+  else if (S.mode.kind === "mate") s = S.mode.picks.length ? "Mate · now the face or hole on the other part" : "Mate · tap a flat face, a hole or a round edge of a part";
+  else if (S.mode.kind === "mateEdit") s = `${S.mode.feat.name} · facing, flush or at an angle; type the gap, or limits`;
   else if (isAssembly() && clashes) s = clashes.running ? "Checking for overlaps…" : "Interference · overlaps in red";
   else if (isAssembly() && explodeTarget) s = "Exploded view · tap it again to put the parts back";
-  else if (isAssembly() && !s && !measuring && doc.instances?.length)
-    s = instanceOf(selectedFeature)?.fixed
+  else if (isAssembly() && !s && !measuring && S.doc.instances?.length)
+    s = instanceOf(S.selectedFeature)?.fixed
       ? "This part is fixed: tap Let it move to place it"
-      : instanceOf(selectedFeature)
+      : instanceOf(S.selectedFeature)
         ? "Drag an arrow to slide the part, a ring to turn it"
         : "Tap a part to place it";
   if (buildSlow) s = s ? `Building… · ${s}` : "Building the model…";
@@ -5110,7 +3814,7 @@ function buildDisplayMenu() {
       vp.setDisplayMode(m);
       prefs.display = m;
       savePrefs();
-      if (mode.kind === "sketch") vp.setModelOpacity(0.45);
+      if (S.mode.kind === "sketch") vp.setModelOpacity(0.45);
       renderDisplayMenu();
     };
     modes.appendChild(b);
@@ -5157,7 +3861,7 @@ function buildDisplayMenu() {
 }
 
 function syncBodyList(el: HTMLElement) {
-  const list = lastBuild?.bodies ?? [];
+  const list = S.lastBuild?.bodies ?? [];
   el.replaceChildren();
   if (list.length < 2) return;
   const t = document.createElement("div");
@@ -5219,7 +3923,7 @@ function renderViewButtons() {
   };
   add("fit", "Fit (F)", () => vp.fit());
   // Sketches are always shown without perspective, so the toggle is only offered outside them.
-  if (mode.kind !== "sketch")
+  if (S.mode.kind !== "sketch")
     add("perspective", vp.perspective ? "Perspective (tap for orthographic)" : "Orthographic (tap for perspective)", () => {
       vp.perspective = prefs.perspective = !vp.perspective;
       savePrefs();
@@ -5233,8 +3937,8 @@ function renderViewButtons() {
     vp.setGridVisible(!vp.isGridVisible);
     renderViewButtons();
   }, vp.isGridVisible);
-  if (mode.kind === "sketch") {
-    const ed = mode.editor;
+  if (S.mode.kind === "sketch") {
+    const ed = S.mode.editor;
     const plane = ed.sk.plane;
     add("lookAt", "Look at sketch", () => vp.viewNormalTo(plane));
     // Constraint symbols: all, those of the selection, or none (a crowded sketch stays readable).
@@ -5251,22 +3955,22 @@ function renderViewButtons() {
 }
 
 /** Sketches not consumed by a feature stay visible in the part view. */
-function renderPartOverlays() {
-  if (mode.kind === "sketch") return;
-  const used = new Set(doc.features.flatMap(usedSketchIds));
-  const sel = doc.features.find((f) => f.id === selectedFeature);
+export function renderPartOverlays() {
+  if (S.mode.kind === "sketch") return;
+  const used = new Set(S.doc.features.flatMap(usedSketchIds));
+  const sel = S.doc.features.find((f) => f.id === S.selectedFeature);
   const highlight = new Set(sel?.kind === "sketch" ? [sel.id] : sel ? usedSketchIds(sel) : []);
   const batch: LineBatch = { positions: [], colors: [], width: 2, overlay: true };
   const hi = rgb("--sk-selected");
   const normal = rgb("--sk-line");
-  for (const f of doc.features) {
+  for (const f of S.doc.features) {
     if (f.kind !== "sketch") continue;
     if (used.has(f.id) && !highlight.has(f.id)) continue;
     appendSketchLines(batch, f, highlight.has(f.id) ? hi : normal);
   }
-  if (mode.kind === "revolve") {
-    const f = mode.feat;
-    const sk = doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
+  if (S.mode.kind === "revolve") {
+    const f = S.mode.feat;
+    const sk = S.doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch");
     if (sk) {
       const muted = rgb("--sk-construction");
       for (const e of sk.entities) {
@@ -5291,9 +3995,9 @@ function renderPartOverlays() {
   }
   const marks = { positions: [] as number[], colors: [] as number[], size: 14 };
   let labels: { el: HTMLElement; at: THREE.Vector3; dx?: number; dy?: number }[] = [];
-  if (mode.kind === "hole") {
-    const f = mode.feat;
-    const sk = f.sketchId ? doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch") : undefined;
+  if (S.mode.kind === "hole") {
+    const f = S.mode.feat;
+    const sk = f.sketchId ? S.doc.features.find((x): x is SketchFeature => x.id === f.sketchId && x.kind === "sketch") : undefined;
     const acc = rgb("--accent");
     const sel = rgb("--sk-selected");
     (sk ? sketchHolePoints(sk) : f.points ?? []).forEach((q, i) => {
@@ -5302,7 +4006,7 @@ function renderPartOverlays() {
     });
     labels = holeDimLabels(f, batch);
   }
-  if (measuring && mode.kind === "part") {
+  if (measuring && S.mode.kind === "part") {
     const acc = rgb("--accent");
     for (const k of measuring.picks)
       if (k.kind === "point") {
@@ -5325,7 +4029,7 @@ function renderPartOverlays() {
   vp.setLabels(labels);
 }
 
-function rgb(name: string) {
+export function rgb(name: string) {
   const c = new THREE.Color(cssVar(name, "#888888"));
   return [c.r, c.g, c.b];
 }
@@ -5362,11 +4066,11 @@ function appendSketchLines(b: LineBatch, sk: SketchFeature, col: number[]) {
 
 const partTool: PointerTool = {
   down(p) {
-    if (mode.kind === "hole") holeDown(mode.feat, p);
+    if (S.mode.kind === "hole") holeDown(S.mode.feat, p);
     fingerDown(p);
   },
   move(p) {
-    if (mode.kind === "hole") holeMove(mode.feat, p);
+    if (S.mode.kind === "hole") holeMove(S.mode.feat, p);
     fingerMove(p);
   },
   up(p) {
@@ -5375,149 +4079,55 @@ const partTool: PointerTool = {
       return endDrag(true);
     }
     fingerDrag = null;
-    if (mode.kind === "pickPlane") return pickPlaneAt(p);
-    if (mode.kind === "mate") return void mateTap(p);
+    if (S.mode.kind === "pickPlane") return pickPlaneAt(p);
+    if (S.mode.kind === "mate") return void mateTap(p);
     const face = vp.pickFace(p.x, p.y);
-    if (mode.kind === "align" || mode.kind === "combine") {
-      const body = face == null ? null : lastBuild?.bodies?.find((b) => b.faceIds.includes(face));
-      if (body) (mode.kind === "align" ? toggleAlignPart : toggleCombinePart)(body.id);
+    if (S.mode.kind === "align" || S.mode.kind === "combine") {
+      const body = face == null ? null : S.lastBuild?.bodies?.find((b) => b.faceIds.includes(face));
+      if (body) (S.mode.kind === "align" ? toggleAlignPart : toggleCombinePart)(body.id);
       return;
     }
-    if (mode.kind === "shell") {
-      if (face != null) toggleShellFace(mode.feat, face);
+    if (S.mode.kind === "shell") {
+      if (face != null) toggleShellFace(S.mode.feat, face);
       return;
     }
-    if (mode.kind === "fillet") return toggleFilletEdge(mode.feat, p);
-    if (mode.kind === "part" && measuring) return measureTap(p);
-    if (mode.kind === "part" && isAssembly()) {
-      const id = face == null ? null : (lastBuild?.bodies?.find((b) => b.faceIds.includes(face))?.id ?? null);
-      selectedFeature = id;
+    if (S.mode.kind === "fillet") return toggleFilletEdge(S.mode.feat, p);
+    if (S.mode.kind === "part" && measuring) return measureTap(p);
+    if (S.mode.kind === "part" && isAssembly()) {
+      const id = face == null ? null : (S.lastBuild?.bodies?.find((b) => b.faceIds.includes(face))?.id ?? null);
+      S.selectedFeature = id;
       return renderAll();
     }
-    if (mode.kind === "hole") return holeUp(mode.feat, p);
-    if (mode.kind === "revolve") {
-      const sk = doc.features.find((x): x is SketchFeature => x.id === (mode as { feat: RevolveFeature }).feat.sketchId && x.kind === "sketch");
+    if (S.mode.kind === "hole") return holeUp(S.mode.feat, p);
+    if (S.mode.kind === "revolve") {
+      const sk = S.doc.features.find((x): x is SketchFeature => x.id === (S.mode as { feat: RevolveFeature }).feat.sketchId && x.kind === "sketch");
       const line = sk ? pickSketchLine(sk, p) : null;
       if (line) revolveAxisPicker?.(line);
       return;
     }
-    if (mode.kind !== "part") return;
+    if (S.mode.kind !== "part") return;
     vp.highlightFace(face);
-    selectedFeature = null;
-    if (face != null) showParams = false;
-    const pf = face == null ? undefined : lastBuild?.planarFaces.find((f) => f.faceId === face);
+    S.selectedFeature = null;
+    if (face != null) S.showParams = false;
+    const pf = face == null ? undefined : S.lastBuild?.planarFaces.find((f) => f.faceId === face);
     const hit = face == null ? null : vp.pickPoint(p.x, p.y)?.point ?? null;
-    selectedFace = face == null ? null : { faceId: face, plane: pf?.plane ?? null, center: pf?.center ?? null, hit };
-    if (pendingFaceTool && face != null) {
+    S.selectedFace = face == null ? null : { faceId: face, plane: pf?.plane ?? null, center: pf?.center ?? null, hit };
+    if (S.pendingFaceTool && face != null) {
       if (!pf) return toast("Only flat faces work here");
-      return faceTool(pendingFaceTool);
+      return faceTool(S.pendingFaceTool);
     }
     renderAll();
   },
   cancel() {
-    holeDrag = null;
+    dropHoleDrag();
     if (fingerDrag?.moved) endDrag(false);
     fingerDrag = null;
   },
   hover(p) {
-    if (mode.kind !== "pickPlane" || !p) return;
+    if (S.mode.kind !== "pickPlane" || !p) return;
     vp.highlightFace(vp.pickFace(p.x, p.y));
   },
 };
-
-// ---------- Measure ----------
-
-/** Measuring: what was tapped (one or two things) and what the worker found. */
-let measuring: { picks: MeasurePick[]; result: MeasureResult | null } | null = null;
-let measureReq = 0;
-
-function toggleMeasure() {
-  if (measuring) return endMeasure();
-  showParams = false;
-  pendingFaceTool = null;
-  selectedFeature = null;
-  selectedFace = null;
-  vp.highlightFace(null);
-  measuring = { picks: [], result: null };
-  renderAll();
-}
-
-function endMeasure() {
-  measuring = null;
-  vp.highlightFaces([]);
-  vp.highlightEdges([]);
-  renderAll();
-}
-
-/** What is under the finger: a corner (the end of an edge, close on screen), else an edge, else a face. */
-function measurePickAt(p: Ptr): MeasurePick | null {
-  const edge = vp.pickEdge(p.x, p.y, 14);
-  if (edge != null) {
-    const line = vp.edgePolyline(edge);
-    const ends = [line[0], line[line.length - 1]];
-    const closed = Math.hypot(ends[0][0] - ends[1][0], ends[0][1] - ends[1][1], ends[0][2] - ends[1][2]) < 1e-6;
-    if (!closed)
-      for (const end of ends) {
-        const [sx, sy] = vp.toScreen(new THREE.Vector3(...end));
-        if (Math.hypot(sx - p.x, sy - p.y) < 18) return { kind: "point", p: end };
-      }
-    return { kind: "edge", id: vp.edgeId(edge) };
-  }
-  const face = vp.pickFace(p.x, p.y);
-  return face == null ? null : { kind: "face", id: face };
-}
-
-/** A third tap starts again; a tap on nothing clears. */
-function measureTap(p: Ptr) {
-  if (!measuring) return;
-  const pick = measurePickAt(p);
-  measuring.picks = !pick ? [] : measuring.picks.length >= 2 ? [pick] : [...measuring.picks, pick];
-  measuring.result = null;
-  showMeasurePicks();
-  if (measuring.picks.length) {
-    measureReq = ++reqCounter;
-    worker.postMessage({ type: "measure", reqId: measureReq, doc, picks: measuring.picks } satisfies WorkerRequest);
-  }
-  renderPanel();
-  renderPartOverlays();
-}
-
-function showMeasurePicks() {
-  const picks = measuring?.picks ?? [];
-  vp.highlightFaces(picks.flatMap((k) => (k.kind === "face" ? [k.id] : [])));
-  vp.highlightEdges(picks.flatMap((k) => (k.kind === "edge" ? [vp.edgeIndexOf(k.id) ?? -1] : [])));
-}
-
-function measureValue(r: MeasureRow) {
-  return `${fmtNum(r.value)}${r.unit === "°" ? "°" : " " + r.unit}`;
-}
-
-function renderMeasurePanel(el: HTMLElement) {
-  if (!measuring) return;
-  const n = measuring.picks.length;
-  const rows = measuring.result?.rows ?? [];
-  const box = document.createElement("div");
-  box.className = "p-measure";
-  for (const r of rows) {
-    const row = document.createElement("div");
-    row.innerHTML = "<span></span><b></b>";
-    row.querySelector("span")!.textContent = r.label;
-    row.querySelector("b")!.textContent = measureValue(r);
-    box.appendChild(row);
-  }
-  if (rows.length) el.appendChild(box);
-  const hint = document.createElement("p");
-  hint.className = "p-hint";
-  hint.textContent =
-    measuring.result?.error ??
-    (n === 0
-      ? "Tap a face, an edge or a corner."
-      : n === 1
-        ? "Tap a second one to measure between them."
-        : "Tap again to start a new measure.");
-  if (n && !measuring.result) hint.textContent = "Measuring…";
-  el.appendChild(hint);
-}
 
 // ---------- Menu, files ----------
 
@@ -5539,10 +4149,10 @@ function pickFile(accept: string): Promise<File | null> {
  * the drawing is shown as it will land while these change.
  */
 async function importDrawing() {
-  if (mode.kind !== "sketch") return;
-  const ed = mode.editor;
+  if (S.mode.kind !== "sketch") return;
+  const ed = S.mode.editor;
   const file = await pickFile(".dxf,.svg,image/vnd.dxf,application/dxf,image/svg+xml");
-  if (!file || mode.kind !== "sketch" || mode.editor !== ed) return;
+  if (!file || S.mode.kind !== "sketch" || S.mode.editor !== ed) return;
   const text = await file.text();
   // By extension, else by content (an SVG is XML with an <svg> element).
   const isSvg = /\.svg$/i.test(file.name) || (!/\.dxf$/i.test(file.name) && /<svg[\s>]/i.test(text));
@@ -5636,8 +4246,8 @@ async function importDrawing() {
  * and stay selected so they can be slid into place. Typed words, height and font preview live.
  */
 async function insertText() {
-  if (mode.kind !== "sketch") return;
-  const ed = mode.editor;
+  if (S.mode.kind !== "sketch") return;
+  const ed = S.mode.editor;
   const opt = { text: "Text", height: 10, font: "bold" as FontId };
   let font: Font;
   try {
@@ -5645,7 +4255,7 @@ async function insertText() {
   } catch {
     return toast("The font could not be loaded");
   }
-  if (mode.kind !== "sketch" || mode.editor !== ed) return;
+  if (S.mode.kind !== "sketch" || S.mode.editor !== ed) return;
   const at = vp.screenToPlane(vp.width / 2, vp.height / 2, ed.sk.plane) ?? [0, 0];
   const before = { entities: structuredClone(ed.sk.entities), constraints: structuredClone(ed.sk.constraints) };
   let added: string[] = [];
@@ -5791,18 +4401,18 @@ async function importStep() {
       partNames[p.meta.id] = p.meta.name;
     }
     sendParts();
-    const first = !doc.instances?.length;
-    doc.instances = [
-      ...(doc.instances ?? []),
+    const first = !S.doc.instances?.length;
+    S.doc.instances = [
+      ...(S.doc.instances ?? []),
       ...made.map((p, i): PartInstance => ({ id: uid(), project: p.meta.id, name: p.meta.name, at: [0, 0, 0], rot: [0, 0, 0], fixed: (first && i === 0) || undefined })),
     ];
     fitNext = true;
     toast(`${made.length} parts imported, each in a project of its own`);
     return commit();
   }
-  doc.files = { ...doc.files, [fileId]: text };
+  S.doc.files = { ...S.doc.files, [fileId]: text };
   // An imported part usually stays apart: it starts a body of its own.
-  doc.features.push({ id: uid(), kind: "import", name, fileId, op: "add", body: "new" });
+  S.doc.features.push({ id: uid(), kind: "import", name, fileId, op: "add", body: "new" });
   fitNext = true;
   commit();
   renderAll();
@@ -5814,7 +4424,7 @@ function setTheme(theme: Prefs["theme"]) {
   savePrefs();
   applyPrefs();
   vp.applyThemeColors();
-  if (mode.kind === "sketch") mode.editor.render();
+  if (S.mode.kind === "sketch") S.mode.editor.render();
   renderAll();
 }
 
@@ -5871,123 +4481,6 @@ function setupMenu() {
   });
 }
 
-// ---------- Movable side panel ----------
-
-/** Phones show the panel as a bottom sheet: no free placement there. */
-const narrow = window.matchMedia("(max-width: 760px)");
-
-function placePanel() {
-  const panel = $("#panel");
-  const pos = prefs.panelPos;
-  if (!pos || narrow.matches) {
-    panel.style.left = panel.style.top = panel.style.right = panel.style.transform = "";
-    return;
-  }
-  const w = panel.offsetWidth || 272;
-  const h = panel.offsetHeight || 200;
-  // Stay clear of the timeline at the bottom when there is room for it.
-  const bottom = window.innerHeight - ($("#timeline").offsetHeight + 24);
-  const x = Math.min(Math.max(pos.x, 8), window.innerWidth - w - 8);
-  const y = Math.max(Math.min(pos.y, (h <= bottom - 8 ? bottom : window.innerHeight - 8) - h), 8);
-  Object.assign(panel.style, { left: `${x}px`, top: `${y}px`, right: "auto", transform: "none" });
-}
-
-function setupPanelDrag() {
-  const panel = $("#panel");
-  const grip = panel.querySelector<HTMLElement>(".panel-grip")!;
-  // A tap on the bar folds the panel to its title, or unfolds it; dragging the bar moves it.
-  panel.classList.toggle("folded", prefs.panelFolded);
-  let drag: { id: number; dx: number; dy: number; x: number; y: number; moved: boolean } | null = null;
-  grip.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    try {
-      grip.setPointerCapture(e.pointerId);
-    } catch {
-      // Synthetic pointer.
-    }
-    const r = panel.getBoundingClientRect();
-    drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top, x: e.clientX, y: e.clientY, moved: false };
-  });
-  grip.addEventListener("pointermove", (e) => {
-    if (!drag || drag.id !== e.pointerId) return;
-    if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 8) return;
-    // Phones show the panel as a bottom sheet: it folds, but stays in place.
-    if (narrow.matches) return;
-    drag.moved = true;
-    panel.classList.add("dragging");
-    prefs.panelPos = { x: e.clientX - drag.dx, y: e.clientY - drag.dy };
-    placePanel();
-  });
-  const end = (e: PointerEvent) => {
-    if (!drag) return;
-    const tap = !drag.moved && e.type === "pointerup";
-    drag = null;
-    panel.classList.remove("dragging");
-    if (tap) {
-      prefs.panelFolded = !prefs.panelFolded;
-      panel.classList.toggle("folded", prefs.panelFolded);
-      if (prefs.panelFolded && !prefs.panelFoldTold) {
-        prefs.panelFoldTold = true;
-        toast("Panel folded: tap the bar to unfold it");
-      }
-    }
-    savePrefs();
-  };
-  grip.addEventListener("pointerup", end);
-  grip.addEventListener("pointercancel", end);
-  // While a finger or the pen is held on the view (a handle dragged, a face pulled, a part moved,
-  // a line drawn, a box swept, the view turned), the panel fades and lets the press through, so
-  // what lies under it shows. Caught on the way down: handles stop the press from bubbling.
-  const view = $("#view");
-  let held: { id: number; x: number; y: number; timer: number } | null = null;
-  const seeThrough = (on: boolean) => panel.classList.toggle("see-through", on);
-  view.addEventListener(
-    "pointerdown",
-    (e) => {
-      if ((e.target as HTMLElement).closest("button") || held) return;
-      held = { id: e.pointerId, x: e.clientX, y: e.clientY, timer: window.setTimeout(() => seeThrough(true), 250) };
-    },
-    true,
-  );
-  // Moves and the release are caught on the way down too, for the same reason.
-  window.addEventListener(
-    "pointermove",
-    (e) => {
-      if (held?.id === e.pointerId && Math.hypot(e.clientX - held.x, e.clientY - held.y) > 6) seeThrough(true);
-    },
-    true,
-  );
-  const release = (e: PointerEvent) => {
-    if (held?.id !== e.pointerId) return;
-    clearTimeout(held.timer);
-    held = null;
-    seeThrough(false);
-  };
-  window.addEventListener("pointerup", release, true);
-  window.addEventListener("pointercancel", release, true);
-  // Double tap on the bar puts the panel back in its default place.
-  grip.addEventListener("dblclick", () => {
-    prefs.panelPos = null;
-    savePrefs();
-    placePanel();
-  });
-  window.addEventListener("resize", placePanel);
-  narrow.addEventListener("change", placePanel);
-  // The panel changes height with its content (keypad, constraints): keep it on screen.
-  new MutationObserver(placePanel).observe(panel, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
-}
-
-// ---------- Toasts ----------
-
-let toastTimer = 0;
-function toast(msg: string) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => t.classList.remove("show"), 2600);
-}
-
 // ---------- Keyboard (optional) ----------
 
 window.addEventListener("keydown", (e) => {
@@ -6004,8 +4497,8 @@ window.addEventListener("keydown", (e) => {
   }
   if (ctrl || e.altKey) return;
   if (k === "Escape") return void escape();
-  if (mode.kind === "sketch") {
-    const ed = mode.editor;
+  if (S.mode.kind === "sketch") {
+    const ed = S.mode.editor;
     if (k === "Enter") {
       if (!ed.escape()) exitSketch();
       return renderAll();
@@ -6019,10 +4512,10 @@ window.addEventListener("keydown", (e) => {
     else return;
     return renderAll();
   }
-  if (mode.kind === "part" && isAssembly()) {
+  if (S.mode.kind === "part" && isAssembly()) {
     const key = k.toLowerCase();
-    const inst = instanceOf(selectedFeature);
-    const mate = mateOf(selectedFeature);
+    const inst = instanceOf(S.selectedFeature);
+    const mate = mateOf(S.selectedFeature);
     if (key === "i") void showPartPicker();
     else if (key === "m") startMate();
     else if (key === "a") startAlign();
@@ -6034,19 +4527,19 @@ window.addEventListener("keydown", (e) => {
     else if (key === "delete" && mate) deleteMate(mate);
     return;
   }
-  if (mode.kind === "align") {
+  if (S.mode.kind === "align") {
     if (k.toLowerCase() === "a") endAlign();
     return;
   }
-  if (mode.kind === "combine") {
+  if (S.mode.kind === "combine") {
     if (k.toLowerCase() === "b") endCombine();
     return;
   }
-  if (mode.kind === "mate") {
+  if (S.mode.kind === "mate") {
     if (k.toLowerCase() === "m") startMate();
     return;
   }
-  if (mode.kind === "part") {
+  if (S.mode.kind === "part") {
     const key = k.toLowerCase();
     if (key === "s") startNewSketch();
     else if (key === "e") void extrude();
@@ -6061,8 +4554,8 @@ window.addEventListener("keydown", (e) => {
     else if (key === "v") void revolveTool();
     else if (key === "k") faceTool("shell");
     else if (key === "f") vp.fit();
-    else if (key === "delete" && selectedFeature) {
-      const f = doc.features.find((x) => x.id === selectedFeature);
+    else if (key === "delete" && S.selectedFeature) {
+      const f = S.doc.features.find((x) => x.id === S.selectedFeature);
       if (f) deleteFeature(f);
     }
   }
@@ -6078,9 +4571,9 @@ window.addEventListener("popstate", () => {
 // ---------- Boot ----------
 
 initGallery({
-  doc: () => doc,
-  project: () => project,
-  setProject: (p) => (project = p),
+  doc: () => S.doc,
+  project: () => S.project,
+  setProject: (p) => (S.project = p),
   cameFrom: () => cameFrom,
   setCameFrom: (v) => (cameFrom = v),
   shared: () => shared,
@@ -6155,7 +4648,7 @@ async function boot() {
   solver = await Solver.create(planegcsWasm);
   solverReady = true;
   // What opened before the solver was there catches up with the shared parameters now.
-  if (catchUpShared(doc)) {
+  if (catchUpShared(S.doc)) {
     resetHistory();
     save();
     rebuild();
@@ -6166,8 +4659,8 @@ async function boot() {
   // A slow kernel (first visit, slow tablet) does not keep the app hidden: sketching works without it.
   setTimeout(hideSplash, 5000);
   new InputRouter(vp, $("#view"), {
-    is2D: () => mode.kind === "sketch",
-    tool: () => (mode.kind === "sketch" ? mode.editor : partTool),
+    is2D: () => S.mode.kind === "sketch",
+    tool: () => (S.mode.kind === "sketch" ? S.mode.editor : partTool),
     onUndo: undo,
     onRedo: redo,
   });
