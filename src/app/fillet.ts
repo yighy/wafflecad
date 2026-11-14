@@ -1,5 +1,8 @@
 // Fillet and chamfer on edges of the solid.
-import { NEED_SOLID, commit, hasSolid, nextName, paramScope, rebuild, renderAll, renderStatus, renderTimeline, vp } from "../main";
+import { commit, nextName, rebuild, renderAll, vp } from "../main";
+import { renderStatus } from "./status";
+import { renderTimeline } from "./timeline";
+import { NEED_SOLID, hasSolid, paramScope } from "./parameters";
 import { S } from "./state";
 import { uid } from "../sketch/model";
 import { type FaceRef, type FilletFeature, type ShellFeature, type Vec3 } from "../types";

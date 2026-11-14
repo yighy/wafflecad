@@ -1,5 +1,8 @@
 // Mirror and patterns: earlier steps, or the whole solid, repeated.
-import { NEED_SOLID, commit, hasSolid, nextName, rebuild, renderAll, renderStatus, renderTimeline, vp } from "../main";
+import { commit, nextName, rebuild, renderAll, vp } from "../main";
+import { renderStatus } from "./status";
+import { renderTimeline } from "./timeline";
+import { NEED_SOLID, hasSolid } from "./parameters";
 import { S } from "./state";
 import { fmtNum } from "./util";
 import { uid } from "../sketch/model";

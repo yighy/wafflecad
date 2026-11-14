@@ -1,6 +1,9 @@
 // Small helpers with no state of their own, shared across the app.
 import type { CadDocument } from "../types";
 
+/** The element a selector names (the app's own, always there). */
+export const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
+
 export const emptyDoc = (): CadDocument => ({ format: "waffle", version: 1, features: [] });
 
 export function asDocument(d: unknown): CadDocument | null {

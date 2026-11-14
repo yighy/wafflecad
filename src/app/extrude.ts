@@ -1,5 +1,9 @@
 // Extrude: a sketch's regions pushed into a solid, with a handle to drag the distance.
-import { PLANE_NAMES, bodySegment, commit, exitSketch, nextName, paramScope, pickSketchForExtrude, rebuild, renderAll, renderTimeline, vp } from "../main";
+import { PLANE_NAMES, commit, nextName, rebuild, renderAll, vp } from "../main";
+import { exitSketch } from "./modes";
+import { renderTimeline } from "./timeline";
+import { bodySegment } from "./bodies";
+import { paramScope, pickSketchForExtrude } from "./parameters";
 import { S, isOperation } from "./state";
 import { uid } from "../sketch/model";
 import { type ExtrudeFeature, type ExtrudeOp, type SketchFeature } from "../types";

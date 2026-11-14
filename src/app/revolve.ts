@@ -1,5 +1,9 @@
 // Revolve: a sketch turned around one of its lines.
-import { bodySegment, commit, exitSketch, nextName, paramScope, pickSketchForExtrude, rebuild, renderAll, renderPartOverlays, vp } from "../main";
+import { commit, nextName, rebuild, renderAll, vp } from "../main";
+import { exitSketch } from "./modes";
+import { bodySegment } from "./bodies";
+import { renderPartOverlays } from "./display";
+import { paramScope, pickSketchForExtrude } from "./parameters";
 import { S, isOperation } from "./state";
 import { uid } from "../sketch/model";
 import { type ExtrudeOp, type RevolveFeature, type SketchFeature } from "../types";

@@ -1,6 +1,13 @@
 // Sweep (along a path or a helix) and Loft (through several sketches).
 import * as THREE from "three";
-import { bodySegment, commit, exitSketch, nextName, paramScope, pickSketchForExtrude, rebuild, renderAll, renderPanel, renderPartOverlays, renderTimeline, toggleBarMenu, vp } from "../main";
+import { commit, nextName, rebuild, renderAll, vp } from "../main";
+import { exitSketch } from "./modes";
+import { renderPanel } from "./sidePanel";
+import { renderTimeline } from "./timeline";
+import { toggleBarMenu } from "./workspace";
+import { bodySegment } from "./bodies";
+import { renderPartOverlays } from "./display";
+import { paramScope, pickSketchForExtrude } from "./parameters";
 import { endMeasure, measuring } from "./measure";
 import { S, isOperation, type Mode, usedSketchIds } from "./state";
 import { fmtNum } from "./util";

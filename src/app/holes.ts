@@ -1,6 +1,9 @@
 // Holes: metric screw holes placed on a face or at a sketch's points.
 import * as THREE from "three";
-import { commit, nextName, paramScope, rebuild, renderAll, renderPartOverlays, renderStatus, rgb, vp } from "../main";
+import { commit, nextName, rebuild, renderAll, vp } from "../main";
+import { renderStatus } from "./status";
+import { renderPartOverlays, rgb } from "./display";
+import { paramScope } from "./parameters";
 import { faceTool } from "./faceTools";
 import { S } from "./state";
 import { fmtNum } from "./util";

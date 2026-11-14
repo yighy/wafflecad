@@ -1,6 +1,8 @@
 // Press Pull and Shell: tools that work on a face of the solid.
 import * as THREE from "three";
-import { NEED_SOLID, commit, hasSolid, nextName, paramScope, rebuild, renderAll, renderTimeline, vp } from "../main";
+import { commit, nextName, rebuild, renderAll, vp } from "../main";
+import { renderTimeline } from "./timeline";
+import { NEED_SOLID, hasSolid, paramScope } from "./parameters";
 import { holeTool } from "./holes";
 import { S } from "./state";
 import { uid } from "../sketch/model";
