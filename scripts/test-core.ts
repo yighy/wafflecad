@@ -187,7 +187,13 @@ check("moved face found again, with a warning", !pp.errors.pp && !!pp.warnings.p
 pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: [10, 5, 5], normal: [0.6, 0, 0.8] }, distance: 1 }));
 check("missing face reported", !!pp.errors.pp, JSON.stringify(pp.errors));
 pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: [10, 5, 80], normal: [0, 0, 1] }, distance: 1 }));
-check("face too far away reported", !!pp.errors.pp, JSON.stringify(pp.errors));
+check("face moved far along its normal found again", !pp.errors.pp && !!pp.warnings.pp && near(pp.shape!.boundingBox.bounds[1][2], 6), JSON.stringify([pp.errors, pp.warnings]));
+pp = buildShape(block({ id: "pp", kind: "pushpull", name: "PP", face: { center: [100, 80, 5], normal: [0, 0, 1] }, distance: 1 }));
+check("face too far away sideways reported", !!pp.errors.pp, JSON.stringify(pp.errors));
+// A sketch drawn on the top face stays on it when the block grows a lot (5 → 40).
+const tallSk = { ...newSketch("T", { origin: [0, 0, 5], xDir: [1, 0, 0], normal: [0, 0, 1], label: "" }), face: { center: [10, 5, 5] as [number, number, number], normal: [0, 0, 1] as [number, number, number] } };
+const tall = buildShape({ format: "waffle", version: 1, features: [blockSk, { id: "eb", kind: "extrude", name: "EB", sketchId: blockSk.id, distance: 40, symmetric: false, op: "add" }, tallSk] });
+check("face sketch follows a much taller block", !tall.warnings[tallSk.id] && near(tall.movedSketches?.[tallSk.id]?.plane.origin[2] ?? 0, 40), JSON.stringify([tall.warnings, tall.movedSketches]));
 const sh = buildShape(block({ id: "sh", kind: "shell", name: "SH", faces: [topRef], thickness: 1 }));
 check("shell open top, 1 mm walls", !sh.errors.sh && near(measureVolume(sh.shape!), 1000 - 18 * 8 * 4, 1e-3), `${JSON.stringify(sh.errors)} vol=${sh.shape && measureVolume(sh.shape)}`);
 check("shell keeps outer size", near(sh.shape!.boundingBox.bounds[1][0], 20) && near(sh.shape!.boundingBox.bounds[1][2], 5));

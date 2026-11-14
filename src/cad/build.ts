@@ -197,6 +197,23 @@ export function findFace(shape: Shape3D, ref: FaceRef): Face {
     const n = f.normalAt(ref.center);
     if (dot([n.x, n.y, n.z], ref.normal) > 0.999) return f;
   }
+  // Moved along its normal (a taller block, a longer extrusion), however far: the face facing the
+  // same way that the point, slid along that normal, lands in. The nearest one if several do.
+  let along: { face: Face; d: number } | null = null;
+  for (const f of shape.faces) {
+    if (f.geomType !== "PLANE") continue;
+    const n = f.normalAt();
+    if (dot([n.x, n.y, n.z], ref.normal) < 0.999) continue;
+    const c = f.center;
+    const d = dot([c.x - ref.center[0], c.y - ref.center[1], c.z - ref.center[2]], ref.normal);
+    if (along && Math.abs(d) >= Math.abs(along.d)) continue;
+    const p = add(ref.center, scale(ref.normal, d));
+    if (new FaceFinder().containsPoint(p).find(f).length) along = { face: f, d };
+  }
+  if (along) {
+    noteMoved?.();
+    return along.face;
+  }
   const at = makeVertex(ref.center);
   let best: { face: Face; d: number } | null = null;
   for (const f of shape.faces) {
