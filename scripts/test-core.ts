@@ -9,7 +9,7 @@ import { parseDxf } from "../src/sketch/dxf";
 import { parseSvg } from "../src/sketch/svg";
 import { insertShapes } from "../src/sketch/importShapes";
 import { atDistance, edgesInPlane, faceFrame, holeDims, snapHole, to2D, to3D } from "../src/cad/holePlace";
-import { filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup } from "../src/sketch/ops";
+import { chainMid, filletCorner, groupCentre, mirrorEntities, projectEdge, transformGroup, updateProjections } from "../src/sketch/ops";
 import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile, interferences, layFlat, placeShape, readStep, setPartDocs, splitStep } from "../src/cad/build";
 import * as THREE from "three";
@@ -328,6 +328,68 @@ lfs = lf({ ruled: false });
 check("smooth loft of two sketches builds too", !lfs.errors.lf && near(measureVolume(lfs.shape!), frustum, 1e-2), JSON.stringify(lfs.errors));
 lfs = lf({ sketchIds: [lfA.id] });
 check("a loft needs two sketches", /two/.test(lfs.errors.lf ?? ""), JSON.stringify(lfs.errors));
+
+// --- A sketch on a face follows it: a pocket on top of a block stays on top when it grows.
+const pocketDoc = (h: number): CadDocument => {
+  const bSk = newSketch("B", XY);
+  rect(bSk, 0, 0, 20, 10);
+  const top = newSketch("TOP", { origin: [0, 0, 5], xDir: [1, 0, 0], normal: [0, 0, 1], label: "Face" });
+  top.face = { center: [10, 5, 5], normal: [0, 0, 1] };
+  top.entities.push({ id: "fc", type: "point", x: 10, y: 5 }, { id: "fo", type: "circle", c: "fc", r: 2 });
+  return {
+    format: "waffle",
+    version: 1,
+    features: [
+      bSk,
+      { id: "be", kind: "extrude", name: "BE", sketchId: bSk.id, distance: h, symmetric: false, op: "add" },
+      top,
+      { id: "pk", kind: "extrude", name: "PK", sketchId: top.id, distance: -2, symmetric: false, op: "cut" },
+    ],
+  };
+};
+const pocket = Math.PI * 4 * 2;
+let fb = buildShape(pocketDoc(5));
+check("pocket on the top face", !Object.keys(fb.errors).length && near(measureVolume(fb.shape!), 20 * 10 * 5 - pocket, 1e-2), JSON.stringify(fb.errors));
+check("a face where it was stored moves nothing", !fb.movedSketches);
+fb = buildShape(pocketDoc(9));
+const mv = fb.movedSketches && Object.values(fb.movedSketches)[0];
+check("a taller block carries the sketch up", !!mv && near(mv.plane.origin[2], 9) && near(mv.center[2], 9), JSON.stringify(fb.movedSketches));
+check("the pocket follows to the new top", near(measureVolume(fb.shape!), 20 * 10 * 9 - pocket, 1e-2), `vol=${fb.shape && measureVolume(fb.shape)}`);
+{
+  const d = pocketDoc(5);
+  const top = d.features[2] as SketchFeature;
+  top.face = { center: [500, 500, 5], normal: [0, 0, 1] };
+  const far = buildShape(d);
+  check("a face gone for good is said on the sketch", !!far.warnings[top.id], JSON.stringify(far.warnings));
+}
+
+// --- Projected model edges follow the model.
+const prSk = newSketch("PR", XY);
+let prErr = projectEdge(prSk, [[0, 0, 0], [10, 4, 0]]);
+const prRec = prSk.projections?.[0];
+check("a projected line is recorded", prErr === null && !!prRec && prRec.pts.length === 2, JSON.stringify(prSk.projections));
+let up = updateProjections(prSk, () => [[0, 0, 0], [15, 6, 0]]);
+const prEnd = prSk.entities.find((e): e is SkEntity & { type: "point"; x: number; y: number } => e.id === prRec!.pts[1] && e.type === "point");
+const prFix = prSk.constraints.find((c) => c.type === "fix" && c.refs[0] === prRec!.pts[1]);
+check("the copied line follows its edge", up.moved && !up.lost && !!prEnd && near(prEnd.x, 15) && near(prEnd.y, 6), JSON.stringify(prEnd));
+check("its fix constraint moves with it", !!prFix && near(prFix.at![0], 15) && near(prFix.at![1], 6), JSON.stringify(prFix));
+up = updateProjections(prSk, () => [[0, 0, 0], [15, 6, 0]]);
+check("a second pass settles", !up.moved && !up.lost);
+up = updateProjections(prSk, () => null);
+check("a gone edge is lost, the copy stays", up.lost && near(prEnd!.x, 15));
+{
+  const ring: [number, number, number][] = [];
+  for (let i = 0; i <= 48; i++) ring.push([30 + 5 * Math.cos((i / 48) * 2 * Math.PI), 5 * Math.sin((i / 48) * 2 * Math.PI), 0]);
+  const e2 = projectEdge(prSk, ring);
+  const circ = prSk.entities.find((e): e is SkEntity & { type: "circle"; r: number } => e.type === "circle");
+  check("a projected circle", e2 === null && !!circ && near(circ.r, 5, 1e-2), JSON.stringify(circ));
+  const grown: [number, number, number][] = [];
+  for (let i = 0; i <= 48; i++) grown.push([30 + 7 * Math.cos((i / 48) * 2 * Math.PI), 7 * Math.sin((i / 48) * 2 * Math.PI), 0]);
+  const rec2 = prSk.projections![1];
+  up = updateProjections(prSk, (mid) => (Math.hypot(mid[0] - chainMid(grown)[0]) < 20 ? grown : null));
+  const rc = prSk.constraints.find((c) => c.type === "radius" && c.refs[0] === rec2.curve);
+  check("a projected circle grows with its edge", up.moved && near(circ!.r, 7, 1e-2) && !!rc && near(rc.value!, 7, 1e-2), JSON.stringify({ r: circ?.r, rc }));
+}
 
 // --- Parameters and expressions.
 check("expression with names", evaluate("2 * w + 5", { w: 10 }) === 25);

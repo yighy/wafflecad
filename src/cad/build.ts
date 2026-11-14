@@ -377,6 +377,8 @@ interface ReplayState {
   warnings: Record<string, string>;
   sketches: Map<string, SketchFeature>;
   tools: Map<string, Tool>;
+  /** Face sketches moved to stay on their face (see BuildResult.movedSketches). */
+  movedSketches: Record<string, { plane: PlaneDef; center: Vec3 }>;
 }
 
 /**
@@ -407,6 +409,7 @@ const snapshot = (st: ReplayState): ReplayState => ({
   warnings: { ...st.warnings },
   sketches: new Map(st.sketches),
   tools: new Map(st.tools),
+  movedSketches: { ...st.movedSketches },
 });
 
 /** The solids of a STEP file (its text), as one shape. */
@@ -466,8 +469,8 @@ function replay(doc: CadDocument) {
   const cached = start > 0 ? stepCache.get(keys[start - 1])! : null;
   const st: ReplayState = cached
     ? snapshot(cached)
-    : { bodies: new Map(), shape: null, errors: {}, warnings: {}, sketches: new Map(), tools: new Map() };
-  const { bodies, errors, warnings, sketches, tools } = st;
+    : { bodies: new Map(), shape: null, errors: {}, warnings: {}, sketches: new Map(), tools: new Map(), movedSketches: {} };
+  const { bodies, errors, warnings, sketches, tools, movedSketches } = st;
   let shape = st.shape;
   const fail = (f: { id: string }, e: unknown) => (errors[f.id] = e instanceof Error ? e.message : String(e));
   /** Material made by a step from a sketch or a file: a new body, joined to one, or cut from them. */
@@ -497,6 +500,27 @@ function replay(doc: CadDocument) {
     noteMoved = () => (warnings[f.id] = "Its face or edge moved: the closest one was used. Check it, or edit the step to pick again.");
     if (f.kind === "sketch") {
       sketches.set(f.id, f);
+      // Drawn on a face: find that face in the model built so far, and follow it along its
+      // normal (a pocket on top of a box stays on top when the box grows). Sideways or tilted
+      // changes leave the plane as stored; a face gone for good is said on the step.
+      if (f.face && shape) {
+        try {
+          const say = noteMoved;
+          noteMoved = null; // following the face is the point here, not a worry
+          const face = findFace(shape, f.face);
+          noteMoved = say;
+          const c = face.center;
+          const d = dot([c.x, c.y, c.z], f.plane.normal) - dot(f.plane.origin, f.plane.normal);
+          const center = interiorPoint(face, [c.x, c.y, c.z]);
+          if (Math.abs(d) > 1e-7 || Math.hypot(...f.face.center.map((v, i) => v - center[i])) > 1e-6) {
+            const plane: PlaneDef = Math.abs(d) > 1e-7 ? { ...f.plane, origin: add(f.plane.origin, scale(f.plane.normal, d)) } : f.plane;
+            sketches.set(f.id, { ...f, plane });
+            movedSketches[f.id] = { plane, center };
+          } else delete movedSketches[f.id];
+        } catch {
+          warnings[f.id] = "The face it was drawn on is no longer there: the sketch stays where it was";
+        }
+      }
       return;
     }
     try {
@@ -566,7 +590,7 @@ function replay(doc: CadDocument) {
     if (i < start) return;
     step(f);
     stepCache.delete(keys[i]);
-    stepCache.set(keys[i], snapshot({ bodies, shape, errors, warnings, sketches, tools }));
+    stepCache.set(keys[i], snapshot({ bodies, shape, errors, warnings, sketches, tools, movedSketches }));
     if (stepCache.size > STEP_CACHE_MAX) stepCache.delete(stepCache.keys().next().value!);
   });
   // Keep the steps just used at the young end of the cache.
@@ -579,7 +603,7 @@ function replay(doc: CadDocument) {
   }
   noteMoved = null;
   for (const id of Object.keys(errors)) delete warnings[id];
-  return { shape, bodies: [...bodies].map(([id, s]) => ({ id, shape: s })), errors, warnings };
+  return { shape, bodies: [...bodies].map(([id, s]) => ({ id, shape: s })), errors, warnings, movedSketches: Object.keys(movedSketches).length ? movedSketches : undefined };
 }
 
 // ---------- Assemblies ----------
@@ -765,7 +789,7 @@ function assemblyShape(doc: CadDocument) {
   const parts = bodies.map((b) => b.shape);
   if (parts.length !== lastAssembly.parts.length || parts.some((s, i) => s !== lastAssembly.parts[i]))
     lastAssembly = { parts, shape: combined(new Map(bodies.map((b) => [b.id, b.shape]))) };
-  return { shape: lastAssembly.shape, bodies, errors, warnings };
+  return { shape: lastAssembly.shape, bodies, errors, warnings, movedSketches: undefined };
 }
 
 /**
@@ -867,8 +891,8 @@ export function bodyNames(doc: CadDocument, ids: string[]) {
 }
 
 export function buildResult(doc: CadDocument, opts: { draft?: boolean; planar?: boolean } = {}): BuildResult {
-  const { shape, bodies, errors, warnings } = buildShape(doc);
-  if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings };
+  const { shape, bodies, errors, warnings, movedSketches } = buildShape(doc);
+  if (!shape) return { mesh: null, edges: new Float32Array(), edgeGroups: [], planarFaces: [], errors, warnings, movedSketches };
   const m = meshed(shape);
   // A fine mesh already made is used even for a draft.
   const view = m.fine ?? (opts.draft ? (m.draft ??= meshShape(shape, true)) : (m.fine = meshShape(shape, false)));
@@ -886,7 +910,7 @@ export function buildResult(doc: CadDocument, opts: { draft?: boolean; planar?: 
     triangles: view.mesh.triangles.slice(),
     faceGroups: view.mesh.faceGroups,
   };
-  return { mesh, edges: view.edges.slice(), edgeGroups: view.edgeGroups, planarFaces: m.planar ?? [], bodies: bodyInfo, warnings, errors };
+  return { mesh, edges: view.edges.slice(), edgeGroups: view.edgeGroups, planarFaces: m.planar ?? [], bodies: bodyInfo, warnings, errors, movedSketches };
 }
 
 /** Planes of the flat faces, so a sketch can be started on them. */

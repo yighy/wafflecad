@@ -139,6 +139,18 @@ export interface SketchFeature {
   plane: PlaneDef;
   entities: SkEntity[];
   constraints: SkConstraint[];
+  /** The flat face it was drawn on: the sketch follows the face when earlier steps move it along its normal. */
+  face?: FaceRef;
+  /** Model edges copied in with "Use edges": each is found again by its midpoint, and the copies follow it. */
+  projections?: SketchProjection[];
+}
+
+/** A model edge copied into a sketch: where its middle was, and the entities that trace it. */
+export interface SketchProjection {
+  mid: Vec3;
+  /** The defining points, in the curve's own order (line: both ends; arc: centre, start, end; circle: centre). */
+  pts: string[];
+  curve: string;
 }
 
 export type ExtrudeOp = "add" | "cut" | "intersect";
@@ -519,6 +531,8 @@ export interface PlanarFace {
 }
 
 export interface BuildResult {
+  /** Face sketches moved to stay on their face: the new plane, and a fresh point inside the face. */
+  movedSketches?: Record<string, { plane: PlaneDef; center: Vec3 }>;
   mesh: MeshData | null;
   /** Polylines of B-rep edges: pairs of points x,y,z,x,y,z… */
   edges: Float32Array;

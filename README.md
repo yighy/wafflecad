@@ -17,7 +17,8 @@
 
 - **Sketches** with constraints and dimensions: lines, rectangles, circles, arcs, splines,
   polygons, slots, ellipses, text, offset, trim, fillet, mirror, model edges brought into the sketch, DXF and
-  SVG import.
+  SVG import. A sketch goes on XY, XZ, YZ or any flat face, offset along the normal and tilted
+  around its own axes (sections for a loft, ribs at an angle).
 - **Solids** with OpenCascade: extrude, revolve, sweep (a profile along a path), loft (through
   several sketches), Press Pull, shell, fillet / chamfer, metric holes (counterbore, countersink),
   mirror and patterns. Every step stays editable in the timeline.
@@ -72,5 +73,6 @@ browser and replayed on every change (earlier steps are cached).
 - An assembly cannot contain another one, and a mate whose face changed in its part must be made again.
 - Faces and edges are found again by position: if an earlier change moves them a lot, the step needs
   to be picked again (it turns orange, or red, in the timeline).
-- Model edges brought into a sketch, and sketches on faces, are copies: they do not follow later changes
-  of the model.
+- A sketch on a face follows its face along the normal (a pocket on top of a box stays on top as the
+  box grows); a face that tilts or slides sideways leaves the sketch where it was. Model edges brought
+  into a sketch follow the model too, as long as the edge stays the same kind of curve.

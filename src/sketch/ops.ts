@@ -1,6 +1,6 @@
 // Sketch editing operations that rebuild geometry: corner fillet, mirror, projected edges.
 // Pure sketch-model code (no DOM), testable under Node.
-import type { SkConstraint, SkCurve, SkEntity, SkLine, SketchFeature } from "../types";
+import type { SkConstraint, SkCurve, SkEntity, SkLine, SketchFeature, Vec3 } from "../types";
 import { SketchView, isReference, uid } from "./model";
 
 type P2 = [number, number];
@@ -140,13 +140,16 @@ export function mirrorEntities(sk: SketchFeature, ids: string[], axisId: string)
   return count || added.length;
 }
 
-/**
- * Adds a model edge (a 3D polyline) to the sketch, projected onto its plane: as a line, a
- * circle or an arc when it is one, else a spline through points along it. The new points are
- * fixed where they are; a point already at the same place is reused, so edges stay joined.
- * Returns an error message, or null when done.
- */
-export function projectEdge(sk: SketchFeature, chain: [number, number, number][]): string | null {
+/** What a model edge's polyline projects to on the sketch plane: a curve kind with its defining points in order. */
+type Projected =
+  | { kind: "line"; pts: P2[] }
+  | { kind: "circle"; c: P2; r: number }
+  /** pts: centre, start, end (arcs run counter-clockwise). */
+  | { kind: "arc"; pts: P2[] }
+  | { kind: "spline"; pts: P2[]; closed: boolean };
+
+/** Projects a chain onto the sketch plane and names what it is, or says why it cannot be used. */
+function projectionOf(sk: SketchFeature, chain: [number, number, number][]): { shape: Projected; tol: number } | string {
   const { origin: o, xDir: xd, normal: n } = sk.plane;
   const yd = [n[1] * xd[2] - n[2] * xd[1], n[2] * xd[0] - n[0] * xd[2], n[0] * xd[1] - n[1] * xd[0]];
   const to2 = (p: number[]): P2 => {
@@ -162,38 +165,17 @@ export function projectEdge(sk: SketchFeature, chain: [number, number, number][]
   const tol = Math.max(size * 1e-4, 1e-6);
   const closed = pts.length > 2 && len(sub(pts[0], pts[pts.length - 1])) < tol;
   if (closed) pts.pop();
-
-  const view = new SketchView(sk);
-  const pointAt = (p: P2) => {
-    const found = view.points().find((q) => Math.hypot(q.x - p[0], q.y - p[1]) < tol * 10);
-    if (found) return found.id;
-    const id = uid();
-    sk.entities.push({ id, type: "point", x: p[0], y: p[1] });
-    sk.constraints.push({ id: uid(), type: "fix", refs: [id], at: [p[0], p[1]] });
-    view.byId.set(id, sk.entities[sk.entities.length - 1]);
-    return id;
-  };
   const distToChord = (p: P2, a: P2, b: P2) => {
     const d = sub(b, a);
     return Math.abs(d[0] * (p[1] - a[1]) - d[1] * (p[0] - a[0])) / Math.max(len(d), 1e-12);
   };
-
   const first = pts[0];
   const last = pts[pts.length - 1];
-  if (!closed && pts.every((p) => distToChord(p, first, last) < tol)) {
-    sk.entities.push({ id: uid(), type: "line", p1: pointAt(first), p2: pointAt(last) });
-    return null;
-  }
+  if (!closed && pts.every((p) => distToChord(p, first, last) < tol)) return { shape: { kind: "line", pts: [first, last] }, tol };
   const circle = fitCircle(pts, tol);
   if (circle) {
     const [c, r] = circle;
-    if (closed) {
-      const id = uid();
-      const cid = pointAt(c);
-      sk.entities.push({ id, type: "circle", c: cid, r });
-      sk.constraints.push({ id: uid(), type: "radius", refs: [id], value: r });
-      return null;
-    }
+    if (closed) return { shape: { kind: "circle", c, r }, tol };
     // Which way the edge turns decides the arc's ends (arcs run counter-clockwise).
     let sweep = 0;
     for (let i = 1; i < pts.length; i++) {
@@ -204,17 +186,137 @@ export function projectEdge(sk: SketchFeature, chain: [number, number, number][]
       sweep += d;
     }
     const [s, e] = sweep > 0 ? [first, last] : [last, first];
-    sk.entities.push({ id: uid(), type: "arc", c: pointAt(c), s: pointAt(s), e: pointAt(e) });
-    return null;
+    return { shape: { kind: "arc", pts: [c, s, e] }, tol };
   }
   // Any other curve: a spline through up to 12 points along it.
   const count = Math.min(pts.length, 12);
   const picks: P2[] = [];
   for (let i = 0; i < count; i++) picks.push(pts[Math.round((i * (pts.length - (closed ? 0 : 1))) / (count - (closed ? 0 : 1))) % pts.length]);
-  const ids = picks.map(pointAt).filter((id, i, a) => i === 0 || id !== a[i - 1]);
-  if (ids.length < (closed ? 3 : 2)) return "This edge is too small to use";
-  sk.entities.push({ id: uid(), type: "spline", pts: ids, closed: closed || undefined });
+  // Two picks close enough to become one sketch point count as one, so updates see the same list.
+  const spaced = picks.filter((p, i) => i === 0 || len(sub(p, picks[i - 1])) >= tol * 10);
+  return { shape: { kind: "spline", pts: spaced, closed }, tol };
+}
+
+/** The point halfway along a polyline's length: how the edge is found again after a rebuild. */
+export function chainMid(chain: [number, number, number][]): Vec3 {
+  const at: number[] = [0];
+  for (let i = 1; i < chain.length; i++) at.push(at[i - 1] + Math.hypot(chain[i][0] - chain[i - 1][0], chain[i][1] - chain[i - 1][1], chain[i][2] - chain[i - 1][2]));
+  const half = at[at.length - 1] / 2;
+  for (let i = 1; i < chain.length; i++)
+    if (at[i] >= half) {
+      const t = at[i] === at[i - 1] ? 0 : (half - at[i - 1]) / (at[i] - at[i - 1]);
+      return [0, 1, 2].map((k) => chain[i - 1][k] + t * (chain[i][k] - chain[i - 1][k])) as Vec3;
+    }
+  return chain[0];
+}
+
+/**
+ * Adds a model edge (a 3D polyline) to the sketch, projected onto its plane: as a line, a
+ * circle or an arc when it is one, else a spline through points along it. The new points are
+ * fixed where they are; a point already at the same place is reused, so edges stay joined.
+ * The edge is recorded in `sk.projections`, so the copy follows the model when it changes.
+ * Returns an error message, or null when done.
+ */
+export function projectEdge(sk: SketchFeature, chain: [number, number, number][]): string | null {
+  const got = projectionOf(sk, chain);
+  if (typeof got === "string") return got;
+  const { shape, tol } = got;
+  const view = new SketchView(sk);
+  const made: string[] = [];
+  const pointAt = (p: P2) => {
+    const found = view.points().find((q) => Math.hypot(q.x - p[0], q.y - p[1]) < tol * 10);
+    if (found) {
+      made.push(found.id);
+      return found.id;
+    }
+    const id = uid();
+    sk.entities.push({ id, type: "point", x: p[0], y: p[1] });
+    sk.constraints.push({ id: uid(), type: "fix", refs: [id], at: [p[0], p[1]] });
+    view.byId.set(id, sk.entities[sk.entities.length - 1]);
+    made.push(id);
+    return id;
+  };
+  const curve = uid();
+  const record = (pts: string[]) => (sk.projections ??= []).push({ mid: chainMid(chain), pts, curve });
+  if (shape.kind === "line") {
+    sk.entities.push({ id: curve, type: "line", p1: pointAt(shape.pts[0]), p2: pointAt(shape.pts[1]) });
+    record(made);
+    return null;
+  }
+  if (shape.kind === "circle") {
+    const cid = pointAt(shape.c);
+    sk.entities.push({ id: curve, type: "circle", c: cid, r: shape.r });
+    sk.constraints.push({ id: uid(), type: "radius", refs: [curve], value: shape.r });
+    record(made);
+    return null;
+  }
+  if (shape.kind === "arc") {
+    sk.entities.push({ id: curve, type: "arc", c: pointAt(shape.pts[0]), s: pointAt(shape.pts[1]), e: pointAt(shape.pts[2]) });
+    record(made);
+    return null;
+  }
+  const ids = shape.pts.map(pointAt).filter((id, i, a) => i === 0 || id !== a[i - 1]);
+  if (ids.length < (shape.closed ? 3 : 2)) return "This edge is too small to use";
+  sk.entities.push({ id: curve, type: "spline", pts: ids, closed: shape.closed || undefined });
+  record(ids);
   return null;
+}
+
+/**
+ * Moves the copied model edges to where their edges are now. `findChain` gives the polyline of
+ * the edge nearest a stored midpoint, or null when it is gone. Points keep their ids, so what
+ * was drawn from them follows. Returns whether anything moved, and whether any edge is lost
+ * (gone, or no longer the same kind of curve: its copy then stays where it was).
+ */
+export function updateProjections(sk: SketchFeature, findChain: (mid: Vec3) => [number, number, number][] | null): { moved: boolean; lost: boolean } {
+  let moved = false;
+  let lost = false;
+  const byId = new Map(sk.entities.map((e) => [e.id, e]));
+  const fixes = new Map<string, SkConstraint>();
+  for (const c of sk.constraints) if (c.type === "fix" && c.at) fixes.set(c.refs[0], c);
+  for (const rec of sk.projections ?? []) {
+    const chain = findChain(rec.mid);
+    const curve = byId.get(rec.curve);
+    if (!chain || !curve) {
+      lost = true;
+      continue;
+    }
+    const got = projectionOf(sk, chain);
+    if (typeof got === "string") {
+      lost = true;
+      continue;
+    }
+    const { shape } = got;
+    const want = shape.kind === "circle" ? [shape.c] : shape.pts;
+    const same =
+      (curve.type === "line" && shape.kind === "line") ||
+      (curve.type === "circle" && shape.kind === "circle") ||
+      (curve.type === "arc" && shape.kind === "arc") ||
+      (curve.type === "spline" && shape.kind === "spline" && !!curve.closed === !!shape.closed);
+    if (!same || want.length !== rec.pts.length) {
+      lost = true;
+      continue;
+    }
+    rec.pts.forEach((id, i) => {
+      const e = byId.get(id);
+      if (!e || e.type !== "point" || e.fixed) return; // never a reference point such as the origin
+      const [x, y] = want[i];
+      if (Math.hypot(e.x - x, e.y - y) < 1e-6) return;
+      e.x = x;
+      e.y = y;
+      const fx = fixes.get(id);
+      if (fx) fx.at = [x, y];
+      moved = true;
+    });
+    if (shape.kind === "circle" && curve.type === "circle" && Math.abs(curve.r - shape.r) > 1e-6) {
+      curve.r = shape.r;
+      const rc = sk.constraints.find((c) => c.type === "radius" && c.refs[0] === rec.curve);
+      if (rc) rc.value = shape.r;
+      moved = true;
+    }
+    rec.mid = chainMid(chain);
+  }
+  return { moved, lost };
 }
 
 /** Circle through all the points (within tol), from three of them spread along the list. */

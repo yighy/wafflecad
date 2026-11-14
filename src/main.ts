@@ -2,13 +2,14 @@ import "@fontsource-variable/dm-sans/wght.css";
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, BundledProject, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, SweepFeature, LoftFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, BundledProject, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, SweepFeature, LoftFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, EdgeGroup, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { DIMENSION_TYPES } from "./types";
 import { NAME_RE, applyParameters, dropSharedCopies, expressionSlots, hasNames, identifiers, partParameters, renameInExpr, resolveParameters, sharedUsed, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
 import { InputRouter, type PointerTool, type Ptr } from "./view/input";
 import { Solver } from "./sketch/solver";
 import { SketchEditor, type Action, type SketchToolName } from "./sketch/editor";
+import { updateProjections } from "./sketch/ops";
 import type { SelectMode } from "./sketch/selectModes";
 import { SketchView, constraintLabel, newSketch, sampleCurve, sketchLineWorld, uid } from "./sketch/model";
 import { openKeypad, setKeypadHost, type KeypadHandle, type Segmented } from "./ui/keypad";
@@ -172,7 +173,7 @@ function saveShared() {
 
 type Mode =
   | { kind: "part" }
-  | { kind: "pickPlane" }
+  | { kind: "pickPlane"; offset: number; tilt: number; tiltAxis: "X" | "Y" }
   | { kind: "sketch"; editor: SketchEditor }
   | { kind: "extrude"; feat: ExtrudeFeature; keypad: KeypadHandle }
   | { kind: "pushpull"; feat: PushPullFeature; keypad: KeypadHandle }
@@ -355,6 +356,8 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     syncGizmo();
     if (thumbStale) scheduleThumb();
     if (measuring) showMeasurePicks();
+    if (m.movedSketches) catchUpFaceSketches(m.movedSketches);
+    catchUpProjections(m);
   } else if (m.type === "measured") {
     if (!measuring || m.reqId !== measureReq) return;
     measuring.result = m.result;
@@ -377,6 +380,83 @@ worker.onmessage = (ev: MessageEvent<WorkerResponse>) => {
     pendingFiles.delete(m.reqId);
   }
 };
+
+/** Face sketches moved by the worker to stay on their face: the document takes the new planes. */
+function catchUpFaceSketches(movedList: NonNullable<BuildResult["movedSketches"]>) {
+  let grid = false;
+  for (const [id, mv] of Object.entries(movedList)) {
+    const f = doc.features.find((x): x is SketchFeature => x.id === id && x.kind === "sketch");
+    if (!f) continue;
+    f.plane = mv.plane;
+    if (f.face) f.face = { ...f.face, center: mv.center };
+    if (mode.kind === "sketch" && mode.editor.sk.id === id) grid = true;
+  }
+  save();
+  if (grid && mode.kind === "sketch") {
+    vp.setGridPlane(mode.editor.sk.plane);
+    vp.viewNormalTo(mode.editor.sk.plane);
+  }
+}
+
+/** How many times projections were re-run since the last commit: a change settles in one, this stops a runaway. */
+let reprojected = 0;
+let saidLostEdge = false;
+
+/** Model edges copied into sketches follow the model: each is found again by its midpoint and the copy is moved. */
+function catchUpProjections(m: { edges: Float32Array; edgeGroups: EdgeGroup[] }) {
+  if (isOperation(mode) || mode.kind === "sketch" || mode.kind === "sweep" || mode.kind === "loft") return;
+  const sks = doc.features.filter((f): f is SketchFeature => f.kind === "sketch" && !!f.projections?.length);
+  if (!sks.length || !m.edgeGroups.length || reprojected >= 3) return;
+  const L = m.edges;
+  let lo = [Infinity, Infinity, Infinity];
+  let hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < L.length; i += 3)
+    for (let k = 0; k < 3; k++) {
+      if (L[i + k] < lo[k]) lo[k] = L[i + k];
+      if (L[i + k] > hi[k]) hi[k] = L[i + k];
+    }
+  // How far an edge may have moved and still be the same one: as findFace allows for faces.
+  const limit = Math.max(1, 0.3 * Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]));
+  const polyline = (g: EdgeGroup): [number, number, number][] => {
+    const out: [number, number, number][] = [];
+    for (let k = g.start; k < g.start + g.count; k += 2) out.push([L[k * 3], L[k * 3 + 1], L[k * 3 + 2]]);
+    const e = (g.start + g.count - 1) * 3;
+    out.push([L[e], L[e + 1], L[e + 2]]);
+    return out;
+  };
+  const findChain = (mid: Vec3) => {
+    let best: { g: EdgeGroup; d: number } | null = null;
+    for (const g of m.edgeGroups) {
+      const d = Math.hypot(g.mid[0] - mid[0], g.mid[1] - mid[1], g.mid[2] - mid[2]);
+      if (!best || d < best.d) best = { g, d };
+    }
+    return best && best.d <= limit ? polyline(best.g) : null;
+  };
+  let moved = false;
+  let lost = false;
+  for (const sk of sks) {
+    const r = updateProjections(sk, findChain);
+    moved ||= r.moved;
+    lost ||= r.lost;
+  }
+  if (lost && !saidLostEdge) {
+    saidLostEdge = true;
+    toast("An edge copied into a sketch is no longer in the model: its copy stays where it was");
+  }
+  if (!moved) return;
+  // The fixes already hold the new places; solving settles whatever was drawn against them.
+  if (solverReady)
+    for (const sk of sks) {
+      try {
+        solver.solve(sk);
+      } catch {
+        // The copy is moved either way.
+      }
+    }
+  reprojected++;
+  save();
+  rebuild();
+}
 
 /** Nothing more will come from the kernel: say so, and offer to try again (a reload). */
 function kernelFailed(why: string) {
@@ -611,6 +691,8 @@ async function openInitialProject() {
 
 function commit() {
   if (clashes) clearClashes();
+  reprojected = 0;
+  saidLostEdge = false;
   const snap = snapshot();
   if (snap === undoStack[undoPos]) return;
   undoStack.splice(undoPos + 1);
@@ -660,32 +742,133 @@ function nextName(prefix: string) {
 // ---------- Modes ----------
 
 function startNewSketch() {
-  mode = { kind: "pickPlane" };
+  mode = { kind: "pickPlane", offset: 0, tilt: 0, tiltAxis: "X" };
   selectedFeature = null;
   selectedFace = null;
   vp.highlightFace(null);
-  vp.showPlanes(STD_PLANES.map((def) => ({ def, color: PLANE_COLORS[def.label] })));
+  showPickPlanes();
   renderAll();
 }
 
+/** The three planes, where the sketch would land with the offset and tilt set. */
+function showPickPlanes() {
+  if (mode.kind !== "pickPlane") return;
+  const m = mode;
+  vp.showPlanes(STD_PLANES.map((def) => ({ def: placedPlane(def, m), color: PLANE_COLORS[def.label] })));
+}
+
+/** The picked plane moved along its normal, then tilted around its own X or Y axis. */
+function placedPlane(base: PlaneDef, o: { offset: number; tilt: number; tiltAxis: "X" | "Y" }): PlaneDef {
+  if (!o.offset && !o.tilt) return base;
+  const add3 = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+  const mul3 = (a: Vec3, k: number): Vec3 => [a[0] * k, a[1] * k, a[2] * k];
+  const cross3 = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const origin = add3(base.origin, mul3(base.normal, o.offset));
+  if (!o.tilt) return { ...base, origin };
+  const axis = o.tiltAxis === "X" ? base.xDir : cross3(base.normal, base.xDir);
+  const rad = (o.tilt * Math.PI) / 180;
+  const rot = (v: Vec3): Vec3 => {
+    // Rodrigues: v cosθ + (axis × v) sinθ + axis (axis · v)(1 − cosθ)
+    const c = Math.cos(rad);
+    const s = Math.sin(rad);
+    const d = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
+    return add3(add3(mul3(v, c), mul3(cross3(axis, v), s)), mul3(axis, d * (1 - c)));
+  };
+  return { origin, xDir: rot(base.xDir), normal: rot(base.normal), label: base.label };
+}
+
+/** Set while the offset or tilt keypad is open: a tap on a plane then waits for Confirm. */
+let planeKeypad: KeypadHandle | null = null;
+
+/** Types the offset (mm along the normal) or the tilt (degrees around the sketch X or Y axis). */
+async function pickPlaneValue(what: "offset" | "tilt") {
+  if (mode.kind !== "pickPlane" || planeKeypad) return;
+  const m = mode;
+  const was = { offset: m.offset, tilt: m.tilt, tiltAxis: m.tiltAxis };
+  const kp = openKeypad({
+    title: "Sketch plane",
+    subtitle: what === "offset" ? "Moved along its normal" : "Turned around one of its axes",
+    label: what === "offset" ? "Offset" : "Tilt",
+    unit: what === "offset" ? "mm" : "°",
+    value: Math.abs(what === "offset" ? m.offset : m.tilt),
+    scope: paramScope(),
+    confirmLabel: "Confirm",
+    segments:
+      what === "tilt"
+        ? [
+            {
+              options: [
+                { value: "X", label: "Around X" },
+                { value: "Y", label: "Around Y" },
+              ],
+              get: () => m.tiltAxis,
+              set: (v) => {
+                m.tiltAxis = v as "X" | "Y";
+                showPickPlanes();
+              },
+            },
+          ]
+        : [],
+    extras: [
+      {
+        label: "Flip",
+        icon: "flip",
+        run: () => {
+          if (what === "offset") m.offset = -m.offset;
+          else m.tilt = -m.tilt;
+          showPickPlanes();
+        },
+      },
+    ],
+    onInput: (v) => {
+      if (what === "offset") m.offset = Math.sign(m.offset || 1) * v;
+      else m.tilt = Math.sign(m.tilt || 1) * v;
+      showPickPlanes();
+    },
+  });
+  planeKeypad = kp;
+  const res = await kp.result;
+  planeKeypad = null;
+  if (res === null) Object.assign(m, was);
+  else if (what === "offset") m.offset = Math.sign(m.offset || 1) * res.value;
+  else m.tilt = Math.sign(m.tilt || 1) * res.value;
+  showPickPlanes();
+  renderTools();
+  renderStatus();
+}
+
 function pickPlaneAt(p: Ptr) {
+  if (planeKeypad) return; // the offset or tilt is being typed
   const label = vp.pickPlane(p.x, p.y);
   const faceId = vp.pickFace(p.x, p.y);
   let plane: PlaneDef | undefined;
-  if (faceId != null) plane = lastBuild?.planarFaces.find((f) => f.faceId === faceId)?.plane;
+  let face: FaceRef | undefined;
+  if (faceId != null) {
+    const pf = lastBuild?.planarFaces.find((f) => f.faceId === faceId);
+    if (pf) {
+      plane = pf.plane;
+      face = { center: pf.center, normal: pf.plane.normal };
+    }
+  }
   if (!plane && label) plane = STD_PLANES.find((s) => s.label === label);
   if (!plane) {
     if (faceId != null) toast("Only flat faces can hold a sketch");
     return;
   }
-  createSketchOn(plane);
+  if (mode.kind === "pickPlane" && (mode.offset || mode.tilt)) {
+    plane = placedPlane(plane, mode);
+    face = undefined; // off the face, the sketch no longer follows it
+  }
+  createSketchOn(plane, face);
 }
 
-function createSketchOn(plane: PlaneDef) {
+/** `face`: the model face the plane comes from, so the sketch follows it when the model changes. */
+function createSketchOn(plane: PlaneDef, face?: FaceRef) {
   vp.showPlanes(null);
   vp.highlightFace(null);
   selectedFace = null;
   const sk = newSketch(nextName("Sketch"), plane);
+  if (face) sk.face = face;
   doc.features.push(sk);
   commit();
   enterSketch(sk);
@@ -4266,9 +4449,13 @@ function renderTools() {
       }, { on: ed.construction, key: "G" }),
     );
   } else if (mode.kind === "pickPlane") {
+    const m = mode;
     el.appendChild(section("Sketch plane"));
     for (const p of STD_PLANES)
-      el.appendChild(toolRow("plane" + p.label, PLANE_NAMES[p.label], () => createSketchOn(p), { tint: PLANE_COLORS[p.label], tag: p.label }));
+      el.appendChild(toolRow("plane" + p.label, PLANE_NAMES[p.label], () => createSketchOn(placedPlane(p, m)), { tint: PLANE_COLORS[p.label], tag: p.label }));
+    el.appendChild(section("Place it"));
+    el.appendChild(toolRow("pushpull", m.offset ? `Offset · ${fmtNum(m.offset)} mm` : "Offset…", () => void pickPlaneValue("offset"), { on: !!m.offset }));
+    el.appendChild(toolRow("revolve", m.tilt ? `Tilt · ${fmtNum(m.tilt)}° around ${m.tiltAxis}` : "Tilt…", () => void pickPlaneValue("tilt"), { on: !!m.tilt }));
     el.appendChild(toolRow("close", "Cancel", () => escape()));
   } else if (isAssembly()) {
     el.appendChild(section("Parts"));
@@ -4606,7 +4793,8 @@ function renderPanel() {
     head("Face", plane ? "Flat face" : "Curved face", false, true);
     const items: [string, string, () => void, string?][] = [];
     if (plane) {
-      items.push(["sketch", "Sketch on this face", () => createSketchOn(plane)]);
+      const anchor = selectedFace.center ?? undefined;
+      items.push(["sketch", "Sketch on this face", () => createSketchOn(plane, anchor && { center: anchor, normal: plane.normal })]);
       items.push(["lookAt", "Look at", () => vp.viewNormalTo(plane)]);
     }
     actions(items);
@@ -4746,7 +4934,13 @@ function dofText(dof: number) {
 }
 
 function featureDetail(f: Feature) {
-  if (f.kind === "sketch") return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}`;
+  if (f.kind === "sketch") {
+    const std = STD_PLANES.find((p) => p.label === f.plane.label);
+    const off = std ? (f.plane.origin[0] - std.origin[0]) * std.normal[0] + (f.plane.origin[1] - std.origin[1]) * std.normal[1] + (f.plane.origin[2] - std.origin[2]) * std.normal[2] : 0;
+    const tilted = std ? f.plane.normal[0] * std.normal[0] + f.plane.normal[1] * std.normal[1] + f.plane.normal[2] * std.normal[2] < 1 - 1e-9 : false;
+    const extra = `${Math.abs(off) > 1e-9 ? ` · ${fmtNum(off)} mm` : ""}${tilted ? " · tilted" : ""}`;
+    return f.plane.label === "Face" ? "Sketch on a face" : `Sketch on ${PLANE_NAMES[f.plane.label]}${extra}`;
+  }
   if (f.kind === "pushpull") return `${f.distance >= 0 ? "Pull" : "Push"} · ${fmtNum(Math.abs(f.distance))} mm`;
   if (f.kind === "shell") return `${fmtNum(f.thickness)} mm walls · ${f.faces.length} open face${f.faces.length > 1 ? "s" : ""}`;
   if (f.kind === "pattern") return patternSummary(f);
@@ -4907,7 +5101,8 @@ function renderPartList(el: HTMLElement) {
 
 function renderStatus() {
   let s = kernelMessage;
-  if (mode.kind === "pickPlane") s = "New sketch · tap a plane or a flat face";
+  if (mode.kind === "pickPlane")
+    s = mode.offset || mode.tilt ? "New sketch · tap a plane or a face: the sketch lands on it moved as set" : "New sketch · tap a plane or a flat face";
   else if (mode.kind === "sketch") {
     const ed = mode.editor;
     const tool = SKETCH_TOOLS.find((t) => t.tool === ed.tool)!.label;

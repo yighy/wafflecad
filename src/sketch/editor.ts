@@ -784,6 +784,7 @@ export class SketchEditor implements PointerTool {
     if (!r.ok || r.conflicting.length) {
       this.sk.entities = backup.entities;
       this.sk.constraints = backup.constraints;
+      this.sk.projections = backup.projections;
       this.solve();
       this.hooks.toast(failure);
     } else {
