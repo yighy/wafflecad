@@ -4,7 +4,7 @@
 import type { BundledProject, CadDocument, Parameter } from "../types";
 import { deleteProject, freeName, getProject, listProjects, newProjectId, putProject, type ProjectMeta } from "../projects";
 import { resolveParameters, sharedUsed, usesShared } from "../params";
-import { choose } from "../ui/choose";
+import { ask, choose } from "../ui/choose";
 import { icon } from "../ui/icons";
 import { uid } from "../sketch/model";
 import { ago, asDocument, byName, download, emptyDoc, fmtNum, keepName } from "./util";
@@ -525,7 +525,7 @@ async function sharedOnlyIn(ids: string[]): Promise<Parameter[]> {
 async function confirmDelete(question: string, ids: string[]): Promise<{ shared: Parameter[] } | null> {
   await ctx.flushSave();
   const only = await sharedOnlyIn(ids);
-  if (!only.length) return confirm(`${question} This cannot be undone.`) ? { shared: [] } : null;
+  if (!only.length) return (await ask(question, ["This cannot be undone."], { label: "Delete", danger: true })) ? { shared: [] } : null;
   const names = only.map((p) => p.name).join(", ");
   const one = only.length === 1;
   const it = ids.length === 1 ? "it" : "they";

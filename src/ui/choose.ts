@@ -9,6 +9,11 @@ export interface Choice {
   danger?: boolean;
 }
 
+/** A yes or no question in the same card: true for the answer given, false for Cancel or closed. */
+export async function ask(title: string, lines: string[], yes: Choice): Promise<boolean> {
+  return (await choose(title, lines, [{ primary: true, ...yes }, { label: "Cancel" }])) === 0;
+}
+
 export function choose(title: string, lines: string[], choices: Choice[]): Promise<number | null> {
   return new Promise((resolve) => {
     const el = document.createElement("div");

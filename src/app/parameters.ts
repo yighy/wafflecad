@@ -12,6 +12,7 @@ import { type CadDocument, type Feature, type Parameter, type SketchFeature } fr
 import { icon } from "../ui/icons";
 import { openKeypad } from "../ui/keypad";
 import { toast } from "../ui/toast";
+import { ask } from "../ui/choose";
 
 export function paramScope() {
   return resolveParameters(partParameters(S.doc, M.shared)).scope;
@@ -123,7 +124,7 @@ export function renameParameter(p: Parameter) {
   commit();
 }
 
-export function deleteParameter(p: Parameter) {
+export async function deleteParameter(p: Parameter) {
   if (isShared(p)) return void deleteShared(p);
   // It was replacing a shared one here: the part goes back to that one.
   if (M.shared.some((x) => x.name === p.name)) {
@@ -131,7 +132,7 @@ export function deleteParameter(p: Parameter) {
     return;
   }
   const used = usedNames(S.doc, p.name).has(p.name);
-  if (used && !confirm(`${p.name} is used. Replace it by its current value everywhere?`)) return;
+  if (used && !(await ask(`Delete ${p.name}?`, [`${p.name} is used in this part: it is replaced by its current value everywhere.`], { label: `Delete, use its value`, danger: true }))) return;
   const value = paramScope()[p.name];
   applyParamChange(() => {
     S.doc.parameters = (S.doc.parameters ?? []).filter((x) => x.id !== p.id);
@@ -215,7 +216,7 @@ export async function renameShared(p: Parameter) {
 
 /** Deletes a shared parameter; the parts using it keep its value as a parameter of their own. */
 export async function deleteShared(p: Parameter) {
-  if (!confirm(`Delete the shared ${p.name}? Parts using it keep its value as a parameter of their own.`)) return;
+  if (!(await ask(`Delete the shared ${p.name}?`, ["Parts using it keep its value as a parameter of their own."], { label: "Delete", danger: true }))) return;
   const value = resolveParameters(M.shared).scope[p.name];
   const expr = value === undefined ? "0" : String(+value.toFixed(6));
   const keep = (d: CadDocument) => {
@@ -310,7 +311,7 @@ export function renderParamsPanel(el: HTMLElement) {
       toggleBarMenu(more, [
         ...(isCommon ? [] : [["Share with every part", () => void shareParameter(p)] as [string, () => void]]),
         ["Rename", () => renameParameter(p)],
-        [isCommon ? "Delete (parts keep its value)" : "Delete", () => deleteParameter(p), true],
+        [isCommon ? "Delete (parts keep its value)" : "Delete", () => void deleteParameter(p), true],
       ]);
     row.append(main, more);
     list.appendChild(row);
@@ -364,9 +365,9 @@ export async function showSharedUse(rows: Map<string, HTMLElement>, tidy?: HTMLE
   const b = document.createElement("button");
   b.innerHTML = icon("trash", 18) + `<span>Delete the ${unused.length === 1 ? `unused ${unused[0].name}` : `${unused.length} unused`}</span>`;
   b.className = "danger";
-  b.onclick = () => {
+  b.onclick = async () => {
     const names = unused.map((p) => p.name).join(", ");
-    if (!confirm(`Delete ${names}? No part uses ${unused.length === 1 ? "it" : "them"}.`)) return;
+    if (!(await ask(`Delete ${names}?`, [`No part uses ${unused.length === 1 ? "it" : "them"}.`], { label: "Delete", danger: true }))) return;
     const drop = new Set(unused.map((p) => p.id));
     if (applyParamChange(() => (M.shared = M.shared.filter((p) => !drop.has(p.id))))) toast(`Deleted ${names}`);
   };
