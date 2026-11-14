@@ -1,12 +1,12 @@
 // Geometric core: replays the feature list with replicad (OpenCascade).
 // No DOM dependency: used by the worker, and testable under Node.
-import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, getOC, isShape3D, makeCompound, makeOffset, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D } from "replicad";
-import type { Axis, BuildResult, CadDocument, Clash, CombineFeature, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, PushPullFeature, ShellFeature, SketchFeature, Vec3 } from "../types";
+import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, Vector, basicFaceExtrusion, cast, draw, drawCircle, drawEllipse, genericSweep, getOC, isShape3D, makeCompound, makeOffset, makeVertex, measureDistanceBetween, type Drawing, type Face, type Shape3D, type Sketch } from "replicad";
+import type { Axis, BuildResult, CadDocument, Clash, CombineFeature, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, LoftFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, ProfileSegment, PushPullFeature, ShellFeature, SketchFeature, SweepFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
 import { hasRef } from "./measure";
 import { sketchLineWorld } from "../sketch/model";
-import { findRegions } from "../sketch/profiles";
+import { findRegions, openPath } from "../sketch/profiles";
 
 const MESH_OPTS = { tolerance: 0.01, angularTolerance: 0.1 };
 
@@ -16,14 +16,26 @@ function loopDrawing(loop: ProfileLoop): Drawing {
     return drawEllipse(loop.ra, loop.rb)
       .rotate((loop.angle * 180) / Math.PI, [0, 0])
       .translate(loop.c[0], loop.c[1]);
-  const pen = draw(loop.segments[0].a);
-  const n = loop.segments.length;
-  loop.segments.forEach((s, i) => {
+  return penAlong(loop.segments, true).close();
+}
+
+/** A pen that has drawn the segments; the last line is left to close() when the loop closes. */
+function penAlong(segments: ProfileSegment[], closing: boolean) {
+  const pen = draw(segments[0].a);
+  const n = segments.length;
+  segments.forEach((s, i) => {
     if (s.kind === "arc") pen.threePointsArcTo(s.b, s.mid);
     else if (s.kind === "bezier") pen.cubicBezierCurveTo(s.b, s.c1, s.c2);
-    else if (i < n - 1) pen.lineTo(s.b);
+    else if (!closing || i < n - 1) pen.lineTo(s.b);
   });
-  return pen.close();
+  return pen;
+}
+
+const planeOf = (sk: SketchFeature) => new Plane(sk.plane.origin, sk.plane.xDir, sk.plane.normal);
+
+/** A loop of a sketch as a wire in space. */
+function loopWire(loop: ProfileLoop, sk: SketchFeature) {
+  return (loopDrawing(loop).sketchOnPlane(planeOf(sk)) as Sketch).wire;
 }
 
 /** One drawing per closed region (its holes cut out). Regions never overlap. */
@@ -79,6 +91,44 @@ function revolveSolid(sk: SketchFeature, f: RevolveFeature): Shape3D {
     throw new Error("Cannot revolve: the profile must stay on one side of the axis");
   }
   return f.symmetric && Math.abs(f.angle) < 360 ? solid.rotate(-f.angle / 2, a, axis) : solid;
+}
+
+/**
+ * Each region of the profile is pushed along the path; its holes are pushed too and cut out. The
+ * profile is swept as drawn, so it is drawn where the path starts, across it.
+ */
+function sweepSolid(sk: SketchFeature, path: SketchFeature, f: SweepFeature): Shape3D {
+  const regions = findRegions(sk);
+  if (!regions.length) throw new Error("The profile sketch has no closed region");
+  const { segments, problem } = openPath(path);
+  if (problem) throw new Error(problem);
+  const spine = (penAlong(segments, false).done().sketchOnPlane(planeOf(path)) as Sketch).wire;
+  const along = (loop: ProfileLoop) => {
+    try {
+      return genericSweep(loopWire(loop, sk), spine, { transitionMode: "round" });
+    } catch {
+      throw new Error("Cannot sweep: the profile must be drawn across the start of the path, and the path's bends not tighter than the profile");
+    }
+  };
+  const solids = regions.map((r) => r.holes.reduce((s, h) => s.cut(along(h)), along(r.outer)));
+  const out = solids.length === 1 ? solids[0] : (makeCompound(solids) as Shape3D);
+  if (!(measureVolume(out) > 1e-9)) throw new Error(`${f.name}: the sweep gives nothing (the profile may lie along the path instead of across it)`);
+  return out;
+}
+
+/** The solid through the first closed region of each sketch, in their order. */
+function loftSolid(sks: SketchFeature[], f: LoftFeature): Shape3D {
+  if (sks.length < 2) throw new Error("A loft needs at least two sketches");
+  const sketches = sks.map((sk) => {
+    const regions = findRegions(sk);
+    if (!regions.length) throw new Error(`${sk.name} has no closed region`);
+    return loopDrawing(regions[0].outer).sketchOnPlane(planeOf(sk)) as Sketch;
+  });
+  try {
+    return sketches[0].loftWith(sketches.slice(1), { ruled: f.ruled });
+  } catch {
+    throw new Error("Cannot loft these sketches (they may cross, or lie in one plane)");
+  }
 }
 
 /** Called when a reference had to be found again after an earlier change moved it. */
@@ -492,6 +542,16 @@ function replay(doc: CadDocument) {
         // Simplifying after a fillet would merge its faces with flat neighbours: kept as is.
         const next = fillet(bodies.get(id)!, f);
         bodies.set(id, next);
+      } else if (f.kind === "sweep") {
+        const sk = sketches.get(f.sketchId);
+        const path = sketches.get(f.pathSketchId);
+        if (!sk) throw new Error("The profile sketch is missing");
+        if (!path) throw new Error("The path sketch is missing");
+        solidStep(f, sweepSolid(sk, path, f));
+      } else if (f.kind === "loft") {
+        const sks = f.sketchIds.map((id) => sketches.get(id));
+        if (sks.some((s) => !s)) throw new Error("A sketch of the loft is missing");
+        solidStep(f, loftSolid(sks as SketchFeature[], f));
       } else {
         const sk = sketches.get(f.sketchId);
         if (!sk) throw new Error("Sketch not found");

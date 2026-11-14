@@ -61,46 +61,8 @@ export function findRegions(sk: SketchFeature): ProfileRegion[] {
     if (!out.has(h.from)) out.set(h.from, []);
     out.get(h.from)!.push(h);
   };
-  for (const c of view.curves()) {
-    if (c.construction || c.type === "circle" || c.type === "ellipse") continue;
-    if (c.type === "line") {
-      const a = view.xy(c.p1);
-      const b = view.xy(c.p2);
-      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) continue;
-      const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
-      add({ curve: c.id, from: c.p1, to: c.p2, angle: ang, seg: { kind: "line", a, b } });
-      add({ curve: c.id, from: c.p2, to: c.p1, angle: ang + Math.PI, seg: { kind: "line", a: b, b: a } });
-    } else if (c.type === "bezier") {
-      const sp = view.bezierSpan(c);
-      if (c.p0 === c.p3) continue;
-      const dir = (p: P2, q: P2, r: P2) =>
-        Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9 ? Math.atan2(q[1] - p[1], q[0] - p[0]) : Math.atan2(r[1] - p[1], r[0] - p[0]);
-      add({ curve: c.id, from: c.p0, to: c.p3, angle: dir(sp.a, sp.c1, sp.c2), seg: { kind: "bezier", a: sp.a, b: sp.b, c1: sp.c1, c2: sp.c2 } });
-      add({ curve: c.id, from: c.p3, to: c.p0, angle: dir(sp.b, sp.c2, sp.c1), seg: { kind: "bezier", a: sp.b, b: sp.a, c1: sp.c2, c2: sp.c1 } });
-    } else if (c.type === "spline") {
-      // Direction leaving `p` towards its control point (or the far end if they coincide).
-      const dir = (p: P2, q: P2, r: P2) =>
-        Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9 ? Math.atan2(q[1] - p[1], q[0] - p[0]) : Math.atan2(r[1] - p[1], r[0] - p[0]);
-      view.splineSpans(c).forEach((sp, i) => {
-        if (sp.from === sp.to) return;
-        const curve = `${c.id}#${i}`;
-        add({ curve, from: sp.from, to: sp.to, angle: dir(sp.a, sp.c1, sp.b), seg: { kind: "bezier", a: sp.a, b: sp.b, c1: sp.c1, c2: sp.c2 } });
-        add({ curve, from: sp.to, to: sp.from, angle: dir(sp.b, sp.c2, sp.a), seg: { kind: "bezier", a: sp.b, b: sp.a, c1: sp.c2, c2: sp.c1 } });
-      });
-    } else {
-      const [s, e] = view.arcAngles(c);
-      const ctr = view.xy(c.c);
-      const r = view.arcRadius(c);
-      const a = view.xy(c.s);
-      const b = view.xy(c.e);
-      const mid: P2 = [ctr[0] + r * Math.cos((s + e) / 2), ctr[1] + r * Math.sin((s + e) / 2)];
-      // CCW from s: tangent = radius direction + 90°; reversed from e: radius direction − 90°.
-      add({ curve: c.id, from: c.s, to: c.e, angle: s + Math.PI / 2, seg: { kind: "arc", a, b, mid } });
-      add({ curve: c.id, from: c.e, to: c.s, angle: e - Math.PI / 2, seg: { kind: "arc", a: b, b: a, mid } });
-    }
-  }
+  for (const h of curveEdges(view)) add(h);
 
-  // Open chains cannot bound anything: prune dangling edges repeatedly.
   let pruned = true;
   while (pruned) {
     pruned = false;
@@ -146,6 +108,86 @@ export function findRegions(sk: SketchFeature): ProfileRegion[] {
   }
 
   return nestEvenOdd(faces);
+}
+
+
+/**
+ * The drawn curves of a sketch as one open chain, from one free end to the other: the path of a
+ * sweep. Circles, ellipses and construction lines are left out. A problem says what is wrong.
+ */
+export function openPath(sk: SketchFeature): { segments: ProfileSegment[]; problem?: string } {
+  const view = new SketchView(sk);
+  const edges = curveEdges(view);
+  if (!edges.length) return { segments: [], problem: "The path sketch has no line, arc or curve" };
+  // Ends meet when they share a point, or sit at the same place (imported drawings).
+  const place = (pid: string) => {
+    const [x, y] = view.xy(pid);
+    return `${Math.round(x * 1e4)},${Math.round(y * 1e4)}`;
+  };
+  const at = new Map<string, HalfEdge[]>();
+  for (const h of edges) {
+    const k = place(h.from);
+    if (!at.has(k)) at.set(k, []);
+    at.get(k)!.push(h);
+  }
+  const free = [...at.values()].filter((hs) => hs.length === 1);
+  if (!free.length) return { segments: [], problem: "The path must be open: a closed loop cannot be a path" };
+  if (free.length > 2 || [...at.values()].some((hs) => hs.length > 2)) return { segments: [], problem: "The path must be one chain of lines, arcs or curves, with nothing branching off" };
+  const segments: ProfileSegment[] = [];
+  const done = new Set<string>();
+  let h: HalfEdge | undefined = free[0][0];
+  while (h && !done.has(h.curve)) {
+    done.add(h.curve);
+    segments.push(h.seg);
+    h = at.get(place(h.to))?.find((x) => x.curve !== h!.curve);
+  }
+  if (done.size * 2 !== edges.length) return { segments: [], problem: "The path must be one chain: some lines are apart from it" };
+  return { segments };
+}
+
+/** Both directions of every drawn line, arc and curve of a sketch (each spline span on its own). */
+function curveEdges(view: SketchView): HalfEdge[] {
+  const edges: HalfEdge[] = [];
+  const add = (h: HalfEdge) => edges.push(h);
+  for (const c of view.curves()) {
+    if (c.construction || c.type === "circle" || c.type === "ellipse") continue;
+    if (c.type === "line") {
+      const a = view.xy(c.p1);
+      const b = view.xy(c.p2);
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) continue;
+      const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      add({ curve: c.id, from: c.p1, to: c.p2, angle: ang, seg: { kind: "line", a, b } });
+      add({ curve: c.id, from: c.p2, to: c.p1, angle: ang + Math.PI, seg: { kind: "line", a: b, b: a } });
+    } else if (c.type === "bezier") {
+      const sp = view.bezierSpan(c);
+      if (c.p0 === c.p3) continue;
+      const dir = (p: P2, q: P2, r: P2) =>
+        Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9 ? Math.atan2(q[1] - p[1], q[0] - p[0]) : Math.atan2(r[1] - p[1], r[0] - p[0]);
+      add({ curve: c.id, from: c.p0, to: c.p3, angle: dir(sp.a, sp.c1, sp.c2), seg: { kind: "bezier", a: sp.a, b: sp.b, c1: sp.c1, c2: sp.c2 } });
+      add({ curve: c.id, from: c.p3, to: c.p0, angle: dir(sp.b, sp.c2, sp.c1), seg: { kind: "bezier", a: sp.b, b: sp.a, c1: sp.c2, c2: sp.c1 } });
+    } else if (c.type === "spline") {
+      // Direction leaving `p` towards its control point (or the far end if they coincide).
+      const dir = (p: P2, q: P2, r: P2) =>
+        Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9 ? Math.atan2(q[1] - p[1], q[0] - p[0]) : Math.atan2(r[1] - p[1], r[0] - p[0]);
+      view.splineSpans(c).forEach((sp, i) => {
+        if (sp.from === sp.to) return;
+        const curve = `${c.id}#${i}`;
+        add({ curve, from: sp.from, to: sp.to, angle: dir(sp.a, sp.c1, sp.b), seg: { kind: "bezier", a: sp.a, b: sp.b, c1: sp.c1, c2: sp.c2 } });
+        add({ curve, from: sp.to, to: sp.from, angle: dir(sp.b, sp.c2, sp.a), seg: { kind: "bezier", a: sp.b, b: sp.a, c1: sp.c2, c2: sp.c1 } });
+      });
+    } else {
+      const [s, e] = view.arcAngles(c);
+      const ctr = view.xy(c.c);
+      const r = view.arcRadius(c);
+      const a = view.xy(c.s);
+      const b = view.xy(c.e);
+      const mid: P2 = [ctr[0] + r * Math.cos((s + e) / 2), ctr[1] + r * Math.sin((s + e) / 2)];
+      // CCW from s: tangent = radius direction + 90°; reversed from e: radius direction − 90°.
+      add({ curve: c.id, from: c.s, to: c.e, angle: s + Math.PI / 2, seg: { kind: "arc", a, b, mid } });
+      add({ curve: c.id, from: c.e, to: c.s, angle: e - Math.PI / 2, seg: { kind: "arc", a: b, b: a, mid } });
+    }
+  }
+  return edges;
 }
 
 function nestEvenOdd(faces: Face[]): ProfileRegion[] {

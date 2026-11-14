@@ -251,6 +251,32 @@ export interface RevolveFeature {
   body?: BodyTarget;
 }
 
+/** Pushes a sketch's closed regions along an open path drawn in another sketch (a tube along a bend). */
+export interface SweepFeature {
+  id: string;
+  kind: "sweep";
+  name: string;
+  /** The profile: a closed sketch, drawn where the path starts. */
+  sketchId: string;
+  /** The path: one open chain of lines, arcs or curves in another sketch. */
+  pathSketchId: string;
+  op: ExtrudeOp;
+  body?: BodyTarget;
+}
+
+/** A solid through the closed region of two or more sketches, one after the other (a handle, a funnel). */
+export interface LoftFeature {
+  id: string;
+  kind: "loft";
+  name: string;
+  /** In order: the solid goes from the first to the last. */
+  sketchIds: string[];
+  /** Straight between the sketches (facets) instead of a smooth surface. */
+  ruled: boolean;
+  op: ExtrudeOp;
+  body?: BodyTarget;
+}
+
 export type Axis = "X" | "Y" | "Z";
 
 /**
@@ -321,6 +347,8 @@ export type Feature =
   | SketchFeature
   | ExtrudeFeature
   | RevolveFeature
+  | SweepFeature
+  | LoftFeature
   | PushPullFeature
   | ShellFeature
   | FilletFeature

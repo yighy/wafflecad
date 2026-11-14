@@ -203,7 +203,7 @@ export function usedNames(doc: CadDocument, except?: string): Set<string> {
             ? [f.radiusExpr ?? ""]
             : f.kind === "hole"
               ? [f.depthExpr ?? ""]
-              : f.kind === "pattern" || f.kind === "import" || f.kind === "combine"
+              : f.kind === "pattern" || f.kind === "import" || f.kind === "combine" || f.kind === "sweep" || f.kind === "loft"
                 ? []
                 : f.kind === "revolve"
                   ? [f.angleExpr ?? ""]

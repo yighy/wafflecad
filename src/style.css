@@ -1664,6 +1664,42 @@ body.busy #status-pill .dot {
 .align-row .seg button:disabled {
   opacity: 0.4;
 }
+/* Sweep and loft: a sketch chosen in a list, per row. */
+.sl-row > span {
+  width: 56px;
+  font-size: 13px;
+  text-align: left;
+}
+.sl-row .pick {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 8px 0 14px;
+  border: none;
+  border-radius: 14px;
+  background: var(--card2);
+  color: var(--text);
+  font-weight: 600;
+}
+.sl-row .pick > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sl-row .pick.empty {
+  color: var(--muted);
+}
+.sl-row .drop {
+  flex: none;
+  width: 42px;
+  min-height: 42px;
+  border: none;
+  border-radius: 14px;
+  background: var(--card2);
+  color: var(--muted);
+}
 .chip.muted {
   opacity: 0.55;
 }

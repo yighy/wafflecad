@@ -2,7 +2,7 @@ import "@fontsource-variable/dm-sans/wght.css";
 import "./style.css";
 import * as THREE from "three";
 import planegcsWasm from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
-import type { Axis, BuildResult, BundledProject, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
+import type { Axis, BuildResult, BundledProject, CadDocument, Clash, CombineFeature, Mate, MateRef, PartInstance, ExtrudeFeature, RevolveFeature, SweepFeature, LoftFeature, ExtrudeOp, FaceRef, Feature, FilletFeature, HoleFeature, Parameter, PatternFeature, PlaneDef, PushPullFeature, ShellFeature, SketchFeature, SkEntity, Vec3, WorkerRequest, WorkerResponse } from "./types";
 import { DIMENSION_TYPES } from "./types";
 import { NAME_RE, applyParameters, dropSharedCopies, expressionSlots, hasNames, identifiers, partParameters, renameInExpr, resolveParameters, sharedUsed, usedNames } from "./params";
 import { Viewport, cssVar, type DisplayMode, type LineBatch } from "./view/viewport";
@@ -181,6 +181,9 @@ type Mode =
   | { kind: "hole"; feat: HoleFeature; keypad: KeypadHandle }
   | { kind: "pattern"; feat: PatternFeature; keypad: KeypadHandle }
   | { kind: "revolve"; feat: RevolveFeature; keypad: KeypadHandle }
+  /** Choosing the sketches of a sweep or a loft in the panel (no keypad: nothing to type). */
+  | { kind: "sweep"; feat: SweepFeature }
+  | { kind: "loft"; feat: LoftFeature }
   | { kind: "place"; feat: PartInstance; keypad: KeypadHandle }
   /** Choosing the two faces or holes of a new mate. */
   | { kind: "mate"; picks: MatePick[] }
@@ -199,6 +202,9 @@ interface MatePick {
 
 /** Modes where a feature is being edited with the keypad open. */
 const isOperation = (m: Mode): m is Extract<Mode, { keypad: KeypadHandle }> => "keypad" in m;
+/** The sketches a feature is made from: hidden in the part view once used, deleted with them. */
+const usedSketchIds = (f: Feature): string[] =>
+  f.kind === "extrude" || f.kind === "revolve" ? [f.sketchId] : f.kind === "sweep" ? [f.sketchId, f.pathSketchId] : f.kind === "loft" ? f.sketchIds : [];
 
 const emptyDoc = (): CadDocument => ({ format: "waffle", version: 1, features: [] });
 /** Listed by name, in natural order: "Part 2" before "Part 10", whatever the case. */
@@ -743,6 +749,10 @@ function escape(): boolean {
   }
   if (mode.kind === "mate") {
     startMate();
+    return true;
+  }
+  if (mode.kind === "sweep" || mode.kind === "loft") {
+    endSweepLoft(false);
     return true;
   }
   if (mode.kind === "align") {
@@ -2798,6 +2808,163 @@ async function revolveTool(existing?: RevolveFeature) {
 /** Set while a revolve is being edited: receives the line tapped as the new axis. */
 let revolveAxisPicker: ((lineId: string) => void) | null = null;
 
+// ---------- Sweep and loft ----------
+
+const allSketches = () => doc.features.filter((f): f is SketchFeature => f.kind === "sketch");
+/** The feature as it was before editing began (null: it is new, cancelling removes it). */
+let sweepLoftBefore: SweepFeature | LoftFeature | null = null;
+
+/** A profile sketch pushed along a path drawn in another sketch. */
+function startSweep(existing?: SweepFeature) {
+  if (isOperation(mode) || mode.kind === "sweep" || mode.kind === "loft") return;
+  let f = existing;
+  if (!f) {
+    const sketches = allSketches();
+    if (sketches.length < 2) return toast("Draw the profile, and its path in another sketch");
+    if (mode.kind === "sketch") exitSketch();
+    // The profile: the sketch chosen if closed, else the last closed one; the path: the latest other sketch, open if there is one.
+    const chosen = pickSketchForExtrude();
+    const profile = (chosen && findRegions(chosen).length ? chosen : null) ?? [...sketches].reverse().find((s) => findRegions(s).length) ?? sketches[sketches.length - 1];
+    const others = sketches.filter((s) => s.id !== profile.id);
+    const path = [...others].reverse().find((s) => !findRegions(s).length) ?? others[others.length - 1];
+    f = { id: uid(), kind: "sweep", name: nextName("Sweep"), sketchId: profile.id, pathSketchId: path.id, op: "add" };
+    doc.features.push(f);
+  } else if (mode.kind === "sketch") exitSketch();
+  sweepLoftBefore = existing ? structuredClone(existing) : null;
+  beginSweepLoft({ kind: "sweep", feat: f });
+}
+
+/** A solid through two or more sketches, in order. */
+function startLoft(existing?: LoftFeature) {
+  if (isOperation(mode) || mode.kind === "sweep" || mode.kind === "loft") return;
+  let f = existing;
+  if (!f) {
+    const sketches = allSketches();
+    if (sketches.length < 2) return toast("Draw two sketches on different planes first");
+    if (mode.kind === "sketch") exitSketch();
+    // The last two sketches not used yet, else the last two.
+    const used = new Set(doc.features.flatMap(usedSketchIds));
+    const free = sketches.filter((s) => !used.has(s.id));
+    const pick = (free.length >= 2 ? free : sketches).slice(-2);
+    f = { id: uid(), kind: "loft", name: nextName("Loft"), sketchIds: pick.map((s) => s.id), ruled: false, op: "add" };
+    doc.features.push(f);
+  } else if (mode.kind === "sketch") exitSketch();
+  sweepLoftBefore = existing ? structuredClone(existing) : null;
+  beginSweepLoft({ kind: "loft", feat: f });
+}
+
+function beginSweepLoft(m: Extract<Mode, { kind: "sweep" | "loft" }>) {
+  if (measuring) endMeasure();
+  selectedFeature = m.feat.id;
+  selectedFace = null;
+  showParams = false;
+  vp.highlightFace(null);
+  mode = m;
+  renderAll();
+  rebuild(true);
+}
+
+/** Confirm keeps the step as set; Cancel puts it back as it was, or removes it if it is new. */
+function endSweepLoft(keep: boolean) {
+  if (mode.kind !== "sweep" && mode.kind !== "loft") return;
+  const f = mode.feat;
+  if (keep && f.kind === "loft" && f.sketchIds.length < 2) return toast("Choose at least two sketches");
+  if (keep && f.kind === "sweep" && f.sketchId === f.pathSketchId) return toast("The path must be another sketch than the profile");
+  mode = { kind: "part" };
+  if (keep) return commit();
+  if (sweepLoftBefore) Object.assign(f, sweepLoftBefore);
+  else {
+    doc.features = doc.features.filter((x) => x !== f);
+    selectedFeature = null;
+  }
+  sweepLoftBefore = null;
+  rebuild(true);
+  renderAll();
+}
+
+function renderSweepLoftPanel(el: HTMLElement, head: (title: string, sub?: string, err?: boolean) => void, actions: (items: [string, string, () => void, string?][]) => void) {
+  if (mode.kind !== "sweep" && mode.kind !== "loft") return;
+  const f = mode.feat;
+  const err = lastBuild?.errors[f.id];
+  head(f.name, err ?? (f.kind === "sweep" ? "A profile pushed along a path" : "A solid through the sketches, in their order"), !!err);
+  const sketches = allSketches();
+  const nameOf = (id: string) => sketches.find((s) => s.id === id)?.name ?? "Missing sketch";
+  const changed = () => {
+    rebuild();
+    renderPanel();
+    renderTimeline();
+    renderPartOverlays();
+  };
+  const row = (label: string, ...items: HTMLElement[]) => {
+    const r = document.createElement("div");
+    r.className = "align-row sl-row";
+    r.innerHTML = "<span></span>";
+    r.querySelector("span")!.textContent = label;
+    r.append(...items);
+    el.appendChild(r);
+  };
+  // A sketch chosen in a list: the ones taken elsewhere in this step are left out.
+  const picker = (current: string | null, taken: string[], pick: (id: string) => void) => {
+    const b = document.createElement("button");
+    b.className = "pick" + (current ? "" : " empty");
+    b.innerHTML = `<span></span>${icon("chevron", 16)}`;
+    b.querySelector("span")!.textContent = current ? nameOf(current) : "Choose a sketch…";
+    b.onclick = () => {
+      const choices = sketches.filter((s) => !taken.includes(s.id) && s.id !== current);
+      if (!choices.length) return toast("No other sketch to choose");
+      toggleBarMenu(b, choices.map((s): [string, () => void] => [s.name, () => pick(s.id)]));
+    };
+    return b;
+  };
+  const segRow = (label: string, options: { value: string; label: string }[], get: () => string, set: (v: string) => void) => {
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    for (const o of options) {
+      const b = document.createElement("button");
+      b.textContent = o.label;
+      b.classList.toggle("on", get() === o.value);
+      b.onclick = () => {
+        set(o.value);
+        changed();
+      };
+      seg.appendChild(b);
+    }
+    row(label, seg);
+  };
+  if (f.kind === "sweep") {
+    row("Profile", picker(f.sketchId, [f.pathSketchId], (id) => void ((f.sketchId = id), changed())));
+    row("Path", picker(f.pathSketchId, [f.sketchId], (id) => void ((f.pathSketchId = id), changed())));
+  } else {
+    f.sketchIds.forEach((id, i) => {
+      const drop = document.createElement("button");
+      drop.className = "drop";
+      drop.innerHTML = icon("close", 18);
+      drop.setAttribute("aria-label", `Remove ${nameOf(id)}`);
+      drop.onclick = () => {
+        f.sketchIds.splice(i, 1);
+        changed();
+      };
+      // Two are the least a loft can have: one of them cannot be dropped, only replaced.
+      row(String(i + 1), picker(id, f.sketchIds, (next) => void ((f.sketchIds[i] = next), changed())), ...(f.sketchIds.length > 2 ? [drop] : []));
+    });
+    if (f.sketchIds.length < sketches.length) row("", picker(null, f.sketchIds, (id) => void (f.sketchIds.push(id), changed())));
+    segRow("Surface", [{ value: "smooth", label: "Smooth" }, { value: "ruled", label: "Ruled" }], () => (f.ruled ? "ruled" : "smooth"), (v) => (f.ruled = v === "ruled"));
+  }
+  segRow("Result", [{ value: "add", label: "Join" }, { value: "cut", label: "Cut" }, { value: "intersect", label: "Intersect" }], () => f.op, (v) => (f.op = v as ExtrudeOp));
+  for (const s of bodySegment(f)) segRow("Body", s.options, s.get, s.set);
+  const hint = document.createElement("p");
+  hint.className = "p-hint";
+  hint.textContent =
+    f.kind === "sweep"
+      ? "Draw the profile across the start of the path, on a plane facing along it. The path is one chain of lines, arcs or curves; a bend tighter than the profile is wide cannot be swept."
+      : "Each sketch gives one closed outline; the solid goes from the first to the last. Sketches on offset planes, one above the other, loft best.";
+  el.appendChild(hint);
+  actions([
+    ["close", "Cancel", () => endSweepLoft(false)],
+    ["check", "Confirm", () => endSweepLoft(true), "primary"],
+  ]);
+}
+
 /** A line of the sketch near a screen point (drawn and construction lines). */
 function pickSketchLine(sk: SketchFeature, p: Ptr): string | null {
   const R = p.kind === "touch" ? 24 : p.kind === "pen" ? 14 : 9;
@@ -3425,13 +3592,13 @@ async function showSharedUse(rows: Map<string, HTMLElement>) {
 
 /** The selected sketch, or the last sketch not yet used by a feature. */
 const NEED_SOLID = "Make a solid first (Sketch, then Extrude)";
-const hasSolid = () => doc.features.some((f) => f.kind === "extrude" || f.kind === "revolve" || f.kind === "import" || f.kind === "combine");
+const hasSolid = () => doc.features.some((f) => f.kind === "extrude" || f.kind === "revolve" || f.kind === "sweep" || f.kind === "loft" || f.kind === "import" || f.kind === "combine");
 
 function pickSketchForExtrude(): SketchFeature | null {
   if (mode.kind === "sketch") return mode.editor.sk;
   const sel = doc.features.find((f) => f.id === selectedFeature);
   if (sel?.kind === "sketch") return sel;
-  const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" || f.kind === "revolve" ? [f.sketchId] : [])));
+  const used = new Set(doc.features.flatMap(usedSketchIds));
   const free = doc.features.filter((f): f is SketchFeature => f.kind === "sketch" && !used.has(f.id));
   return free[free.length - 1] ?? null;
 }
@@ -3445,7 +3612,7 @@ function renameFeature(f: Feature) {
 }
 
 function deleteFeature(f: Feature) {
-  const dependents = doc.features.filter((x) => x.kind === "extrude" && x.sketchId === f.id);
+  const dependents = doc.features.filter((x) => usedSketchIds(x).includes(f.id));
   doc.features = doc.features.filter((x) => x !== f && !dependents.includes(x));
   selectedFeature = null;
   if (dependents.length) toast(`Also deleted ${dependents.map((d) => d.name).join(", ")}`);
@@ -3618,7 +3785,7 @@ function renderWorkspace() {
   el.replaceChildren();
   el.setAttribute("aria-label", "File");
   // In the middle of a step, finish it first.
-  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align" || mode.kind === "combine";
+  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align" || mode.kind === "combine" || mode.kind === "sweep" || mode.kind === "loft";
   const items: [string, string, (() => void) | [string, () => void][]][] = [
     ["folder", "Projects", () => void showProjects()],
     [
@@ -3705,7 +3872,7 @@ export function renderWorkspaceTabs() {
   el.replaceChildren();
   const cur = currentWorkspace();
   // In the middle of a step (keypad open, choosing a mate…), finish it first.
-  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align" || mode.kind === "combine";
+  const busy = isOperation(mode) || mode.kind === "mate" || mode.kind === "align" || mode.kind === "combine" || mode.kind === "sweep" || mode.kind === "loft";
   const tips: Record<Workspace, string> = {
     sketch: isAssembly() ? "Open a part in its last sketch" : "Edit the selected sketch, or start one",
     part: mode.kind === "sketch" ? "Finish the sketch" : isAssembly() ? "Open a part of this assembly" : "The part",
@@ -3732,7 +3899,7 @@ async function goWorkspace(w: Workspace) {
     if (isAssembly()) return openPartOfAssembly(true);
     // The selected sketch (or the one an extrusion or revolution uses), else a new one.
     const sel = doc.features.find((f) => f.id === selectedFeature);
-    const id = sel?.kind === "sketch" ? sel.id : sel?.kind === "extrude" || sel?.kind === "revolve" ? sel.sketchId : null;
+    const id = sel?.kind === "sketch" ? sel.id : sel ? (usedSketchIds(sel)[0] ?? null) : null;
     const sk = doc.features.find((f): f is SketchFeature => f.id === id && f.kind === "sketch");
     return sk ? enterSketch(sk) : startNewSketch();
   }
@@ -4141,6 +4308,9 @@ function renderTools() {
       el.appendChild(section("Features"));
       el.appendChild(toolRow("extrude", "Extrude", () => void extrude(), { key: "E", disabled: needSketch }));
       el.appendChild(toolRow("revolve", "Revolve", () => void revolveTool(), { key: "V", disabled: needSketch }));
+      const two = allSketches().length >= 2 ? undefined : "Draw a second sketch first";
+      el.appendChild(toolRow("sweep", "Sweep", () => startSweep(), { active: mode.kind === "sweep", disabled: two }));
+      el.appendChild(toolRow("loft", "Loft", () => startLoft(), { active: mode.kind === "loft", disabled: two }));
     }
     if (solid) {
       // A tool waiting for a face is put down by tapping it again.
@@ -4216,7 +4386,7 @@ function renderPanel() {
   const what =
     mode.kind === "sketch"
       ? `sketch:${mode.editor.sk.id}`
-      : isOperation(mode)
+      : isOperation(mode) || mode.kind === "sweep" || mode.kind === "loft"
         ? `op:${mode.feat.id}`
         : measuring
           ? "measure"
@@ -4317,6 +4487,7 @@ function renderPanel() {
   }
   if (mode.kind === "align") return renderAlignPanel(el, head, actions);
   if (mode.kind === "combine") return renderCombinePanel(el, head, actions);
+  if (mode.kind === "sweep" || mode.kind === "loft") return renderSweepLoftPanel(el, head, actions);
   if (mode.kind === "mate") {
     const n = mode.picks.length;
     head("New mate", n ? `On ${partLabel(mode.picks[0].ref.part)} · now the other part` : "Tap a face or a hole of a part");
@@ -4466,6 +4637,8 @@ function renderPanel() {
     else if (f.kind === "hole") items.push(["edit", "Edit", () => void holeTool(f)]);
     else if (f.kind === "pattern") items.push(["edit", "Edit", () => void patternTool(f.type, f)]);
     else if (f.kind === "revolve") items.push(["edit", "Edit", () => void revolveTool(f)]);
+    else if (f.kind === "sweep") items.push(["edit", "Edit", () => startSweep(f)]);
+    else if (f.kind === "loft") items.push(["edit", "Edit", () => startLoft(f)]);
     else if (f.kind === "import")
       items.push([
         f.op === "add" ? "cut" : "extrude",
@@ -4478,7 +4651,7 @@ function renderPanel() {
       ]);
     else if (f.kind === "shell") items.push(["edit", "Edit", () => void shell(f)]);
     items.push(["rename", "Rename", () => renameFeature(f)]);
-    if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "import") && lastBuild?.bodies?.some((b) => b.id === f.id) && lastBuild.bodies.length > 1) {
+    if ((f.kind === "extrude" || f.kind === "revolve" || f.kind === "sweep" || f.kind === "loft" || f.kind === "import") && lastBuild?.bodies?.some((b) => b.id === f.id) && lastBuild.bodies.length > 1) {
       items.push(["rename", "Rename body", () => renameBody(f.id)]);
       items.push([hiddenBodies.has(f.id) ? "eye" : "eyeOff", hiddenBodies.has(f.id) ? "Show body" : "Hide body", () => toggleBody(f.id)]);
       const others = lastBuild.bodies.filter((b) => b.id !== f.id);
@@ -4597,6 +4770,9 @@ function featureDetail(f: Feature) {
   if (f.kind === "fillet")
     return `${f.mode === "fillet" ? "Radius" : "Chamfer"} ${fmtNum(f.radius)} mm · ${f.edges.length} edge${f.edges.length > 1 ? "s" : ""}`;
   const op = f.op === "add" ? "Join" : f.op === "cut" ? "Cut" : "Intersect";
+  const skName = (id: string) => doc.features.find((x) => x.id === id)?.name ?? "?";
+  if (f.kind === "sweep") return `${op} · ${skName(f.sketchId)} along ${skName(f.pathSketchId)}${bodyNote(f)}`;
+  if (f.kind === "loft") return `${op} · through ${f.sketchIds.map(skName).join(", ")}${f.ruled ? " · ruled" : ""}${bodyNote(f)}`;
   return `${op} · ${fmtNum(Math.abs(f.distance))} mm${f.symmetric ? " · symmetric" : ""}${bodyNote(f)}`;
 }
 
@@ -4608,6 +4784,8 @@ function featureIcon(f: Feature) {
   if (f.kind === "hole") return "hole";
   if (f.kind === "pattern") return f.type;
   if (f.kind === "revolve") return "revolve";
+  if (f.kind === "sweep") return "sweep";
+  if (f.kind === "loft") return "loft";
   if (f.kind === "import") return "import";
   if (f.kind === "combine") return "combine";
   return f.op === "cut" ? "cut" : f.op === "intersect" ? "intersect" : "extrude";
@@ -4738,6 +4916,8 @@ function renderStatus() {
   else if (mode.kind === "pushpull") s = "Press Pull · drag the handle or type a value";
   else if (mode.kind === "shell") s = "Shell · tap the faces to open, type the wall thickness";
   else if (mode.kind === "revolve") s = "Revolve · tap a line of the sketch to use it as the axis";
+  else if (mode.kind === "sweep") s = "Sweep · choose the profile and the path in the panel";
+  else if (mode.kind === "loft") s = "Loft · choose the sketches, in order, in the panel";
   else if (mode.kind === "pattern") {
     const f = mode.feat;
     s = f.featureIds.length ? `${f.name} · tap timeline steps to add or remove them` : `${f.name} · the whole solid, or tap the steps to repeat in the timeline`;
@@ -4974,16 +5154,16 @@ function renderViewButtons() {
 /** Sketches not consumed by a feature stay visible in the part view. */
 function renderPartOverlays() {
   if (mode.kind === "sketch") return;
-  const used = new Set(doc.features.flatMap((f) => (f.kind === "extrude" || f.kind === "revolve" ? [f.sketchId] : [])));
+  const used = new Set(doc.features.flatMap(usedSketchIds));
   const sel = doc.features.find((f) => f.id === selectedFeature);
-  const highlight = sel?.kind === "sketch" ? sel.id : sel?.kind === "extrude" || sel?.kind === "revolve" ? sel.sketchId : null;
+  const highlight = new Set(sel?.kind === "sketch" ? [sel.id] : sel ? usedSketchIds(sel) : []);
   const batch: LineBatch = { positions: [], colors: [], width: 2, overlay: true };
   const hi = rgb("--sk-selected");
   const normal = rgb("--sk-line");
   for (const f of doc.features) {
     if (f.kind !== "sketch") continue;
-    if (used.has(f.id) && f.id !== highlight) continue;
-    appendSketchLines(batch, f, f.id === highlight ? hi : normal);
+    if (used.has(f.id) && !highlight.has(f.id)) continue;
+    appendSketchLines(batch, f, highlight.has(f.id) ? hi : normal);
   }
   if (mode.kind === "revolve") {
     const f = mode.feat;

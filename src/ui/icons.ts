@@ -74,6 +74,8 @@ const P: Record<string, string> = {
   combine: '<rect x="3" y="7" width="11" height="11" rx="1.5" fill="currentColor" fill-opacity=".14"/><circle cx="15" cy="10" r="6" fill="currentColor" fill-opacity=".14"/>',
   glyphs: '<path d="M4 20h16M7 20V5"/><rect x="7" y="15" width="5" height="5" fill="currentColor" fill-opacity=".3"/><rect x="13" y="4" width="7" height="7" rx="2" fill="currentColor" fill-opacity=".14"/>',
   chevron: '<path d="M9 6l7 6-7 6z" fill="currentColor" fill-opacity=".14"/>',
+  sweep: '<path d="M4 20V11a7 7 0 0 1 7-7h9" opacity=".45"/><path d="M9 20v-9a2 2 0 0 1 2-2h9" opacity=".45"/><ellipse cx="6.5" cy="20" rx="2.5" ry="1" fill="currentColor" fill-opacity=".14"/><ellipse cx="20" cy="6.5" rx="1" ry="2.5" fill="currentColor" fill-opacity=".14"/>',
+  loft: '<path d="M4 19h16l-4-13H8z" fill="currentColor" fill-opacity=".14"/><path d="M4 19h16M8 6h8"/><path d="M6.7 12.5h10.6" opacity=".45"/>',
   backspace: '<path d="M8 5h12v14H8l-6-7z" fill="currentColor" fill-opacity=".14"/><path d="M11 9l6 6M17 9l-6 6"/>',
   plus: '<circle cx="12" cy="12" r="9" fill="currentColor" fill-opacity=".14"/><path d="M12 8v8M8 12h8"/>',
   save: '<path d="M5 3h11l3 3v13.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19.5z" fill="currentColor" fill-opacity=".14"/><path d="M8 3v5h7V3M8 21v-6h8v6"/>',

@@ -3,7 +3,7 @@ import opencascade from "replicad-opencascadejs";
 import { measureVolume, setOC } from "replicad";
 import { Solver } from "../src/sketch/solver";
 import { constraintName, deleteEntities, entityName, mergePoints, newSketch, uid } from "../src/sketch/model";
-import { findRegions, sampleSegments, signedArea } from "../src/sketch/profiles";
+import { findRegions, openPath, sampleSegments, signedArea } from "../src/sketch/profiles";
 import { trimPlan } from "../src/sketch/trim";
 import { parseDxf } from "../src/sketch/dxf";
 import { parseSvg } from "../src/sketch/svg";
@@ -285,6 +285,49 @@ rs = rv({ axisLine: rvRect.lines[3] });
 check("revolve around the profile's own edge", !rs.errors.rv && near(measureVolume(rs.shape!), Math.PI * 25 * 20, 1e-2), `vol=${rs.shape && measureVolume(rs.shape)}`);
 rs = rv({ axisLine: "nope" });
 check("missing axis reported", !!rs.errors.rv, JSON.stringify(rs.errors));
+
+// --- Sweep: a 4 mm circle on YZ (drawn where the path starts), along an L of 20 + 10 mm drawn on XY.
+const YZ: PlaneDef = { origin: [0, 0, 0], xDir: [0, 1, 0], normal: [1, 0, 0], label: "YZ" };
+const swProfile = newSketch("SWP", YZ);
+swProfile.entities.push({ id: "swc", type: "point", x: 0, y: 0 }, { id: "swo", type: "circle", c: "swc", r: 2 });
+const swPath = newSketch("SWL", XY);
+swPath.entities.push(
+  { id: "pa", type: "point", x: 0, y: 0 },
+  { id: "pb", type: "point", x: 20, y: 0 },
+  { id: "pc", type: "point", x: 20, y: 10 },
+  { id: "pl1", type: "line", p1: "pa", p2: "pb" },
+  { id: "pl2", type: "line", p1: "pb", p2: "pc" },
+);
+const sw = (more: object = {}, path: SketchFeature = swPath) =>
+  buildShape({ format: "waffle", version: 1, features: [swProfile, path, { id: "sw", kind: "sweep", name: "SW", sketchId: swProfile.id, pathSketchId: path.id, op: "add", ...more } as never] });
+let sws = sw();
+const tubeVol = Math.PI * 4 * 30;
+check("sweep along an L ≈ tube of the path's length", !sws.errors.sw && Math.abs(measureVolume(sws.shape!) - tubeVol) < tubeVol * 0.05, `${JSON.stringify(sws.errors)} vol=${sws.shape && measureVolume(sws.shape)}`);
+check("sweep reaches the end of the path", !!sws.shape && near(sws.shape.boundingBox.bounds[1][1], 10, 0.1) && near(sws.shape.boundingBox.bounds[1][0], 22, 0.1), JSON.stringify(sws.shape?.boundingBox.bounds));
+const swArc = newSketch("SWA", XY);
+swArc.entities.push({ id: "aa", type: "point", x: 0, y: 0 }, { id: "ab", type: "point", x: 10, y: 10 }, { id: "ac", type: "point", x: 0, y: 10 }, { id: "arc1", type: "arc", c: "ac", s: "aa", e: "ab" });
+sws = sw({}, swArc);
+check("sweep along an arc", !sws.errors.sw && Math.abs(measureVolume(sws.shape!) - Math.PI * 4 * (Math.PI * 10 / 2)) < 3, `${JSON.stringify(sws.errors)} vol=${sws.shape && measureVolume(sws.shape)}`);
+const closedPath = newSketch("SWX", XY);
+rect(closedPath, 0, 0, 10, 10);
+sws = sw({}, closedPath);
+check("a closed path is refused", /open/.test(sws.errors.sw ?? ""), JSON.stringify(sws.errors));
+check("openPath orders the chain from a free end", openPath(swPath).segments.map((g) => g.kind).join() === "line,line" && openPath(swPath).segments[0].a.join() === "0,0");
+
+// --- Loft: a 10 × 10 square on XY and a 4 × 4 square 20 mm above it → a frustum.
+const lfA = newSketch("LFA", XY);
+rect(lfA, -5, -5, 5, 5);
+const lfB = newSketch("LFB", { origin: [0, 0, 20], xDir: [1, 0, 0], normal: [0, 0, 1], label: "XY" });
+rect(lfB, -2, -2, 2, 2);
+const lf = (more: object = {}) =>
+  buildShape({ format: "waffle", version: 1, features: [lfA, lfB, { id: "lf", kind: "loft", name: "LF", sketchIds: [lfA.id, lfB.id], ruled: true, op: "add", ...more } as never] });
+let lfs = lf();
+const frustum = (20 / 3) * (100 + 16 + Math.sqrt(100 * 16));
+check("ruled loft of two squares = frustum", !lfs.errors.lf && near(measureVolume(lfs.shape!), frustum, 1e-2), `${JSON.stringify(lfs.errors)} vol=${lfs.shape && measureVolume(lfs.shape)}`);
+lfs = lf({ ruled: false });
+check("smooth loft of two sketches builds too", !lfs.errors.lf && near(measureVolume(lfs.shape!), frustum, 1e-2), JSON.stringify(lfs.errors));
+lfs = lf({ sketchIds: [lfA.id] });
+check("a loft needs two sketches", /two/.test(lfs.errors.lf ?? ""), JSON.stringify(lfs.errors));
 
 // --- Parameters and expressions.
 check("expression with names", evaluate("2 * w + 5", { w: 10 }) === 25);
