@@ -165,6 +165,9 @@ export function sharedUsed(doc: CadDocument, shared: Parameter[]): Parameter[] {
   return [...out.values()];
 }
 
+/** True when a part uses the shared parameter `name` (a part's own of that name hides it). */
+export const usesShared = (d: CadDocument, name: string) => !(d.parameters ?? []).some((x) => x.name === name) && usedNames(d).has(name);
+
 /** Replaces a parameter name in an expression (whole words only). */
 export function renameInExpr(src: string, from: string, to: string) {
   return src.replace(IDENT_G, (n) => (n === from ? to : n));

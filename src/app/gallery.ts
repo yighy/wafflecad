@@ -3,10 +3,11 @@
 // given once at boot: the open document and project, and the few calls back into the app.
 import type { BundledProject, CadDocument, Parameter } from "../types";
 import { deleteProject, freeName, getProject, listProjects, newProjectId, putProject, type ProjectMeta } from "../projects";
-import { sharedUsed } from "../params";
+import { resolveParameters, sharedUsed, usesShared } from "../params";
+import { choose } from "../ui/choose";
 import { icon } from "../ui/icons";
 import { uid } from "../sketch/model";
-import { ago, asDocument, byName, download, emptyDoc, keepName } from "./util";
+import { ago, asDocument, byName, download, emptyDoc, fmtNum, keepName } from "./util";
 
 export interface GalleryCtx {
   doc(): CadDocument;
@@ -25,6 +26,10 @@ export interface GalleryCtx {
   flushSave(): Promise<unknown>;
   captureThumb(): void;
   saveShared(): void;
+  /** Replaces the shared parameters (and saves them). */
+  setShared(list: Parameter[]): void;
+  /** The shared parameters changed outside the open part's history: it follows them. */
+  sharedChanged(): void;
   commit(): void;
   renderAll(): void;
 }
@@ -159,7 +164,6 @@ async function unbundle(d: CadDocument, group?: string): Promise<{ doc: CadDocum
   const main: CadDocument = { ...d };
   delete main.bundle;
   delete main.shared;
-  takeShared(d.shared ?? []);
   if (!carried.length) return { doc: main, added: 0 };
   const ids = new Map(carried.map((b) => [b.id, newProjectId()]));
   const relink = (x: CadDocument): CadDocument => {
@@ -181,22 +185,77 @@ async function unbundle(d: CadDocument, group?: string): Promise<{ doc: CadDocum
 }
 
 
-/** Shared parameters a file brings: the missing ones are added, the ones here keep their value. */
-function takeShared(brought: Parameter[]) {
+/**
+ * Shared parameters a file brings: the missing ones are added. One already here with another value
+ * is a question: the imported parts keep the file's value as their own, or follow the one here, or
+ * the file's value becomes the shared one. `docs`: the imported documents, changed in place for
+ * the first answer. False when the question is closed: the import stops there.
+ */
+async function takeShared(brought: Parameter[], docs: CadDocument[]): Promise<boolean> {
   const shared = ctx.shared();
   const here = new Map(shared.map((p) => [p.name, p]));
+  const mine = resolveParameters(shared).scope;
+  const theirs = resolveParameters(brought).scope;
+  const differs = (p: Parameter) => {
+    const a = mine[p.name];
+    const b = theirs[p.name];
+    return a === undefined || b === undefined ? here.get(p.name)!.expr.trim() !== p.expr.trim() : Math.abs(a - b) > 1e-9;
+  };
   const added = brought.filter((p) => !here.has(p.name));
-  const kept = brought.filter((p) => here.has(p.name) && here.get(p.name)!.expr !== p.expr);
-  if (added.length) {
-    shared.push(...added.map((p) => ({ ...p, id: uid() })));
-    ctx.saveShared();
+  const clash = brought.filter((p) => here.has(p.name) && differs(p));
+  const shown = (v: number | undefined, p: Parameter) => (v === undefined ? p.expr : fmtNum(v));
+  let pick = 1;
+  if (clash.length) {
+    // The parts here the file's values would change.
+    const names = new Set(clash.map((p) => p.name));
+    let mineUsing = 0;
+    for (const m of await listProjects().catch(() => [])) {
+      const d = m.id === ctx.project()?.id ? ctx.doc() : (await getProject(m.id).catch(() => null))?.doc;
+      if (d && [...names].some((n) => usesShared(d, n))) mineUsing++;
+    }
+    const one = clash.length === 1;
+    const lines = clash.slice(0, 6).map((p) => `${p.name}: ${shown(theirs[p.name], p)} in the file, ${shown(mine[p.name], here.get(p.name)!)} here`);
+    if (clash.length > 6) lines.push(`and ${clash.length - 6} more`);
+    const these = one ? clash[0].name : "these";
+    const got = await choose(one ? `${clash[0].name} has another value here` : `${clash.length} shared parameters have other values here`, lines, [
+      { label: "Keep the imported parts as they are", detail: `They get their own ${one ? `${clash[0].name} = ${shown(theirs[clash[0].name], clash[0])}` : "values of these"}. Yours keep the shared ${one ? "one" : "ones"}.`, primary: true },
+      { label: "Use the values here", detail: `The imported parts are rebuilt with ${one ? "it" : "them"}: they may change shape.` },
+      {
+        label: "Use the file's values",
+        detail: mineUsing ? `The shared ${one ? "one changes" : "ones change"} here: ${mineUsing} part${mineUsing > 1 ? "s" : ""} using ${these} change${mineUsing > 1 ? "" : "s"} too.` : `The shared ${one ? "one changes" : "ones change"} here (no part here uses ${one ? "it" : "them"} yet).`,
+        danger: mineUsing > 0,
+      },
+    ]);
+    if (got === null) return false;
+    pick = got;
   }
   const say: string[] = [];
-  if (added.length) say.push(`${added.length} shared parameter${added.length > 1 ? "s" : ""} added`);
-  if (kept.length) say.push(`${kept.map((p) => p.name).join(", ")} kept the value set here`);
+  let kept = 0;
+  if (clash.length && pick === 0) {
+    for (const d of docs) {
+      let mineNow = false;
+      for (const p of clash) {
+        if (!usesShared(d, p.name)) continue;
+        const v = theirs[p.name];
+        (d.parameters ??= []).push({ id: uid(), name: p.name, expr: v === undefined ? p.expr : String(+v.toFixed(6)) });
+        mineNow = true;
+      }
+      if (mineNow) kept++;
+    }
+    if (kept) say.push(`${kept} imported part${kept > 1 ? "s" : ""} keep${kept > 1 ? "" : "s"} the file's value${clash.length > 1 ? "s" : ""}`);
+  }
+  if (added.length || (clash.length && pick === 2)) {
+    const next = [...shared, ...added.map((p) => ({ ...p, id: uid() }))];
+    if (pick === 2) for (const p of clash) next.find((x) => x.name === p.name)!.expr = p.expr;
+    ctx.setShared(next);
+    ctx.sharedChanged();
+  }
+  if (added.length) say.unshift(`${added.length} shared parameter${added.length > 1 ? "s" : ""} added`);
+  if (clash.length && pick === 1) say.push(`${clash.map((p) => p.name).join(", ")} kept the value set here`);
+  if (clash.length && pick === 2) say.push(`${clash.map((p) => p.name).join(", ")} took the file's value`);
   if (say.length) window.setTimeout(() => ctx.toast(say.join(" · ")), 1500);
+  return true;
 }
-
 
 /** A file opened from the device becomes a new project, named after the file. */
 export function openFile() {
@@ -209,6 +268,7 @@ export function openFile() {
     try {
       const d = asDocument(JSON.parse(await f.text()));
       if (!d) throw new Error("not a WaffleCAD file");
+      if (!(await takeShared(d.shared ?? [], [d, ...(d.bundle ?? []).map((b) => b.doc).filter((x) => Array.isArray(x?.features))]))) return ctx.toast("Nothing imported");
       // A copy's date ("Model 1_2026-10-25_1842") is not part of the project's name.
       const name = f.name.replace(/(\.waffle)?\.(json|waffle|tcad)$/i, "").replace(/[ _]\d{4}-\d{2}-\d{2}[ _]\d{4}$/, "");
       // What a file brings goes in a tab of its own, named after it.
@@ -411,10 +471,12 @@ function tabMenu(anchor: HTMLElement, g: Group, inside: ProjectMeta[]) {
         drop();
         void showProjects();
       }],
-      [`Delete with its ${n}`, () => {
-        if (!confirm(`Delete the tab "${g.name}" and its ${n}? This cannot be undone.`)) return;
+      [`Delete with its ${n}`, async () => {
+        const ids = inside.map((p) => p.id);
+        const ok = await confirmDelete(`Delete the tab "${g.name}" and its ${n}?`, ids);
+        if (!ok) return;
         drop();
-        void removeProjects(inside.map((p) => p.id));
+        void removeProjects(ids, ok.shared);
       }, true],
     );
   } else {
@@ -439,8 +501,43 @@ async function moveProjects(ids: string[], group: string | undefined) {
   ctx.renderWorkspace(); // Save names the open project's tab
 }
 
-/** Projects deleted: what was open, or what Back led to, goes with them. */
-async function removeProjects(ids: string[]) {
+/**
+ * The shared parameters only these projects use (no other part does, directly or through another
+ * shared one): they would be left over once the projects are gone. None when a project could not be read.
+ */
+async function sharedOnlyIn(ids: string[]): Promise<Parameter[]> {
+  const shared = ctx.shared();
+  if (!shared.length) return [];
+  const gone = new Set<string>();
+  const kept = new Set<string>();
+  for (const m of await listProjects().catch(() => [])) {
+    const d = m.id === ctx.project()?.id ? ctx.doc() : (await getProject(m.id).catch(() => null))?.doc;
+    if (!d) return [];
+    for (const p of sharedUsed(d, shared)) (ids.includes(m.id) ? gone : kept).add(p.id);
+  }
+  return byName(shared.filter((p) => gone.has(p.id) && !kept.has(p.id)));
+}
+
+/**
+ * Asks before deleting projects: null for no. When shared parameters would be left with no part
+ * using them, the question offers to delete them too (`shared`: the ones to delete).
+ */
+async function confirmDelete(question: string, ids: string[]): Promise<{ shared: Parameter[] } | null> {
+  await ctx.flushSave();
+  const only = await sharedOnlyIn(ids);
+  if (!only.length) return confirm(`${question} This cannot be undone.`) ? { shared: [] } : null;
+  const names = only.map((p) => p.name).join(", ");
+  const one = only.length === 1;
+  const it = ids.length === 1 ? "it" : "they";
+  const got = await choose(question, ["This cannot be undone.", `Only ${it} use${ids.length === 1 ? "s" : ""} the shared ${one ? "parameter" : "parameters"} ${names}.`], [
+    { label: `Delete, with ${one ? names : `these ${only.length} shared parameters`}`, detail: `No other part uses ${one ? "it" : "them"}.`, danger: true, primary: true },
+    { label: `Delete, keep ${one ? names : "the shared parameters"}`, detail: "For parts made later." },
+  ]);
+  return got === null ? null : { shared: got === 0 ? only : [] };
+}
+
+/** Projects deleted: what was open, or what Back led to, goes with them; and the shared parameters given. */
+async function removeProjects(ids: string[], shared: Parameter[] = []) {
   for (const id of ids) await deleteProject(id).catch(() => ctx.toast("Could not delete"));
   const from = ctx.cameFrom();
   if (from && ids.includes(from.id)) {
@@ -453,6 +550,12 @@ async function removeProjects(ids: string[]) {
     const rest = await listProjects().catch(() => []);
     if (rest.length) await ctx.openProject(rest[0].id);
     else await ctx.createProject("Model 1");
+  }
+  if (shared.length) {
+    const drop = new Set(shared.map((p) => p.id));
+    ctx.setShared(ctx.shared().filter((p) => !drop.has(p.id)));
+    ctx.sharedChanged();
+    ctx.toast(`Also deleted the shared ${shared.map((p) => p.name).join(", ")}`);
   }
   void showProjects();
 }
@@ -608,17 +711,20 @@ function projectCard(p: ProjectMeta, list: ProjectMeta[], links: [string, string
   };
   const del = card.querySelector<HTMLElement>('[data-act="delete"]')!;
   del.onclick = () => {
-    const only = () => {
-      if (confirm(`Delete "${p.name}"? This cannot be undone.`)) void removeProjects([p.id]);
+    const only = async () => {
+      const ok = await confirmDelete(`Delete "${p.name}"?`, [p.id]);
+      if (ok) void removeProjects([p.id], ok.shared);
     };
-    if (!family.length) return only();
+    if (!family.length) return void only();
     // An assembly's own parts can go with it: no other project needs them.
     const n = `${family.length} part${family.length > 1 ? "s" : ""}`;
     ctx.toggleBarMenu(del, [
-      [`Delete with its ${n}`, () => {
-        if (confirm(`Delete "${p.name}" and its ${n} (${family.map((m) => m.name).join(", ")})? This cannot be undone.`)) void removeProjects([p.id, ...family.map((m) => m.id)]);
+      [`Delete with its ${n}`, async () => {
+        const ids = [p.id, ...family.map((m) => m.id)];
+        const ok = await confirmDelete(`Delete "${p.name}" and its ${n} (${family.map((m) => m.name).join(", ")})?`, ids);
+        if (ok) void removeProjects(ids, ok.shared);
       }, true],
-      ["Delete only the assembly", only],
+      ["Delete only the assembly", () => void only()],
     ]);
   };
   return card;

@@ -712,6 +712,20 @@ initGallery({
   flushSave,
   captureThumb,
   saveShared,
+  setShared: (list) => {
+    M.shared = list;
+    saveShared();
+  },
+  sharedChanged: () => {
+    // The open part follows them now; undoing past this would bring the old ones back.
+    if (catchUpShared(S.doc)) {
+      save();
+      rebuild();
+    }
+    resetHistory();
+    if (Object.keys(partDocs).length) void loadParts().then(() => rebuild());
+    renderAll();
+  },
   commit,
   renderAll,
 });

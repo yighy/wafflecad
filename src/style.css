@@ -2291,3 +2291,80 @@ body.building #status-pill .dot {
     width: 100%;
   }
 }
+
+/* ---------- A question with a few answers ---------- */
+
+.choose {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10, 12, 16, 0.45);
+  z-index: 70;
+  animation: fade 0.15s ease-out;
+}
+.choose-card {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  background: var(--card);
+  border-radius: 26px;
+  box-shadow: var(--shadow);
+  animation: rise 0.18s ease-out;
+  padding: 0 16px 16px;
+}
+.choose-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0 4px 4px;
+}
+.choose-card h2 {
+  margin: 0 auto 0 0;
+  font-size: 19px;
+}
+.choose-close {
+  border: none;
+  background: none;
+}
+.choose-text {
+  padding: 0 4px 10px;
+  color: var(--muted);
+}
+.choose-text p {
+  margin: 4px 0;
+}
+.choose-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.choose-list button {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 14px;
+  text-align: left;
+}
+.choose-list button span {
+  font-size: 13px;
+  font-weight: 400;
+  opacity: 0.8;
+}
+.param-tidy {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.param-tidy:empty {
+  display: none;
+}
+.choose-list button.primary.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--on-accent);
+}

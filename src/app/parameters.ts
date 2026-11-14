@@ -5,7 +5,7 @@ import { toggleBarMenu } from "./workspace";
 import { partDocs, sendParts } from "./assemblies";
 import { S, usedSketchIds } from "./state";
 import { asDocument, byName, fmtNum } from "./util";
-import { NAME_RE, applyParameters, dropSharedCopies, expressionSlots, hasNames, identifiers, partParameters, renameInExpr, resolveParameters, sharedUsed, usedNames } from "../params";
+import { NAME_RE, applyParameters, dropSharedCopies, expressionSlots, hasNames, identifiers, partParameters, renameInExpr, resolveParameters, sharedUsed, usedNames, usesShared } from "../params";
 import { getProject, listProjects, putProject } from "../projects";
 import { uid } from "../sketch/model";
 import { type CadDocument, type Feature, type Parameter, type SketchFeature } from "../types";
@@ -189,9 +189,6 @@ export async function changeOtherParts(change: (d: CadDocument) => boolean): Pro
   return n;
 }
 
-/** True when a part uses the shared parameter `name` (a part's own of that name hides it). */
-export const usesShared = (d: CadDocument, name: string) => !(d.parameters ?? []).some((x) => x.name === name) && usedNames(d).has(name);
-
 /** Renames a shared parameter, and where every part uses it. */
 export async function renameShared(p: Parameter) {
   const name = askName("New name (in every part using it)", p.name, p.name, M.shared);
@@ -326,7 +323,13 @@ export function renderParamsPanel(el: HTMLElement) {
       usedIn.set(p.id, where);
     }
   }
-  if (usedIn.size) void showSharedUse(usedIn);
+  // Offered once the parts are read, when some shared ones are used by none.
+  const tidy = document.createElement("div");
+  tidy.className = "param-tidy";
+  const lastShared = usedIn.get(sharedRows[sharedRows.length - 1]?.id ?? "");
+  if (lastShared) lastShared.after(tidy);
+  else list.appendChild(tidy);
+  if (usedIn.size) void showSharedUse(usedIn, tidy);
   el.appendChild(list);
   const add = document.createElement("div");
   add.className = "p-actions";
@@ -339,12 +342,16 @@ export function renderParamsPanel(el: HTMLElement) {
 }
 
 /** Under each shared parameter, the parts that use it (the open one as it is now, unsaved changes included). */
-export async function showSharedUse(rows: Map<string, HTMLElement>) {
+export async function showSharedUse(rows: Map<string, HTMLElement>, tidy?: HTMLElement) {
   const list = byName(await listProjects().catch(() => []));
   const users = new Map<string, string[]>();
+  let all = true;
   for (const m of list) {
     const d = m.id === S.project?.id ? S.doc : (await getProject(m.id).catch(() => null))?.doc;
-    if (!d) continue;
+    if (!d) {
+      all = false; // not sure what it uses: nothing is offered for deletion
+      continue;
+    }
     for (const p of sharedUsed(d, M.shared)) users.set(p.id, [...(users.get(p.id) ?? []), m.name]);
   }
   for (const [id, el] of rows) {
@@ -352,6 +359,18 @@ export async function showSharedUse(rows: Map<string, HTMLElement>) {
     const names = users.get(id) ?? [];
     el.textContent = names.length ? `In ${names.join(", ")}` : "Not used in any part yet";
   }
+  const unused = byName(M.shared.filter((p) => !users.has(p.id)));
+  if (!tidy?.isConnected || !all || !unused.length) return;
+  const b = document.createElement("button");
+  b.innerHTML = icon("trash", 18) + `<span>Delete the ${unused.length === 1 ? `unused ${unused[0].name}` : `${unused.length} unused`}</span>`;
+  b.className = "danger";
+  b.onclick = () => {
+    const names = unused.map((p) => p.name).join(", ");
+    if (!confirm(`Delete ${names}? No part uses ${unused.length === 1 ? "it" : "them"}.`)) return;
+    const drop = new Set(unused.map((p) => p.id));
+    if (applyParamChange(() => (M.shared = M.shared.filter((p) => !drop.has(p.id))))) toast(`Deleted ${names}`);
+  };
+  tidy.appendChild(b);
 }
 
 /** The selected sketch, or the last sketch not yet used by a feature. */
