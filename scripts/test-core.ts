@@ -193,6 +193,11 @@ check("face too far away sideways reported", !!pp.errors.pp, JSON.stringify(pp.e
 // A sketch drawn on the top face stays on it when the block grows a lot (5 → 40).
 const tallSk = { ...newSketch("T", { origin: [0, 0, 5], xDir: [1, 0, 0], normal: [0, 0, 1], label: "" }), face: { center: [10, 5, 5] as [number, number, number], normal: [0, 0, 1] as [number, number, number] } };
 const tall = buildShape({ format: "waffle", version: 1, features: [blockSk, { id: "eb", kind: "extrude", name: "EB", sketchId: blockSk.id, distance: 40, symmetric: false, op: "add" }, tallSk] });
+// Set 3 mm off that face and tilted: it keeps its 3 mm and its tilt.
+const offSk = { ...newSketch("O", { origin: [0, 0, 8], xDir: [1, 0, 0], normal: [0, -0.5, Math.sqrt(3) / 2], label: "", tilt: [30, 0] }), face: { center: [10, 5, 5] as [number, number, number], normal: [0, 0, 1] as [number, number, number] } };
+const off = buildShape({ format: "waffle", version: 1, features: [blockSk, { id: "eb", kind: "extrude", name: "EB", sketchId: blockSk.id, distance: 40, symmetric: false, op: "add" }, offSk] });
+const offPlane = off.movedSketches?.[offSk.id]?.plane;
+check("offset face sketch keeps its offset and tilt", !off.warnings[offSk.id] && near(offPlane?.origin[2] ?? 0, 43) && near(offPlane?.normal[1] ?? 0, -0.5), JSON.stringify([off.warnings, offPlane]));
 check("face sketch follows a much taller block", !tall.warnings[tallSk.id] && near(tall.movedSketches?.[tallSk.id]?.plane.origin[2] ?? 0, 40), JSON.stringify([tall.warnings, tall.movedSketches]));
 const sh = buildShape(block({ id: "sh", kind: "shell", name: "SH", faces: [topRef], thickness: 1 }));
 check("shell open top, 1 mm walls", !sh.errors.sh && near(measureVolume(sh.shape!), 1000 - 18 * 8 * 4, 1e-3), `${JSON.stringify(sh.errors)} vol=${sh.shape && measureVolume(sh.shape)}`);

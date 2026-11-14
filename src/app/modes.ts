@@ -128,10 +128,8 @@ export function pickPlaneAt(p: Ptr) {
     if (faceId != null) toast("Only flat faces can hold a sketch");
     return;
   }
-  if (S.mode.kind === "pickPlane" && (S.mode.offset || S.mode.tiltX || S.mode.tiltY)) {
-    plane = placedPlane(plane, S.mode);
-    face = undefined; // off the face, the sketch no longer follows it
-  }
+  // Set off a face, the sketch still follows it: the face is kept, the plane moves with it.
+  if (S.mode.kind === "pickPlane" && (S.mode.offset || S.mode.tiltX || S.mode.tiltY)) plane = placedPlane(plane, S.mode);
   createSketchOn(plane, face);
 }
 

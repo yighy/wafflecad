@@ -565,7 +565,8 @@ function replay(doc: CadDocument) {
       sketches.set(f.id, f);
       // Drawn on a face: find that face in the model built so far, and follow it along its
       // normal (a pocket on top of a box stays on top when the box grows). Sideways or tilted
-      // changes leave the plane as stored; a face gone for good is said on the step.
+      // changes leave the plane as stored; a face gone for good is said on the step. A plane set
+      // off the face (offset, tilt) moves with it by as much, so it keeps its place from the face.
       if (f.face && shape) {
         try {
           const say = noteMoved;
@@ -573,10 +574,12 @@ function replay(doc: CadDocument) {
           const face = findFace(shape, f.face);
           noteMoved = say;
           const c = face.center;
-          const d = dot([c.x, c.y, c.z], f.plane.normal) - dot(f.plane.origin, f.plane.normal);
+          const n = f.face.normal;
+          // How far the face moved along its normal (its centre may also slide within it).
+          const d = dot([c.x, c.y, c.z], n) - dot(f.face.center, n);
           const center = interiorPoint(face, [c.x, c.y, c.z]);
           if (Math.abs(d) > 1e-7 || Math.hypot(...f.face.center.map((v, i) => v - center[i])) > 1e-6) {
-            const plane: PlaneDef = Math.abs(d) > 1e-7 ? { ...f.plane, origin: add(f.plane.origin, scale(f.plane.normal, d)) } : f.plane;
+            const plane: PlaneDef = Math.abs(d) > 1e-7 ? { ...f.plane, origin: add(f.plane.origin, scale(n, d)) } : f.plane;
             sketches.set(f.id, { ...f, plane });
             movedSketches[f.id] = { plane, center };
           } else delete movedSketches[f.id];
