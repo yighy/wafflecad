@@ -68,6 +68,12 @@ function saveGroups() {
 }
 /** The tab a project is in: "" for My projects, also when its tab is gone. */
 export const groupOf = (p: ProjectMeta) => (p.group && groups.some((g) => g.id === p.group) ? p.group : "");
+
+/** The tabs holding some of `list`, for a picker: All first, then My projects and the file tabs that are not empty. */
+export function tabsOf(list: ProjectMeta[]): { id: string; name: string; count: number }[] {
+  const tabs = [{ id: "", name: "My projects" }, ...byName(groups)].map((t) => ({ ...t, count: list.filter((p) => groupOf(p) === t.id).length }));
+  return [{ id: "all", name: "All", count: list.length }, ...tabs.filter((t) => t.count)];
+}
 /** Where a new project goes: the tab Projects shows, or else the open project's. */
 export function newGroup(): string | undefined {
   const shown = document.getElementById("projects") && projectsTab !== "all";

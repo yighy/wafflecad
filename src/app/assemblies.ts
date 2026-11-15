@@ -3,9 +3,10 @@ import * as THREE from "three";
 import { M, commit, flushSave, kernelReady, openProject, pendingBodies, rebuild, renderAll, vp, worker } from "../main";
 import { stlSizeTool } from "./stlSize";
 import { catchUpShared } from "./parameters";
-import { closeProjects, newGroup } from "./gallery";
+import { closeProjects, groupOf, newGroup } from "./gallery";
+import { chooseProject } from "./workspace";
 import { S, isOperation } from "./state";
-import { ago, asDocument, byName, emptyDoc } from "./util";
+import { asDocument, byName, emptyDoc } from "./util";
 import { instanceMatrix, placementOf } from "../cad/mates";
 import { freeName, getProject, listProjects, newProjectId, putProject, type ProjectMeta } from "../projects";
 import { uid } from "../sketch/model";
@@ -68,36 +69,8 @@ export async function showPartPicker() {
     return toast("This browser cannot keep projects");
   }
   if (!list.length) return toast("Make a part in a project of its own first (New project)");
-  closeProjects();
-  const el = document.createElement("div");
-  el.id = "projects";
-  el.addEventListener("pointerdown", (e) => {
-    if (e.target === el) closeProjects();
-  });
-  el.innerHTML = `<div class="projects-card">
-    <header><h2>Insert a part</h2><button class="projects-close" aria-label="Close">${icon("close", 22)}</button></header>
-    <div class="projects-grid"></div></div>`;
-  el.querySelector<HTMLElement>(".projects-close")!.onclick = closeProjects;
-  const grid = el.querySelector(".projects-grid")!;
-  for (const p of list) {
-    const card = document.createElement("div");
-    card.className = "project-card";
-    card.innerHTML = `<button class="project-thumb"></button><div class="project-row"><div class="project-info"><div class="project-name"></div><div class="project-date"></div></div></div>`;
-    const thumb = card.querySelector<HTMLElement>(".project-thumb")!;
-    if (p.thumb) {
-      const img = document.createElement("img");
-      img.src = p.thumb;
-      img.alt = "";
-      thumb.appendChild(img);
-    } else thumb.innerHTML = icon("part", 40);
-    card.querySelector(".project-name")!.textContent = p.name;
-    card.querySelector(".project-date")!.textContent = ago(p.updated);
-    const pick = () => void pickPart(el, p);
-    thumb.onclick = pick;
-    card.querySelector<HTMLElement>(".project-info")!.onclick = pick;
-    grid.appendChild(card);
-  }
-  document.body.appendChild(el);
+  // Opens on the assembly's own tab: its parts are most likely there.
+  chooseProject("Insert a part", list, (p, el) => void pickPart(el, p), { tab: S.project ? groupOf(S.project) : "", keepOpen: true });
 }
 
 /** The bodies of a part (from the worker). */
