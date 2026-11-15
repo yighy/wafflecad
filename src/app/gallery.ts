@@ -437,6 +437,11 @@ function renderProjectTabs(row: HTMLElement, list: ProjectMeta[]) {
             saveGroups();
             void showProjects();
           }],
+          [`Delete its ${inside.length} project${inside.length > 1 ? "s" : ""}`, async () => {
+            const ids = inside.map((p) => p.id);
+            const ok = await confirmDelete(inside.length > 1 ? `Delete the ${inside.length} projects in My projects?` : `Delete "${inside[0].name}"?`, ids);
+            if (ok) void removeProjects(ids, ok.shared);
+          }, true],
         ]);
       }
     };
