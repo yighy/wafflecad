@@ -346,6 +346,8 @@ export interface ImportFeature {
   format?: "stl";
   op: "add" | "cut" | "intersect";
   body?: BodyTarget;
+  /** STL only: the mesh scaled about the file's origin (its units: 25.4 for a file in inches). */
+  scale?: number;
 }
 
 /**

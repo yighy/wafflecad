@@ -644,7 +644,10 @@ function replay(doc: CadDocument) {
       } else if (f.kind === "import") {
         const text = doc.files?.[f.fileId];
         if (!text) throw new Error("The imported file is missing");
-        solidStep(f, isMeshText(text) ? readMesh(text) : readStep(text));
+        let solid: AnySolid = isMeshText(text) ? readMesh(text) : readStep(text);
+        // Scaled about the file's origin: a file in inches or cm, or a size changed by hand.
+        if (isMesh(solid) && f.scale && f.scale !== 1) solid = transformMesh(solid, [f.scale, 0, 0, 0, 0, f.scale, 0, 0, 0, 0, f.scale, 0, 0, 0, 0, 1]);
+        solidStep(f, solid);
       } else if (f.kind === "combine") {
         // The combined parts come in as material of this part (a body of their own at first);
         // kept apart, each other part is a body of its own too.

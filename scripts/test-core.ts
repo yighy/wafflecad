@@ -1439,6 +1439,21 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("stl sketch: extruded from the mesh's top, joined to it", !sr.errors.up && sr.bodies.length === 1 && isMesh(sr.bodies[0].shape) && near(volumeOf(sr.bodies[0].shape), 1000 + 16 * 5, 1e-2), JSON.stringify([sr.errors, sr.bodies.map((b) => volumeOf(b.shape))]));
   sr = buildShape({ ...cubeDoc, features: [...cubeDoc.features, onTop, { id: "dn", kind: "extrude", name: "Down", sketchId: onTop.id, distance: -3, symmetric: false, op: "cut" }] });
   check("stl sketch: cut into the mesh from its top", !sr.errors.dn && sr.bodies.length === 1 && near(volumeOf(sr.bodies[0].shape), 1000 - 16 * 3, 1e-2), JSON.stringify([sr.errors, sr.bodies.map((b) => volumeOf(b.shape))]));
+
+  // Scale: a 1 × 1 × 2 file in inches, brought to mm about the file's origin; in an assembly too.
+  const inchDoc = (scale?: number): CadDocument => {
+    const d = meshDoc(boxStl([1, 0, 0], [2, 1, 2]), "add", "new");
+    const f = d.features[0];
+    if (f.kind === "import") f.scale = scale;
+    return d;
+  };
+  sr = buildShape(inchDoc(25.4));
+  const sb = boxOf(sr.bodies[0]?.shape);
+  check("stl scale: a file in inches, in mm", !sr.errors.im && near(volumeOf(sr.bodies[0].shape), 2 * 25.4 ** 3, 1e-2) && !!sb && near(sb[0][0], 25.4, 1e-4) && near(sb[1][2], 50.8, 1e-4), JSON.stringify([sr.errors, sb]));
+  check("stl scale: none, as in the file", near(volumeOf(buildShape(inchDoc()).bodies[0].shape), 2, 1e-6));
+  setPartDocs({ inch: inchDoc(25.4) });
+  const sa = buildShape(asm({ id: "i", project: "inch", name: "Inch", at: [0, 0, 0], rot: [0, 0, 0] }));
+  check("stl scale: the assembly shows the part at its size", near(volumeOf(sa.bodies[0]?.shape), 2 * 25.4 ** 3, 1e-2), JSON.stringify(sa.errors));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

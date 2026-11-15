@@ -3,7 +3,8 @@ import { M, commit, openProject, renderAll, vp } from "../main";
 import { clearPartSelection, createSketchOn, enterSketch, exitSketch } from "./modes";
 import { featureDetail } from "./timeline";
 import { renderAlignPanel } from "./align";
-import { duplicateInstance, instanceOf, isAssembly, openPart, partDocs, partNames, removeInstance, renameInstance, showPartPicker } from "./assemblies";
+import { duplicateInstance, instanceOf, isAssembly, openPart, partDocs, partNames, removeInstance, renameInstance, resizeStl, showPartPicker } from "./assemblies";
+import { stlSizeTool } from "./stlSize";
 import { bodiesBefore, isolateBody, renameBody, toggleBody } from "./bodies";
 import { COMBINE_NAMES, combineRows, renderCombinePanel } from "./combine";
 import { extrude } from "./extrude";
@@ -243,6 +244,7 @@ export function renderPanel() {
       const isolated = !hidden && others.every((b) => M.hiddenBodies.has(b.id));
       items.push(["eye", isolated ? "Show all parts" : "Show only this part", () => isolateBody(inst.id)]);
     }
+    if (partDocs[inst.project]?.features.some((x) => x.kind === "import" && x.format === "stl")) items.push(["edit", "Size of the STL…", () => void resizeStl(inst)]);
     if (partDocs[inst.project]) items.push(["folder", "Open the part", () => void openPart(inst)]);
     items.push(["trash", "Remove", () => removeInstance(inst), "danger"]);
     actions(items);
@@ -289,6 +291,17 @@ export function renderPanel() {
     else if (f.kind === "sweep") items.push(["edit", "Edit", () => startSweep(f)]);
     else if (f.kind === "loft") items.push(["edit", "Edit", () => startLoft(f)]);
     else if (f.kind === "import") {
+      if (f.format === "stl")
+        items.push([
+          "edit",
+          "Size…",
+          () =>
+            void stlSizeTool(S.doc, f, (scale) => {
+              f.scale = scale === 1 ? undefined : scale;
+              commit();
+              renderAll();
+            }),
+        ]);
       for (const [op, icon, label] of [
         ["add", "extrude", "Join it instead"],
         ["cut", "cut", "Cut it instead"],

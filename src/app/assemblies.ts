@@ -1,6 +1,7 @@
 // Assemblies: parts from other projects placed in this one, by hand or with the gizmo.
 import * as THREE from "three";
-import { M, commit, flushSave, kernelReady, openProject, pendingBodies, vp, worker } from "../main";
+import { M, commit, flushSave, kernelReady, openProject, pendingBodies, rebuild, renderAll, vp, worker } from "../main";
+import { stlSizeTool } from "./stlSize";
 import { catchUpShared } from "./parameters";
 import { closeProjects, newGroup } from "./gallery";
 import { S, isOperation } from "./state";
@@ -219,6 +220,35 @@ export async function insertPart(p: ProjectMeta, d?: CadDocument, bodies?: { id:
   S.selectedFeature = inst.id;
   M.fitNext = true;
   commit();
+}
+
+/**
+ * Changes the size of the STL a placed part is made from: on the part's own import step, so every
+ * copy of the part follows, in this assembly and any other.
+ */
+export async function resizeStl(inst: PartInstance) {
+  const d = partDocs[inst.project];
+  const f = d?.features.find((x) => x.kind === "import" && x.format === "stl");
+  if (!d || f?.kind !== "import") return;
+  const copies = (S.doc.instances ?? []).filter((i) => i.project === inst.project).length;
+  const note = `Changes the part ${partNames[inst.project] ?? ""} itself: ${copies > 1 ? `its ${copies} copies here follow, and so does` : "so does"} any other assembly using it`;
+  await stlSizeTool(d, f, async (scale) => {
+    const got = await getProject(inst.project).catch(() => null);
+    if (!got) return toast("The part could not be read");
+    const doc = asDocument(got.doc) ?? d;
+    const step = doc.features.find((x) => x.id === f.id);
+    if (step?.kind !== "import") return toast("The part changed: open it to set the size");
+    step.scale = scale === 1 ? undefined : scale;
+    try {
+      await putProject({ ...got.meta, updated: Date.now() }, doc);
+    } catch {
+      return toast("Could not save in this browser");
+    }
+    partDocs[inst.project] = doc;
+    sendParts();
+    rebuild(true);
+    renderAll();
+  }, note);
 }
 
 export function duplicateInstance(inst: PartInstance) {
