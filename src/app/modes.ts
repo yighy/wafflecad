@@ -8,7 +8,7 @@ import { endCombine } from "./combine";
 import { explodeTarget, toggleExplode } from "./explode";
 import { closeProjects } from "./gallery";
 import { clearClashes } from "./interference";
-import { startMate } from "./mates";
+import { askRef, startMate } from "./mates";
 import { endMeasure, measuring } from "./measure";
 import { paramScope, toggleParams } from "./parameters";
 import { prefs } from "./prefs";
@@ -128,6 +128,7 @@ export function pickPlaneAt(p: Ptr) {
       face = { center: pf.center, normal: pf.plane.normal };
     }
   }
+  if (faceId != null && faceId < 0 && !plane) return void sketchOnMesh(p, faceId);
   if (!plane && label) plane = STD_PLANES.find((s) => s.label === label);
   if (!plane) {
     if (faceId != null) toast("Only flat faces can hold a sketch");
@@ -136,6 +137,36 @@ export function pickPlaneAt(p: Ptr) {
   // Set off a face, the sketch still follows it: the face is kept, the plane moves with it.
   if (S.mode.kind === "pickPlane" && (S.mode.offset || S.mode.tiltX || S.mode.tiltY)) plane = placedPlane(plane, S.mode);
   createSketchOn(plane, face);
+}
+
+/**
+ * A sketch on a flat face of a mesh body (STL): its plane, found by the worker around the spot
+ * tapped. It stays where the face was (a mesh has no face to follow when the part changes).
+ */
+async function sketchOnMesh(p: Ptr, faceId: number) {
+  const mode = S.mode;
+  const tri = vp.pickTriangle(p.x, p.y);
+  const body = S.lastBuild?.bodies?.find((b) => b.faceIds.includes(faceId));
+  if (!tri || !body) return;
+  const g = await askRef({ kind: "mesh", body: body.id, p: tri.point });
+  if (S.mode !== mode) return; // left meanwhile
+  if (!g) return toast("Only flat faces can hold a sketch: this part of the mesh is curved");
+  let plane = facePlane(g.dir, g.origin);
+  if (S.mode.kind === "pickPlane" && (S.mode.offset || S.mode.tiltX || S.mode.tiltY)) plane = placedPlane(plane, S.mode);
+  createSketchOn(plane);
+}
+
+/**
+ * A face's plane as the B-rep faces get theirs: the world origin's projection as origin (so
+ * dimensions read naturally), X along world X on a lying face, Y up on a standing one.
+ */
+function facePlane(normal: Vec3, center: Vec3): PlaneDef {
+  const origin = mulV(normal, dot3(center, normal));
+  const xDir =
+    Math.abs(normal[2]) > 0.9
+      ? addV([1, 0, 0], mulV(normal, -normal[0]))
+      : crossV(addV([0, 0, 1], mulV(normal, -normal[2])), normal);
+  return { origin, xDir: mulV(xDir, 1 / Math.hypot(...xDir)), normal, label: "Face" };
 }
 
 /** Around an edge: the next tap picks a straight edge of the model, then the angle is typed. */

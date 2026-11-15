@@ -5,7 +5,7 @@ import { setOC } from "replicad";
 import manifoldUrl from "manifold-3d/manifold.wasm?url";
 import { initManifold } from "./mesh";
 import { bodyNames, buildResult, buildShape, exportFile, interferences, setOpenDocument, setPartDocs, splitStep } from "./build";
-import { measure, refGeometry } from "./measure";
+import { measure, meshRef, refGeometry } from "./measure";
 import type { PreviewResult, WorkerRequest, WorkerResponse } from "../types";
 
 const post = (msg: WorkerResponse, transfer: Transferable[] = []) =>
@@ -132,7 +132,9 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
     let ref = null;
     let error: string | undefined;
     try {
-      ref = refGeometry(buildShape(req.doc).shape, req.pick);
+      const r = buildShape(req.doc);
+      const pk = req.pick;
+      ref = pk.kind === "mesh" ? meshRef(r.bodies.find((b) => b.id === pk.body)?.shape, pk.p) : refGeometry(r.shape, pk);
     } catch (e) {
       error = String(e);
     }

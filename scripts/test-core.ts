@@ -14,7 +14,7 @@ import { chainMid, filletCorner, groupCentre, mirrorEntities, projectEdge, trans
 import { SketchView } from "../src/sketch/model";
 import { buildResult, buildShape, exportFile, interferences, layFlat, placeShape, readStep, setPartDocs, splitStep } from "../src/cad/build";
 import * as THREE from "three";
-import { hasRef, measure, refGeometry } from "../src/cad/measure";
+import { hasRef, measure, meshRef, refGeometry } from "../src/cad/measure";
 import { instanceMatrix, solveMates, worldRef } from "../src/cad/mates";
 import { textShapes } from "../src/sketch/text";
 import { offsetEntities } from "../src/sketch/offset";
@@ -1405,6 +1405,20 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("stl measure: the side of a cylinder is not a flat face", Number.isNaN(row(mr, "Flat face area")) && near(row(mr, "Mesh size Z"), 10, 1e-6), JSON.stringify(mr.rows));
   mr = measure(null, [{ kind: "mesh", body: "cy", p: [1, 1, 10] }], cylBodies);
   check("stl measure: its top is", near(row(mr, "Flat face area"), (sides / 2) * 25 * Math.sin((2 * Math.PI) / sides), 1e-3), JSON.stringify(mr.rows));
+
+  // The plane of a flat face of a mesh (mates, sketches): none on a curved surface.
+  const topRef = meshRef(cubeMesh[0].shape, [3, 4, 10]);
+  check("stl plane: the top of the cube, from its middle", !!topRef && topRef.kind === "plane" && near(topRef.dir[2], 1, 1e-9) && near(topRef.origin[0], 5, 1e-6) && near(topRef.origin[1], 5, 1e-6) && near(topRef.origin[2], 10, 1e-6), JSON.stringify(topRef));
+  check("stl plane: none on the side of a cylinder", meshRef(cylBodies[0].shape, [5, 0.01, 5]) === null);
+
+  // A sketch on the top of the cube: extruded, it joins the mesh; cut, it goes into it.
+  const onTop = newSketch("On top", { origin: [0, 0, 10], xDir: [1, 0, 0], normal: [0, 0, 1], label: "Face" });
+  rect(onTop, 2, 2, 6, 6);
+  const cubeDoc = meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "add", "new");
+  let sr = buildShape({ ...cubeDoc, features: [...cubeDoc.features, onTop, { id: "up", kind: "extrude", name: "Up", sketchId: onTop.id, distance: 5, symmetric: false, op: "add" }] });
+  check("stl sketch: extruded from the mesh's top, joined to it", !sr.errors.up && sr.bodies.length === 1 && isMesh(sr.bodies[0].shape) && near(volumeOf(sr.bodies[0].shape), 1000 + 16 * 5, 1e-2), JSON.stringify([sr.errors, sr.bodies.map((b) => volumeOf(b.shape))]));
+  sr = buildShape({ ...cubeDoc, features: [...cubeDoc.features, onTop, { id: "dn", kind: "extrude", name: "Down", sketchId: onTop.id, distance: -3, symmetric: false, op: "cut" }] });
+  check("stl sketch: cut into the mesh from its top", !sr.errors.dn && sr.bodies.length === 1 && near(volumeOf(sr.bodies[0].shape), 1000 - 16 * 3, 1e-2), JSON.stringify([sr.errors, sr.bodies.map((b) => volumeOf(b.shape))]));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

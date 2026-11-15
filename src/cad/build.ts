@@ -1116,7 +1116,8 @@ export function buildResult(doc: CadDocument, opts: { draft?: boolean; planar?: 
   let e = 0;
   const bodyInfo = bodies.map((b, i) => {
     const id = meshIds.get(b.id);
-    if (id !== undefined) return { id: b.id, name: names[i], faceIds: apart ? [id] : [], edgeIds: apart ? [id] : [] };
+    // A mesh body always says which face is its own, even alone: taps on it (measures, sketches) find it by that.
+    if (id !== undefined) return { id: b.id, name: names[i], faceIds: [id], edgeIds: apart ? [id] : [] };
     const k = e++;
     return { id: b.id, name: names[i], faceIds: faces[k] ?? [], edgeIds: edges[k] ?? [] };
   });

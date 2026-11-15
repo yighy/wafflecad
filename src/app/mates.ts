@@ -12,7 +12,7 @@ import { S, isOperation, type MatePick } from "./state";
 import { instanceMatrix, localRef, solveMates, worldRef } from "../cad/mates";
 import { freeName } from "../projects";
 import { uid } from "../sketch/model";
-import { type Mate, type MateRef, type PartInstance, type Vec3, type WorkerRequest } from "../types";
+import { type Mate, type MateRef, type MeasurePick, type PartInstance, type Vec3, type WorkerRequest } from "../types";
 import { openKeypad, type Segmented } from "../ui/keypad";
 import { PlaceGizmo } from "../ui/placeGizmo";
 import { toast } from "../ui/toast";
@@ -76,7 +76,7 @@ export function startMate() {
 }
 
 /** The plane or axis of a face or edge, from the worker. */
-export function askRef(pick: { kind: "face" | "edge"; id: number }) {
+export function askRef(pick: Extract<MeasurePick, { kind: "face" | "edge" | "mesh" }>) {
   const reqId = ++M.reqCounter;
   return new Promise<Omit<MateRef, "part"> | null>((resolve) => {
     pendingRefs.set(reqId, resolve);
@@ -96,8 +96,13 @@ export async function mateTap(p: Ptr) {
   // flat face it lies in. Holes and round edges cannot be told on a mesh.
   if (face != null && face < 0 && ei == null) {
     const tri = vp.pickTriangle(p.x, p.y);
-    const inst = instanceOf(bodies.find((b) => b.faceIds.includes(face))?.id ?? null);
-    if (tri && inst) pick = { ref: { part: inst.id, kind: "plane", ...localRef(tri.point, tri.normal, instanceMatrix(inst)) } };
+    const body = bodies.find((b) => b.faceIds.includes(face));
+    const inst = instanceOf(body?.id ?? null);
+    if (!tri || !body || !inst) return;
+    const g = await askRef({ kind: "mesh", body: body.id, p: tri.point });
+    if (S.mode !== m) return; // left meanwhile
+    if (!g) return toast("Tap a flat face of the mesh: a round one cannot be mated yet");
+    pick = { ref: { part: inst.id, kind: g.kind, ...localRef(g.origin, g.dir, instanceMatrix(inst)) } };
   }
   for (const k of pick ? [] : [ei != null ? { kind: "edge" as const, id: vp.edgeId(ei) } : null, face != null ? { kind: "face" as const, id: face } : null]) {
     if (!k) continue;

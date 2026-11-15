@@ -603,7 +603,7 @@ export type WorkerRequest =
   /** Parts of the assembly that overlap (the hidden ones left out). */
   | { type: "clash"; reqId: number; doc: CadDocument; skip: string[] }
   /** The plane or axis of a face or edge of the model (world coordinates), to mate it. */
-  | { type: "ref"; reqId: number; doc: CadDocument; pick: Extract<MeasurePick, { kind: "face" | "edge" }> };
+  | { type: "ref"; reqId: number; doc: CadDocument; pick: Extract<MeasurePick, { kind: "face" | "edge" | "mesh" }> };
 
 export type WorkerResponse =
   | { type: "ready" }

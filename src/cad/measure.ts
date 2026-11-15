@@ -242,6 +242,22 @@ export function refGeometry(shape: Shape3D | null, pick: Extract<MeasurePick, { 
   return e ? edgeRef(e) : null;
 }
 
+/**
+ * The plane of the flat face of a mesh body around a spot tapped on it (origin: the middle of
+ * that face), or null on a curved surface.
+ */
+export function meshRef(body: AnySolid | undefined, p: Vec3): RefGeom | null {
+  if (!isMesh(body)) return null;
+  const r = flatRegion(body, triangleAt(body, p));
+  if (r.curved) return null;
+  // The middle of its border's points, put back on the plane.
+  const o = r.outline;
+  const c: Vec3 = [0, 0, 0];
+  for (let i = 0; i < o.length; i += 3) for (let k = 0; k < 3; k++) c[k] += o[i + k] / (o.length / 3);
+  const off = dot([c[0] - r.point[0], c[1] - r.point[1], c[2] - r.point[2]], r.normal);
+  return { kind: "plane", origin: [c[0] - r.normal[0] * off, c[1] - r.normal[1] * off, c[2] - r.normal[2] * off], dir: r.normal };
+}
+
 /** Whether a part still has the plane or axis a mate uses (its own coordinates). */
 export function hasRef(shape: Shape3D, ref: Omit<RefGeom, "kind"> & { kind: string }): boolean {
   const close = (g: RefGeom | null) => {
