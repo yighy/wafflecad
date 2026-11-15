@@ -524,17 +524,38 @@ async function sharedOnlyIn(ids: string[]): Promise<Parameter[]> {
 }
 
 /**
+ * What the projects being deleted leave behind: one line per project kept (an assembly, a part
+ * combined from one) that uses some of them, and will show them missing. None when nothing does.
+ */
+async function keptUsers(ids: string[]): Promise<string[]> {
+  const list = await listProjects().catch(() => []);
+  const name = (id: string) => `"${list.find((m) => m.id === id)?.name ?? "?"}"`;
+  const lines: string[] = [];
+  for (const m of list) {
+    if (ids.includes(m.id)) continue;
+    const d = m.id === ctx.project()?.id ? ctx.doc() : (await getProject(m.id).catch(() => null))?.doc;
+    const gone = d ? projectsUsed(d).filter((id) => ids.includes(id)) : [];
+    if (!gone.length) continue;
+    const what = m.kind === "assembly" ? "the assembly" : "the part";
+    lines.push(`${gone.map(name).join(", ")} ${gone.length > 1 ? "are" : "is"} used in ${what} ${name(m.id)}, which stays: ${gone.length > 1 ? "they" : "it"} will be missing there.`);
+  }
+  return lines;
+}
+
+/**
  * Asks before deleting projects: null for no. When shared parameters would be left with no part
  * using them, the question offers to delete them too (`shared`: the ones to delete).
  */
 async function confirmDelete(question: string, ids: string[]): Promise<{ shared: Parameter[] } | null> {
   await ctx.flushSave();
   const only = await sharedOnlyIn(ids);
-  if (!only.length) return (await ask(question, ["This cannot be undone."], { label: "Delete", danger: true })) ? { shared: [] } : null;
+  const kept = await keptUsers(ids);
+  const lines = ["This cannot be undone.", ...kept];
+  if (!only.length) return (await ask(question, lines, { label: kept.length ? "Delete anyway" : "Delete", danger: true })) ? { shared: [] } : null;
   const names = only.map((p) => p.name).join(", ");
   const one = only.length === 1;
   const it = ids.length === 1 ? "it" : "they";
-  const got = await choose(question, ["This cannot be undone.", `Only ${it} use${ids.length === 1 ? "s" : ""} the shared ${one ? "parameter" : "parameters"} ${names}.`], [
+  const got = await choose(question, [...lines, `Only ${it} use${ids.length === 1 ? "s" : ""} the shared ${one ? "parameter" : "parameters"} ${names}.`], [
     { label: `Delete, with ${one ? names : `these ${only.length} shared parameters`}`, detail: `No other part uses ${one ? "it" : "them"}.`, danger: true, primary: true },
     { label: `Delete, keep ${one ? names : "the shared parameters"}`, detail: "For parts made later." },
   ]);
