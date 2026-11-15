@@ -528,18 +528,25 @@ export interface EdgeGroup {
 }
 
 /** Something tapped to be measured: a face or an edge of the last build (by hash code), or a corner. */
-export type MeasurePick = { kind: "face"; id: number } | { kind: "edge"; id: number } | { kind: "point"; p: Vec3 };
+export type MeasurePick =
+  | { kind: "face"; id: number }
+  | { kind: "edge"; id: number }
+  | { kind: "point"; p: Vec3 }
+  /** A spot tapped on a mesh body (STL): its flat face there, or the spot itself on a curved one. */
+  | { kind: "mesh"; body: string; p: Vec3 };
 
 export interface MeasureRow {
   label: string;
   value: number;
-  unit: "mm" | "mm²" | "°";
+  unit: "mm" | "mm²" | "mm³" | "°";
 }
 
 export interface MeasureResult {
   rows: MeasureRow[];
   /** Where the distance was measured, to draw it. */
   line?: [Vec3, Vec3];
+  /** Borders of the flat faces found on meshes, as line segments (x, y, z pairs). */
+  outlines?: number[];
   error?: string;
 }
 
@@ -596,7 +603,7 @@ export type WorkerRequest =
   /** Parts of the assembly that overlap (the hidden ones left out). */
   | { type: "clash"; reqId: number; doc: CadDocument; skip: string[] }
   /** The plane or axis of a face or edge of the model (world coordinates), to mate it. */
-  | { type: "ref"; reqId: number; doc: CadDocument; pick: Exclude<MeasurePick, { kind: "point" }> };
+  | { type: "ref"; reqId: number; doc: CadDocument; pick: Extract<MeasurePick, { kind: "face" | "edge" }> };
 
 export type WorkerResponse =
   | { type: "ready" }

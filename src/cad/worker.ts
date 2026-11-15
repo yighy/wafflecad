@@ -142,7 +142,8 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   if (req.type === "measure") {
     let result;
     try {
-      result = measure(buildShape(req.doc).shape, req.picks);
+      const r = buildShape(req.doc);
+      result = measure(r.shape, req.picks, r.bodies);
     } catch (e) {
       result = { rows: [], error: String(e) };
     }

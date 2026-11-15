@@ -1,6 +1,8 @@
-// Measurements on the built model (exact B-rep geometry, not the display mesh).
+// Measurements on the built model (exact B-rep geometry, not the display mesh), and on mesh
+// bodies (STL) by their flat faces and the spots tapped on them.
 // No DOM dependency: runs in the worker, and is testable under Node.
 import { getOC, makeVertex, measureArea, type AnyShape, type Edge, type Face, type Shape3D } from "replicad";
+import { type AnySolid, flatRegion, isMesh, meshVolume, triangleAt } from "./mesh";
 import type { MeasurePick, MeasureResult, MeasureRow, Vec3 } from "../types";
 
 type Dir = { kind: "plane" | "line"; d: Vec3 };
@@ -13,6 +15,12 @@ interface Item {
   /** Centre of a circle (or of a point). */
   centre?: Vec3;
   point?: Vec3;
+  /** A point of its plane (flat faces), and where it was tapped (meshes). */
+  planeAt?: Vec3;
+  tapped?: Vec3;
+  /** Picked on a mesh: distances are taken from the spot tapped, or across flat faces. */
+  mesh?: boolean;
+  outline?: Float32Array;
 }
 
 const v3 = (p: { x: number; y: number; z: number }): Vec3 => [p.x, p.y, p.z];
@@ -36,6 +44,7 @@ function faceItem(face: Face): Item {
   const item: Item = { shape: face, rows };
   if (face.geomType === "PLANE") {
     item.dir = { kind: "plane", d: unit(v3(face.normalAt(face.center))) };
+    item.planeAt = v3(face.center);
   } else if (face.geomType === "CYLINDRE") {
     const c = adaptor(face).Cylinder();
     rows.unshift({ label: "Radius", value: c.Radius(), unit: "mm" }, { label: "Diameter", value: 2 * c.Radius(), unit: "mm" });
@@ -71,6 +80,31 @@ function pointItem(p: Vec3): Item {
   };
 }
 
+/**
+ * A spot tapped on a mesh body: the flat face it is on (its area), else the spot alone on a curved
+ * surface; and the size of the whole body.
+ */
+function meshItem(body: AnySolid, p: Vec3): Item {
+  if (!isMesh(body)) throw new Error("The model changed: pick again");
+  const r = flatRegion(body, triangleAt(body, p));
+  const [lo, hi] = body.bounds();
+  const rows: MeasureRow[] = [];
+  if (!r.curved) rows.push({ label: "Flat face area", value: r.area, unit: "mm²" });
+  rows.push(
+    { label: "Mesh size X", value: hi[0] - lo[0], unit: "mm" },
+    { label: "Mesh size Y", value: hi[1] - lo[1], unit: "mm" },
+    { label: "Mesh size Z", value: hi[2] - lo[2], unit: "mm" },
+  );
+  if (body.closed) rows.push({ label: "Mesh volume", value: meshVolume(body), unit: "mm³" });
+  const item: Item = { shape: makeVertex(p), rows, tapped: p, mesh: true };
+  if (!r.curved) {
+    item.dir = { kind: "plane", d: r.normal };
+    item.planeAt = r.point;
+    item.outline = r.outline;
+  }
+  return item;
+}
+
 /** Shortest distance between two shapes, with the two closest points. */
 function closest(a: AnyShape, b: AnyShape): { d: number; p: Vec3; q: Vec3 } {
   const oc = getOC();
@@ -97,11 +131,16 @@ function angle(a: Dir, b: Dir) {
  * draw), centre to centre for circles and points, the X/Y/Z offsets of two points, and the angle
  * between flat faces and straight edges.
  */
-export function measure(shape: Shape3D | null, picks: MeasurePick[]): MeasureResult {
-  if (!shape) return { rows: [], error: "There is no solid" };
+export function measure(shape: Shape3D | null, picks: MeasurePick[], bodies: { id: string; shape: AnySolid }[] = []): MeasureResult {
+  if (!shape && !bodies.some((b) => isMesh(b.shape))) return { rows: [], error: "There is no solid" };
   const items: Item[] = [];
   for (const pk of picks) {
     if (pk.kind === "point") items.push(pointItem(pk.p));
+    else if (pk.kind === "mesh") {
+      const body = bodies.find((b) => b.id === pk.body)?.shape;
+      if (!body) return { rows: [], error: "The model changed: pick again" };
+      items.push(meshItem(body, pk.p));
+    } else if (!shape) return { rows: [], error: "The model changed: pick again" };
     else if (pk.kind === "face") {
       const f = shape.faces.find((x) => x.hashCode === pk.id);
       if (!f) return { rows: [], error: "The model changed: pick again" };
@@ -112,9 +151,12 @@ export function measure(shape: Shape3D | null, picks: MeasurePick[]): MeasureRes
       items.push(edgeItem(e));
     }
   }
-  if (items.length === 1) return { rows: items[0].rows };
+  const outlines = items.flatMap((i) => (i.outline ? [...i.outline] : []));
+  const extra = outlines.length ? { outlines } : {};
+  if (items.length === 1) return { rows: items[0].rows, ...extra };
   if (items.length !== 2) return { rows: [] };
   const [a, b] = items;
+  if (a.mesh || b.mesh) return { ...meshDistance(a, b), ...extra };
   const rows: MeasureRow[] = [];
   let line: [Vec3, Vec3] | undefined;
   if (a.centre && b.centre && !(a.point && b.point)) {
@@ -131,6 +173,38 @@ export function measure(shape: Shape3D | null, picks: MeasurePick[]): MeasureRes
       { label: "ΔY", value: Math.abs(b.point[1] - a.point[1]), unit: "mm" },
       { label: "ΔZ", value: Math.abs(b.point[2] - a.point[2]), unit: "mm" },
     );
+  }
+  if (a.dir && b.dir) rows.push({ label: "Angle", value: angle(a.dir, b.dir), unit: "°" });
+  return { rows, line };
+}
+
+/**
+ * Between two picks, one at least on a mesh. Two parallel flat faces: the gap between their
+ * planes, from the spot tapped. Otherwise the shortest distance from the spot tapped on the mesh
+ * (and, to a point, its distance from the mesh's flat face).
+ */
+function meshDistance(a: Item, b: Item): MeasureResult {
+  const rows: MeasureRow[] = [];
+  let line: [Vec3, Vec3];
+  const from = (i: Item) => i.tapped ?? i.point ?? i.planeAt ?? i.centre;
+  if (a.dir?.kind === "plane" && b.dir?.kind === "plane" && a.planeAt && b.planeAt && Math.abs(dot(a.dir.d, b.dir.d)) > 1 - 1e-6) {
+    const n = a.dir.d;
+    const gap = dot([b.planeAt[0] - a.planeAt[0], b.planeAt[1] - a.planeAt[1], b.planeAt[2] - a.planeAt[2]], n);
+    rows.push({ label: "Distance", value: Math.abs(gap), unit: "mm" });
+    // Drawn from the spot tapped on the mesh straight across to the other plane.
+    const [mine, other] = a.mesh ? [a, b] : [b, a];
+    const s = from(mine)!;
+    const k = dot([s[0] - other.planeAt![0], s[1] - other.planeAt![1], s[2] - other.planeAt![2]], n);
+    line = [s, [s[0] - n[0] * k, s[1] - n[1] * k, s[2] - n[2] * k]];
+  } else {
+    const c = closest(a.shape, b.shape);
+    rows.push({ label: "Distance", value: c.d, unit: "mm" });
+    line = [c.p, c.q];
+    const [plane, pt] = a.dir?.kind === "plane" && a.mesh && b.point ? [a, b.point] : b.dir?.kind === "plane" && b.mesh && a.point ? [b, a.point] : [null, null];
+    if (plane?.dir && plane.planeAt && pt) {
+      const off = dot([pt[0] - plane.planeAt[0], pt[1] - plane.planeAt[1], pt[2] - plane.planeAt[2]], plane.dir.d);
+      rows.push({ label: "Distance to the flat face's plane", value: Math.abs(off), unit: "mm" });
+    }
   }
   if (a.dir && b.dir) rows.push({ label: "Angle", value: angle(a.dir, b.dir), unit: "°" });
   return { rows, line };
@@ -158,7 +232,7 @@ function edgeRef(edge: Edge): RefGeom | null {
 }
 
 /** The plane or axis of a face or edge of the model, or null for shapes that have none. */
-export function refGeometry(shape: Shape3D | null, pick: Exclude<MeasurePick, { kind: "point" }>): RefGeom | null {
+export function refGeometry(shape: Shape3D | null, pick: Extract<MeasurePick, { kind: "face" | "edge" }>): RefGeom | null {
   if (!shape) return null;
   if (pick.kind === "face") {
     const f = shape.faces.find((x) => x.hashCode === pick.id);

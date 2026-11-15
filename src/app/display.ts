@@ -272,10 +272,16 @@ export function renderPartOverlays() {
   if (measuring && S.mode.kind === "part") {
     const acc = rgb("--accent");
     for (const k of measuring.picks)
-      if (k.kind === "point") {
+      if (k.kind === "point" || k.kind === "mesh") {
         marks.positions.push(...k.p);
         marks.colors.push(...acc);
       }
+    // The flat faces found on a mesh, outlined (a mesh has no faces of its own to tint).
+    const out = measuring.result?.outlines ?? [];
+    for (let i = 0; i < out.length; i += 3) {
+      batch.positions.push(out[i], out[i + 1], out[i + 2]);
+      batch.colors.push(...acc);
+    }
     const line = measuring.result?.line;
     const main = measuring.result?.rows.find((r) => r.unit === "mm" && /distance/i.test(r.label));
     if (line && main && main.value > 1e-6) {

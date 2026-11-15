@@ -1,7 +1,7 @@
 // Core tests under Node: solver, profile detection, solid build. Run: npm test
 import opencascade from "replicad-opencascadejs";
 import { measureVolume, setOC } from "replicad";
-import { type AnySolid, encodeMesh, initManifold, isMesh, meshVolume, parseStl } from "../src/cad/mesh";
+import { type AnySolid, encodeMesh, initManifold, isMesh, meshSolid, meshVolume, parseStl } from "../src/cad/mesh";
 import { Solver } from "../src/sketch/solver";
 import { constraintName, deleteEntities, entityName, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, openPath, sampleSegments, signedArea } from "../src/sketch/profiles";
@@ -1379,6 +1379,32 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   check("stl combine: the mesh part cut, in its own coordinates", !cr.errors.cb && near(volumeOf(cr.bodies[0].shape), 500, 1e-2) && !!crb && near(crb[0][2], 5, 1e-4) && near(crb[1][0], 10, 1e-4), JSON.stringify([cr.errors, crb]));
   cr = buildShape(combineDoc({ clearance: 0.2 }));
   check("stl combine: no play around a mesh part", !!cr.errors.cb?.includes("Play"), JSON.stringify(cr.errors));
+
+  // Measures on meshes: a 10 mm cube (as two triangles a side), and a 32-sided cylinder.
+  const row = (res: ReturnType<typeof measure>, label: string) => res.rows.find((x) => x.label === label)?.value ?? NaN;
+  const cubeMesh = buildShape(meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "add", "new")).bodies;
+  let mr = measure(null, [{ kind: "mesh", body: cubeMesh[0].id, p: [3, 4, 10] }], cubeMesh);
+  check("stl measure: a flat face, with the mesh's size and volume", near(row(mr, "Flat face area"), 100, 1e-6) && near(row(mr, "Mesh size Z"), 10, 1e-6) && near(row(mr, "Mesh volume"), 1000, 1e-3) && (mr.outlines?.length ?? 0) === 4 * 6, JSON.stringify([mr.rows, mr.outlines?.length]));
+  mr = measure(null, [{ kind: "mesh", body: cubeMesh[0].id, p: [3, 4, 10] }, { kind: "mesh", body: cubeMesh[0].id, p: [6, 2, 0] }], cubeMesh);
+  check("stl measure: opposite flat faces 10 apart, square across", near(row(mr, "Distance"), 10, 1e-6) && near(row(mr, "Angle"), 0, 1e-6) && !!mr.line && near(mr.line[1][0], 3, 1e-6) && near(mr.line[1][2], 0, 1e-6), JSON.stringify([mr.rows, mr.line]));
+  mr = measure(null, [{ kind: "mesh", body: cubeMesh[0].id, p: [3, 4, 10] }, { kind: "mesh", body: cubeMesh[0].id, p: [10, 5, 5] }], cubeMesh);
+  check("stl measure: side and top at 90°", near(row(mr, "Angle"), 90, 1e-6), JSON.stringify(mr.rows));
+  mr = measure(null, [{ kind: "mesh", body: cubeMesh[0].id, p: [3, 4, 10] }, { kind: "point", p: [20, 20, 4] }], cubeMesh);
+  check("stl measure: a point 6 below the top face's plane", near(row(mr, "Distance to the flat face's plane"), 6, 1e-6), JSON.stringify(mr.rows));
+  const sides = 32;
+  const cv: number[] = [];
+  for (const z of [0, 10]) for (let i = 0; i < sides; i++) cv.push(5 * Math.cos((2 * Math.PI * i) / sides), 5 * Math.sin((2 * Math.PI * i) / sides), z);
+  cv.push(0, 0, 0, 0, 0, 10);
+  const ct: number[] = [];
+  for (let i = 0; i < sides; i++) {
+    const j = (i + 1) % sides;
+    ct.push(i, j, sides + j, i, sides + j, sides + i, 2 * sides, j, i, 2 * sides + 1, sides + i, sides + j);
+  }
+  const cylBodies = [{ id: "cy", shape: meshSolid(new Float32Array(cv), new Uint32Array(ct)) }];
+  mr = measure(null, [{ kind: "mesh", body: "cy", p: [5, 0.01, 5] }], cylBodies);
+  check("stl measure: the side of a cylinder is not a flat face", Number.isNaN(row(mr, "Flat face area")) && near(row(mr, "Mesh size Z"), 10, 1e-6), JSON.stringify(mr.rows));
+  mr = measure(null, [{ kind: "mesh", body: "cy", p: [1, 1, 10] }], cylBodies);
+  check("stl measure: its top is", near(row(mr, "Flat face area"), (sides / 2) * 25 * Math.sin((2 * Math.PI) / sides), 1e-3), JSON.stringify(mr.rows));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

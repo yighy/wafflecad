@@ -410,6 +410,148 @@ export function displayMesh(s: MeshSolid): { vertices: Float32Array; normals: Fl
   return { vertices, normals, triangles, edges: new Float32Array(lines) };
 }
 
+// ---------- Flat faces of a mesh (measures) ----------
+
+/** Each triangle's unit normal and the triangles beside each edge, kept per mesh. */
+interface Topology {
+  normals: Float64Array;
+  /** "a,b" (a < b) → the triangles using that edge. */
+  edges: Map<string, number[]>;
+}
+const topologies = new WeakMap<MeshSolid, Topology>();
+function topology(s: MeshSolid): Topology {
+  let t = topologies.get(s);
+  if (t) return t;
+  const v = s.vertices;
+  const tr = s.triangles;
+  const normals = new Float64Array(tr.length);
+  const edges = new Map<string, number[]>();
+  for (let i = 0; i < tr.length; i += 3) {
+    const [a, b, c] = [tr[i] * 3, tr[i + 1] * 3, tr[i + 2] * 3];
+    const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2];
+    const wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+    const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    normals[i] = nx / l;
+    normals[i + 1] = ny / l;
+    normals[i + 2] = nz / l;
+    for (let k = 0; k < 3; k++) {
+      const p = tr[i + k];
+      const q = tr[i + ((k + 1) % 3)];
+      const key = p < q ? `${p},${q}` : `${q},${p}`;
+      const list = edges.get(key);
+      if (list) list.push(i / 3);
+      else edges.set(key, [i / 3]);
+    }
+  }
+  topologies.set(s, (t = { normals, edges }));
+  return t;
+}
+
+/** The squared distance from p to the nearest point of a triangle. */
+function closestOnTriangle(p: readonly number[], a: number[], b: number[], c: number[]): number {
+  // Ericson, Real-Time Collision Detection 5.1.5.
+  const sub = (x: number[], y: readonly number[]) => [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+  const d = (x: number[], y: number[]) => x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+  const ab = sub(b, a), ac = sub(c, a), ap = sub(p as number[], a);
+  const d1 = d(ab, ap), d2 = d(ac, ap);
+  let q: number[];
+  if (d1 <= 0 && d2 <= 0) q = a;
+  else {
+    const bp = sub(p as number[], b);
+    const d3 = d(ab, bp), d4 = d(ac, bp);
+    const cp = sub(p as number[], c);
+    const d5 = d(ab, cp), d6 = d(ac, cp);
+    const vc = d1 * d4 - d3 * d2, vb = d5 * d2 - d1 * d6, va = d3 * d6 - d5 * d4;
+    const at = (s: number, t: number) => [a[0] + ab[0] * s + ac[0] * t, a[1] + ab[1] * s + ac[1] * t, a[2] + ab[2] * s + ac[2] * t];
+    if (d3 >= 0 && d4 <= d3) q = b;
+    else if (vc <= 0 && d1 >= 0 && d3 <= 0) q = at(d1 / (d1 - d3), 0);
+    else if (d6 >= 0 && d5 <= d6) q = c;
+    else if (vb <= 0 && d2 >= 0 && d6 <= 0) q = at(0, d2 / (d2 - d6));
+    else if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+      const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+      q = [b[0] + (c[0] - b[0]) * w, b[1] + (c[1] - b[1]) * w, b[2] + (c[2] - b[2]) * w];
+    } else {
+      const den = 1 / (va + vb + vc);
+      q = at(vb * den, vc * den);
+    }
+  }
+  return (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2;
+}
+
+/** The triangle of a mesh nearest to a point (one tapped on it). */
+export function triangleAt(s: MeshSolid, p: readonly number[]): number {
+  const v = s.vertices;
+  const tr = s.triangles;
+  const corner = (k: number) => [v[k * 3], v[k * 3 + 1], v[k * 3 + 2]];
+  let best = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < tr.length; i += 3) {
+    const dd = closestOnTriangle(p, corner(tr[i]), corner(tr[i + 1]), corner(tr[i + 2]));
+    if (dd < bestD) {
+      bestD = dd;
+      best = i / 3;
+    }
+  }
+  return best;
+}
+
+/**
+ * The flat face around a triangle: the triangles beside it, edge to edge, in the same plane.
+ * `curved` when most of its border bends only slightly into the next triangles: a facet of a
+ * round surface rather than a face drawn flat. `outline`: its border as line segments.
+ */
+export function flatRegion(s: MeshSolid, seed: number): { normal: [number, number, number]; point: [number, number, number]; area: number; curved: boolean; outline: Float32Array } {
+  const { normals, edges } = topology(s);
+  const v = s.vertices;
+  const tr = s.triangles;
+  const n: [number, number, number] = [normals[seed * 3], normals[seed * 3 + 1], normals[seed * 3 + 2]];
+  const a0 = tr[seed * 3] * 3;
+  const point: [number, number, number] = [v[a0], v[a0 + 1], v[a0 + 2]];
+  const offset = n[0] * point[0] + n[1] * point[1] + n[2] * point[2];
+  const inPlane = (t: number) => {
+    if (normals[t * 3] * n[0] + normals[t * 3 + 1] * n[1] + normals[t * 3 + 2] * n[2] < 1 - 1e-6) return false;
+    for (let k = 0; k < 3; k++) {
+      const c = tr[t * 3 + k] * 3;
+      if (Math.abs(n[0] * v[c] + n[1] * v[c + 1] + n[2] * v[c + 2] - offset) > 1e-3) return false;
+    }
+    return true;
+  };
+  const region = new Set([seed]);
+  const todo = [seed];
+  let area = 0;
+  let soft = 0;
+  let border = 0;
+  const outline: number[] = [];
+  while (todo.length) {
+    const t = todo.pop()!;
+    const [a, b, c] = [tr[t * 3] * 3, tr[t * 3 + 1] * 3, tr[t * 3 + 2] * 3];
+    const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2];
+    const wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+    area += Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2;
+    for (let k = 0; k < 3; k++) {
+      const p = tr[t * 3 + k];
+      const q = tr[t * 3 + ((k + 1) % 3)];
+      const others = (edges.get(p < q ? `${p},${q}` : `${q},${p}`) ?? []).filter((o) => o !== t);
+      const next = others.find((o) => region.has(o) || inPlane(o));
+      if (next !== undefined) {
+        if (!region.has(next)) {
+          region.add(next);
+          todo.push(next);
+        }
+        continue;
+      }
+      // A border edge: how sharply the surface folds there.
+      const len = Math.hypot(v[q * 3] - v[p * 3], v[q * 3 + 1] - v[p * 3 + 1], v[q * 3 + 2] - v[p * 3 + 2]);
+      border += len;
+      const o = others[0];
+      if (o !== undefined && normals[o * 3] * n[0] + normals[o * 3 + 1] * n[1] + normals[o * 3 + 2] * n[2] > Math.cos((20 * Math.PI) / 180)) soft += len;
+      outline.push(v[p * 3], v[p * 3 + 1], v[p * 3 + 2], v[q * 3], v[q * 3 + 1], v[q * 3 + 2]);
+    }
+  }
+  return { normal: n, point, area, curved: border > 0 && soft / border > 0.5, outline: new Float32Array(outline) };
+}
+
 /** Binary STL of several meshes together. */
 export function stlBlob(meshes: { vertices: ArrayLike<number>; triangles: ArrayLike<number> }[]): Blob {
   const count = meshes.reduce((n, m) => n + m.triangles.length / 3, 0);

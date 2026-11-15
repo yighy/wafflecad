@@ -3,6 +3,7 @@ import * as THREE from "three";
 import type { MeasurePick, MeasureResult, MeasureRow } from "../types";
 import type { Ptr } from "../view/input";
 import { app } from "./app";
+import { S } from "./state";
 import { fmtNum } from "./util";
 
 /** Measuring: what was tapped (one or two things) and what the worker found. */
@@ -38,6 +39,17 @@ function measurePickAt(p: Ptr): MeasurePick | null {
     return { kind: "edge", id: app.vp.edgeId(edge) };
   }
   const face = app.vp.pickFace(p.x, p.y);
+  if (face != null && face < 0) {
+    // A mesh body (STL): a corner of the triangle tapped when close on screen, else the spot.
+    const tri = app.vp.pickTriangle(p.x, p.y);
+    const body = S.lastBuild?.bodies?.find((b) => b.faceIds.includes(face));
+    if (!tri || !body) return null;
+    for (const c of tri.corners) {
+      const [sx, sy] = app.vp.toScreen(new THREE.Vector3(...c));
+      if (Math.hypot(sx - p.x, sy - p.y) < 18) return { kind: "point", p: c };
+    }
+    return { kind: "mesh", body: body.id, p: tri.point };
+  }
   return face == null ? null : { kind: "face", id: face };
 }
 

@@ -775,15 +775,20 @@ export class Viewport {
     return { point: [hit.point.x, hit.point.y, hit.point.z], faceId };
   }
 
-  /** The triangle under a screen point: where it was hit, its outward normal, and its face. */
-  pickTriangle(x: number, y: number): { point: Vec3; normal: Vec3; faceId: number | null } | null {
+  /** The triangle under a screen point: where it was hit, its outward normal, corners and face. */
+  pickTriangle(x: number, y: number): { point: Vec3; normal: Vec3; corners: Vec3[]; faceId: number | null } | null {
     if (!this.mesh) return null;
     const hit = this.ray(x, y).intersectObject(this.mesh)[0];
     if (!hit?.face || hit.faceIndex == null) return null;
     const n = hit.face.normal.clone().transformDirection(this.mesh.matrixWorld);
     const i = hit.faceIndex * 3;
     const faceId = this.faceGroups.find((g) => i >= g.start && i < g.start + g.count)?.faceId ?? null;
-    return { point: [hit.point.x, hit.point.y, hit.point.z], normal: [n.x, n.y, n.z], faceId };
+    const pos = this.mesh.geometry.getAttribute("position");
+    const corners = [hit.face.a, hit.face.b, hit.face.c].map((k): Vec3 => {
+      const c = new THREE.Vector3().fromBufferAttribute(pos, k).applyMatrix4(this.mesh!.matrixWorld);
+      return [c.x, c.y, c.z];
+    });
+    return { point: [hit.point.x, hit.point.y, hit.point.z], normal: [n.x, n.y, n.z], corners, faceId };
   }
 
   /** B-rep face id under a screen point, if any. */
