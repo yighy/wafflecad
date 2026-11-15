@@ -53,24 +53,59 @@ export const SELECT_MODES: [SelectMode, string, string, string][] = [
 
 /** The menu of selection modes, unfolded beside the Select tool. */
 export function toggleSelectModes(anchor: HTMLElement, ed: SketchEditor) {
+  toggleFlyout(
+    anchor,
+    SELECT_MODES.map(([m, ic, name, how]) => ({
+      icon: ic,
+      label: name,
+      title: how,
+      on: m === ed.selectMode,
+      radio: true,
+      run: () => {
+        ed.selectMode = prefs.selectMode = m;
+        savePrefs();
+        renderTools();
+        toast(how);
+      },
+    })),
+  );
+}
+
+/** A tool of the column standing for several: tapped, it unfolds them beside it. */
+function toolGroup(ic: string, label: string, items: FlyItem[], opts: { active?: boolean; key?: string } = {}) {
+  const b = toolRow(ic, label, () => toggleFlyout(b, items), opts);
+  b.querySelector(".tile")!.classList.add("has-modes");
+  b.title = `${label}: ${items.map((i) => i.label).join(", ")}`;
+  return b;
+}
+
+interface FlyItem {
+  icon: string;
+  label: string;
+  title?: string;
+  on?: boolean;
+  /** One of several ways (checked), rather than an action. */
+  radio?: boolean;
+  run: () => void;
+}
+
+/** A menu unfolded beside a tool of the column (tapped again, it folds). */
+export function toggleFlyout(anchor: HTMLElement, items: FlyItem[]) {
   if (closeSelectModes()) return;
   const el = document.createElement("div");
   el.id = "select-modes";
   el.setAttribute("role", "menu");
-  for (const [m, ic, name, how] of SELECT_MODES) {
+  for (const it of items) {
     const b = document.createElement("button");
-    b.className = "fly-item" + (m === ed.selectMode ? " on" : "");
-    b.setAttribute("role", "menuitemradio");
-    b.setAttribute("aria-checked", String(m === ed.selectMode));
-    b.innerHTML = `<span class="tile">${icon(ic)}</span><span class="label"></span>`;
-    b.querySelector(".label")!.textContent = name;
-    b.title = how;
+    b.className = "fly-item" + (it.on ? " on" : "");
+    b.setAttribute("role", it.radio ? "menuitemradio" : "menuitem");
+    if (it.radio) b.setAttribute("aria-checked", String(!!it.on));
+    b.innerHTML = `<span class="tile">${icon(it.icon)}</span><span class="label"></span>`;
+    b.querySelector(".label")!.textContent = it.label;
+    if (it.title) b.title = it.title;
     b.onclick = () => {
-      ed.selectMode = prefs.selectMode = m;
-      savePrefs();
       closeSelectModes();
-      renderTools();
-      toast(how);
+      it.run();
     };
     el.appendChild(b);
   }
@@ -271,11 +306,26 @@ export function renderTools() {
     el.appendChild(toolRow("close", "Cancel", () => escape()));
   } else if (isAssembly()) {
     el.appendChild(section("Parts"));
-    el.appendChild(toolRow("plus", "Insert part", () => void showPartPicker(), { key: "I" }));
-    el.appendChild(toolRow("part", "New part", () => void newPartHere()));
-    if (S.doc.instances?.length) el.appendChild(toolRow("copy", "Copy as part", () => startCombine(true), { active: S.mode.kind === "combine" && S.mode.op === "keep" }));
-    el.appendChild(toolRow("import", "Import STEP", () => void importStep()));
-    el.appendChild(toolRow("import", "Import STL", () => void importStl()));
+    // Ways to bring a part in, and files to import: one tool each, unfolding its choices.
+    const copying = S.mode.kind === "combine" && S.mode.op === "keep";
+    el.appendChild(
+      toolGroup(
+        "plus",
+        "Add part",
+        [
+          { icon: "plus", label: "Insert a part", title: "One of your other projects (I)", run: () => void showPartPicker() },
+          { icon: "part", label: "New part", title: "An empty part placed here, opened to be drawn", run: () => void newPartHere() },
+          ...(S.doc.instances?.length ? [{ icon: "copy", label: "Copy as part", title: "Parts of this assembly, as they are placed, into a new part", on: copying, run: () => startCombine(true) }] : []),
+        ],
+        { active: copying },
+      ),
+    );
+    el.appendChild(
+      toolGroup("import", "Import", [
+        { icon: "import", label: "STEP file", title: "Each solid of the file becomes a part", run: () => void importStep() },
+        { icon: "import", label: "STL mesh", title: "The mesh becomes a part", run: () => void importStl() },
+      ]),
+    );
     if ((S.doc.instances?.length ?? 0) > 1 || S.mode.kind === "mate") {
       el.appendChild(toolRow("align", "Align", startAlign, { active: S.mode.kind === "align", key: "A" }));
       el.appendChild(toolRow("combine", "Combine", () => startCombine(), { active: S.mode.kind === "combine" && S.mode.op !== "keep", key: "B" }));
