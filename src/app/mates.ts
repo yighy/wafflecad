@@ -101,7 +101,7 @@ export async function mateTap(p: Ptr) {
     if (!tri || !body || !inst) return;
     const g = await askRef({ kind: "mesh", body: body.id, p: tri.point });
     if (S.mode !== m) return; // left meanwhile
-    if (!g) return toast("Tap a flat face of the mesh: a round one cannot be mated yet");
+    if (!g) return toast("Tap a flat face, a hole or a pin of the mesh: this surface is neither");
     pick = { ref: { part: inst.id, kind: g.kind, ...localRef(g.origin, g.dir, instanceMatrix(inst)) } };
   }
   for (const k of pick ? [] : [ei != null ? { kind: "edge" as const, id: vp.edgeId(ei) } : null, face != null ? { kind: "face" as const, id: face } : null]) {

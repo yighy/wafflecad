@@ -552,6 +552,158 @@ export function flatRegion(s: MeshSolid, seed: number): { normal: [number, numbe
   return { normal: n, point, area, curved: border > 0 && soft / border > 0.5, outline: new Float32Array(outline) };
 }
 
+// ---------- Round faces of a mesh (holes, pins) ----------
+
+/** Eigenvectors of a symmetric 3×3 matrix (rows of the result), smallest eigenvalue first. */
+function eigen3(m: number[][]): { values: number[]; vectors: number[][] } {
+  const a = m.map((r) => [...r]);
+  const v = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 50; sweep++) {
+    const off = a[0][1] ** 2 + a[0][2] ** 2 + a[1][2] ** 2;
+    if (off < 1e-24) break;
+    for (const [p, q] of [[0, 1], [0, 2], [1, 2]]) {
+      if (Math.abs(a[p][q]) < 1e-30) continue;
+      const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+      const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+      const c = 1 / Math.sqrt(t * t + 1);
+      const s = t * c;
+      for (let k = 0; k < 3; k++) {
+        const akp = a[k][p], akq = a[k][q];
+        a[k][p] = c * akp - s * akq;
+        a[k][q] = s * akp + c * akq;
+      }
+      for (let k = 0; k < 3; k++) {
+        const apk = a[p][k], aqk = a[q][k];
+        a[p][k] = c * apk - s * aqk;
+        a[q][k] = s * apk + c * aqk;
+      }
+      for (let k = 0; k < 3; k++) {
+        const vkp = v[k][p], vkq = v[k][q];
+        v[k][p] = c * vkp - s * vkq;
+        v[k][q] = s * vkp + c * vkq;
+      }
+    }
+  }
+  const order = [0, 1, 2].sort((i, j) => a[i][i] - a[j][j]);
+  return { values: order.map((i) => a[i][i]), vectors: order.map((i) => [v[0][i], v[1][i], v[2][i]]) };
+}
+
+/**
+ * The cylinder a round face of a mesh lies on (a hole's wall, a pin), around a triangle: the
+ * triangles reached from it across gentle folds, whose normals all lie square to one direction
+ * (the axis), and whose corners lie at one distance from it. Null when they do not (a flat face,
+ * a sphere, a free-form surface).
+ */
+export function fitCylinder(s: MeshSolid, seed: number): { origin: [number, number, number]; axis: [number, number, number]; radius: number; length: number } | null {
+  const { normals, edges } = topology(s);
+  const v = s.vertices;
+  const tr = s.triangles;
+  const soft = Math.cos((30 * Math.PI) / 180);
+  const nOf = (t: number) => [normals[t * 3], normals[t * 3 + 1], normals[t * 3 + 2]];
+  const region = new Set([seed]);
+  const todo = [seed];
+  while (todo.length && region.size < 200_000) {
+    const t = todo.pop()!;
+    const n = nOf(t);
+    for (let k = 0; k < 3; k++) {
+      const p = tr[t * 3 + k];
+      const q = tr[t * 3 + ((k + 1) % 3)];
+      for (const o of edges.get(p < q ? `${p},${q}` : `${q},${p}`) ?? []) {
+        if (region.has(o)) continue;
+        const m = nOf(o);
+        if (n[0] * m[0] + n[1] * m[1] + n[2] * m[2] < soft) continue;
+        region.add(o);
+        todo.push(o);
+      }
+    }
+  }
+  if (region.size < 4) return null;
+  // The axis: the direction the normals stay square to (least spread along it).
+  const cov = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const corners = new Set<number>();
+  for (const t of region) {
+    const [a, b, c] = [tr[t * 3] * 3, tr[t * 3 + 1] * 3, tr[t * 3 + 2] * 3];
+    const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2];
+    const wx = v[c] - v[a], wy = v[c + 1] - v[a + 1], wz = v[c + 2] - v[a + 2];
+    const area = Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2;
+    const n = nOf(t);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) cov[i][j] += area * n[i] * n[j];
+    for (let k = 0; k < 3; k++) corners.add(tr[t * 3 + k]);
+  }
+  const total = cov[0][0] + cov[1][1] + cov[2][2];
+  if (!(total > 0)) return null;
+  const { values, vectors } = eigen3(cov);
+  // Normals square to the axis, and turning around it (not all one way, as on a flat face).
+  if (values[0] / total > 0.01 || values[1] / total < 0.05) return null;
+  const axis = vectors[0] as [number, number, number];
+  // Two directions across the axis, and the corners seen along it.
+  const u = Math.abs(axis[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const d = u[0] * axis[0] + u[1] * axis[1] + u[2] * axis[2];
+  const e1 = [u[0] - axis[0] * d, u[1] - axis[1] * d, u[2] - axis[2] * d];
+  const l1 = Math.hypot(e1[0], e1[1], e1[2]);
+  for (let k = 0; k < 3; k++) e1[k] /= l1;
+  const e2 = [axis[1] * e1[2] - axis[2] * e1[1], axis[2] * e1[0] - axis[0] * e1[2], axis[0] * e1[1] - axis[1] * e1[0]];
+  const xs: number[] = [];
+  const ys: number[] = [];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const k of corners) {
+    const p = [v[k * 3], v[k * 3 + 1], v[k * 3 + 2]];
+    xs.push(p[0] * e1[0] + p[1] * e1[1] + p[2] * e1[2]);
+    ys.push(p[0] * e2[0] + p[1] * e2[1] + p[2] * e2[2]);
+    const h = p[0] * axis[0] + p[1] * axis[1] + p[2] * axis[2];
+    lo = Math.min(lo, h);
+    hi = Math.max(hi, h);
+  }
+  // A circle through them (least squares on x² + y² + Dx + Ey + F = 0), about their middle.
+  const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+  const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const B = [0, 0, 0];
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i] - mx;
+    const y = ys[i] - my;
+    const row = [x, y, 1];
+    const rhs = -(x * x + y * y);
+    for (let r = 0; r < 3; r++) {
+      B[r] += row[r] * rhs;
+      for (let c = 0; c < 3; c++) A[r][c] += row[r] * row[c];
+    }
+  }
+  const sol = solve3(A, B);
+  if (!sol) return null;
+  const cx = -sol[0] / 2;
+  const cy = -sol[1] / 2;
+  const r2 = cx * cx + cy * cy - sol[2];
+  if (!(r2 > 0)) return null;
+  const radius = Math.sqrt(r2);
+  let err = 0;
+  for (let i = 0; i < xs.length; i++) err += (Math.hypot(xs[i] - mx - cx, ys[i] - my - cy) - radius) ** 2;
+  if (Math.sqrt(err / xs.length) > Math.max(0.01, radius * 0.02)) return null;
+  const X = cx + mx;
+  const Y = cy + my;
+  const mid = (lo + hi) / 2;
+  const origin: [number, number, number] = [0, 1, 2].map((k) => e1[k] * X + e2[k] * Y + axis[k] * mid) as [number, number, number];
+  return { origin, axis, radius, length: hi - lo };
+}
+
+/** Solves a 3×3 linear system (null when it has no single answer). */
+function solve3(A: number[][], B: number[]): number[] | null {
+  const m = A.map((r, i) => [...r, B[i]]);
+  for (let c = 0; c < 3; c++) {
+    let p = c;
+    for (let r = c + 1; r < 3; r++) if (Math.abs(m[r][c]) > Math.abs(m[p][c])) p = r;
+    if (Math.abs(m[p][c]) < 1e-12) return null;
+    [m[c], m[p]] = [m[p], m[c]];
+    for (let r = 0; r < 3; r++) {
+      if (r === c) continue;
+      const f = m[r][c] / m[c][c];
+      for (let k = c; k < 4; k++) m[r][k] -= f * m[c][k];
+    }
+  }
+  return [m[0][3] / m[0][0], m[1][3] / m[1][1], m[2][3] / m[2][2]];
+}
+
 /** Binary STL of several meshes together. */
 export function stlBlob(meshes: { vertices: ArrayLike<number>; triangles: ArrayLike<number> }[]): Blob {
   const count = meshes.reduce((n, m) => n + m.triangles.length / 3, 0);

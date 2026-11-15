@@ -150,7 +150,7 @@ async function sketchOnMesh(p: Ptr, faceId: number) {
   if (!tri || !body) return;
   const g = await askRef({ kind: "mesh", body: body.id, p: tri.point });
   if (S.mode !== mode) return; // left meanwhile
-  if (!g) return toast("Only flat faces can hold a sketch: this part of the mesh is curved");
+  if (!g || g.kind !== "plane") return toast("Only flat faces can hold a sketch: this part of the mesh is curved");
   let plane = facePlane(g.dir, g.origin);
   if (S.mode.kind === "pickPlane" && (S.mode.offset || S.mode.tiltX || S.mode.tiltY)) plane = placedPlane(plane, S.mode);
   createSketchOn(plane);

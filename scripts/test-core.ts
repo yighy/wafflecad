@@ -1,7 +1,7 @@
 // Core tests under Node: solver, profile detection, solid build. Run: npm test
 import opencascade from "replicad-opencascadejs";
 import { measureVolume, setOC } from "replicad";
-import { type AnySolid, encodeMesh, initManifold, isMesh, meshSolid, meshVolume, parseStl } from "../src/cad/mesh";
+import { type AnySolid, encodeMesh, initManifold, isMesh, meshBoolean, meshSolid, meshVolume, parseStl } from "../src/cad/mesh";
 import { Solver } from "../src/sketch/solver";
 import { constraintName, deleteEntities, entityName, mergePoints, newSketch, uid } from "../src/sketch/model";
 import { findRegions, openPath, sampleSegments, signedArea } from "../src/sketch/profiles";
@@ -1392,15 +1392,19 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   mr = measure(null, [{ kind: "mesh", body: cubeMesh[0].id, p: [3, 4, 10] }, { kind: "point", p: [20, 20, 4] }], cubeMesh);
   check("stl measure: a point 6 below the top face's plane", near(row(mr, "Distance to the flat face's plane"), 6, 1e-6), JSON.stringify(mr.rows));
   const sides = 32;
-  const cv: number[] = [];
-  for (const z of [0, 10]) for (let i = 0; i < sides; i++) cv.push(5 * Math.cos((2 * Math.PI * i) / sides), 5 * Math.sin((2 * Math.PI * i) / sides), z);
-  cv.push(0, 0, 0, 0, 0, 10);
-  const ct: number[] = [];
-  for (let i = 0; i < sides; i++) {
-    const j = (i + 1) % sides;
-    ct.push(i, j, sides + j, i, sides + j, sides + i, 2 * sides, j, i, 2 * sides + 1, sides + i, sides + j);
-  }
-  const cylBodies = [{ id: "cy", shape: meshSolid(new Float32Array(cv), new Uint32Array(ct)) }];
+  /** A closed 32-sided cylinder (or cone, with two radii) standing on Z. */
+  const cylMesh = (cx: number, cy: number, r0: number, r1: number, z0: number, z1: number) => {
+    const cv: number[] = [];
+    for (const [z, r] of [[z0, r0], [z1, r1]]) for (let i = 0; i < sides; i++) cv.push(cx + r * Math.cos((2 * Math.PI * i) / sides), cy + r * Math.sin((2 * Math.PI * i) / sides), z);
+    cv.push(cx, cy, z0, cx, cy, z1);
+    const ct: number[] = [];
+    for (let i = 0; i < sides; i++) {
+      const j = (i + 1) % sides;
+      ct.push(i, j, sides + j, i, sides + j, sides + i, 2 * sides, j, i, 2 * sides + 1, sides + i, sides + j);
+    }
+    return meshSolid(new Float32Array(cv), new Uint32Array(ct));
+  };
+  const cylBodies = [{ id: "cy", shape: cylMesh(0, 0, 5, 5, 0, 10) }];
   mr = measure(null, [{ kind: "mesh", body: "cy", p: [5, 0.01, 5] }], cylBodies);
   check("stl measure: the side of a cylinder is not a flat face", Number.isNaN(row(mr, "Flat face area")) && near(row(mr, "Mesh size Z"), 10, 1e-6), JSON.stringify(mr.rows));
   mr = measure(null, [{ kind: "mesh", body: "cy", p: [1, 1, 10] }], cylBodies);
@@ -1409,7 +1413,23 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   // The plane of a flat face of a mesh (mates, sketches): none on a curved surface.
   const topRef = meshRef(cubeMesh[0].shape, [3, 4, 10]);
   check("stl plane: the top of the cube, from its middle", !!topRef && topRef.kind === "plane" && near(topRef.dir[2], 1, 1e-9) && near(topRef.origin[0], 5, 1e-6) && near(topRef.origin[1], 5, 1e-6) && near(topRef.origin[2], 10, 1e-6), JSON.stringify(topRef));
-  check("stl plane: none on the side of a cylinder", meshRef(cylBodies[0].shape, [5, 0.01, 5]) === null);
+  const axisRef = meshRef(cylBodies[0].shape, [5, 0.01, 5]);
+  check("stl axis: the side of a cylinder gives its axis", !!axisRef && axisRef.kind === "axis" && near(Math.abs(axisRef.dir[2]), 1, 1e-9) && near(axisRef.origin[0], 0, 1e-6) && near(axisRef.origin[1], 0, 1e-6), JSON.stringify(axisRef));
+  mr = measure(null, [{ kind: "mesh", body: "cy", p: [5, 0.01, 5] }], cylBodies);
+  check("stl axis: its radius, diameter and length", near(row(mr, "Radius"), 5, 1e-4) && near(row(mr, "Diameter"), 10, 1e-4) && near(row(mr, "Round face length"), 10, 1e-6), JSON.stringify(mr.rows));
+  check("stl axis: none on a cone", meshRef(cylMesh(0, 0, 5, 2, 0, 10), [3.5, 0.01, 5]) === null);
+  check("stl axis: none on a flat face", meshRef(cubeMesh[0].shape, [3, 4, 10])?.kind === "plane");
+  // Two holes 8 apart through a 20 × 20 × 10 block: their diameter, and centre to centre.
+  const block2 = meshSolid(...(() => {
+    const m = parseStl(boxStl([0, 0, 0], [20, 20, 10]));
+    return [m.vertices, m.triangles] as const;
+  })());
+  const holed = meshBoolean(meshBoolean(block2, cylMesh(6, 10, 2, 2, -1, 11), "cut"), cylMesh(14, 10, 3, 3, -1, 11), "cut");
+  const holes = [{ id: "h", shape: holed }];
+  mr = measure(null, [{ kind: "mesh", body: "h", p: [8, 10, 5] }], holes);
+  check("stl axis: a hole's diameter", near(row(mr, "Diameter"), 4, 1e-3), JSON.stringify(mr.rows));
+  mr = measure(null, [{ kind: "mesh", body: "h", p: [8, 10, 5] }, { kind: "mesh", body: "h", p: [11, 10, 5] }], holes);
+  check("stl axis: two holes, centre to centre", near(row(mr, "Axis distance"), 8, 1e-3) && near(row(mr, "Angle"), 0, 1e-3), JSON.stringify(mr.rows));
 
   // A sketch on the top of the cube: extruded, it joins the mesh; cut, it goes into it.
   const onTop = newSketch("On top", { origin: [0, 0, 10], xDir: [1, 0, 0], normal: [0, 0, 1], label: "Face" });

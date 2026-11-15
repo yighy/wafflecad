@@ -2,7 +2,7 @@
 // bodies (STL) by their flat faces and the spots tapped on them.
 // No DOM dependency: runs in the worker, and is testable under Node.
 import { getOC, makeVertex, measureArea, type AnyShape, type Edge, type Face, type Shape3D } from "replicad";
-import { type AnySolid, flatRegion, isMesh, meshVolume, triangleAt } from "./mesh";
+import { type AnySolid, fitCylinder, flatRegion, isMesh, meshVolume, triangleAt } from "./mesh";
 import type { MeasurePick, MeasureResult, MeasureRow, Vec3 } from "../types";
 
 type Dir = { kind: "plane" | "line"; d: Vec3 };
@@ -15,8 +15,9 @@ interface Item {
   /** Centre of a circle (or of a point). */
   centre?: Vec3;
   point?: Vec3;
-  /** A point of its plane (flat faces), and where it was tapped (meshes). */
+  /** A point of its plane (flat faces), of its axis (round faces), and where it was tapped (meshes). */
   planeAt?: Vec3;
+  axisAt?: Vec3;
   tapped?: Vec3;
   /** Picked on a mesh: distances are taken from the spot tapped, or across flat faces. */
   mesh?: boolean;
@@ -49,6 +50,7 @@ function faceItem(face: Face): Item {
     const c = adaptor(face).Cylinder();
     rows.unshift({ label: "Radius", value: c.Radius(), unit: "mm" }, { label: "Diameter", value: 2 * c.Radius(), unit: "mm" });
     item.dir = { kind: "line", d: unit(gp(c.Axis().Direction())) };
+    item.axisAt = gp(c.Location());
   }
   return item;
 }
@@ -86,10 +88,18 @@ function pointItem(p: Vec3): Item {
  */
 function meshItem(body: AnySolid, p: Vec3): Item {
   if (!isMesh(body)) throw new Error("The model changed: pick again");
-  const r = flatRegion(body, triangleAt(body, p));
+  const tri = triangleAt(body, p);
+  const r = flatRegion(body, tri);
+  const cyl = r.curved ? fitCylinder(body, tri) : null;
   const [lo, hi] = body.bounds();
   const rows: MeasureRow[] = [];
   if (!r.curved) rows.push({ label: "Flat face area", value: r.area, unit: "mm²" });
+  if (cyl)
+    rows.push(
+      { label: "Radius", value: cyl.radius, unit: "mm" },
+      { label: "Diameter", value: 2 * cyl.radius, unit: "mm" },
+      { label: "Round face length", value: cyl.length, unit: "mm" },
+    );
   rows.push(
     { label: "Mesh size X", value: hi[0] - lo[0], unit: "mm" },
     { label: "Mesh size Y", value: hi[1] - lo[1], unit: "mm" },
@@ -101,6 +111,9 @@ function meshItem(body: AnySolid, p: Vec3): Item {
     item.dir = { kind: "plane", d: r.normal };
     item.planeAt = r.point;
     item.outline = r.outline;
+  } else if (cyl) {
+    item.dir = { kind: "line", d: cyl.axis };
+    item.axisAt = cyl.origin;
   }
   return item;
 }
@@ -187,7 +200,15 @@ function meshDistance(a: Item, b: Item): MeasureResult {
   const rows: MeasureRow[] = [];
   let line: [Vec3, Vec3];
   const from = (i: Item) => i.tapped ?? i.point ?? i.planeAt ?? i.centre;
-  if (a.dir?.kind === "plane" && b.dir?.kind === "plane" && a.planeAt && b.planeAt && Math.abs(dot(a.dir.d, b.dir.d)) > 1 - 1e-6) {
+  if (a.axisAt && b.axisAt && a.dir && b.dir && Math.abs(dot(a.dir.d, b.dir.d)) > 1 - 1e-4) {
+    // Two holes or pins side by side: centre to centre.
+    const n = a.dir.d;
+    const w: Vec3 = [b.axisAt[0] - a.axisAt[0], b.axisAt[1] - a.axisAt[1], b.axisAt[2] - a.axisAt[2]];
+    const along = dot(w, n);
+    const across: Vec3 = [w[0] - n[0] * along, w[1] - n[1] * along, w[2] - n[2] * along];
+    rows.push({ label: "Axis distance", value: Math.hypot(...across), unit: "mm" });
+    line = [a.axisAt, [a.axisAt[0] + across[0], a.axisAt[1] + across[1], a.axisAt[2] + across[2]]];
+  } else if (a.dir?.kind === "plane" && b.dir?.kind === "plane" && a.planeAt && b.planeAt && Math.abs(dot(a.dir.d, b.dir.d)) > 1 - 1e-6) {
     const n = a.dir.d;
     const gap = dot([b.planeAt[0] - a.planeAt[0], b.planeAt[1] - a.planeAt[1], b.planeAt[2] - a.planeAt[2]], n);
     rows.push({ label: "Distance", value: Math.abs(gap), unit: "mm" });
@@ -244,12 +265,17 @@ export function refGeometry(shape: Shape3D | null, pick: Extract<MeasurePick, { 
 
 /**
  * The plane of the flat face of a mesh body around a spot tapped on it (origin: the middle of
- * that face), or null on a curved surface.
+ * that face), the axis of the round face there (a hole, a pin), or null on any other surface.
  */
 export function meshRef(body: AnySolid | undefined, p: Vec3): RefGeom | null {
   if (!isMesh(body)) return null;
-  const r = flatRegion(body, triangleAt(body, p));
-  if (r.curved) return null;
+  const tri = triangleAt(body, p);
+  const r = flatRegion(body, tri);
+  if (r.curved) {
+    // A hole or a pin: its axis.
+    const cyl = fitCylinder(body, tri);
+    return cyl ? { kind: "axis", origin: cyl.origin, dir: cyl.axis } : null;
+  }
   // The middle of its border's points, put back on the plane.
   const o = r.outline;
   const c: Vec3 = [0, 0, 0];
