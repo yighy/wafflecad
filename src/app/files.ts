@@ -247,10 +247,10 @@ export function shiftShape(s: ImportShape, dx: number, dy: number): ImportShape 
 /**
  * An STL file becomes a step of the part: a mesh body of its own, as placed in the file (in mm).
  * It can then cut the part or be cut down to what it shares with it; exact steps after it (cuts,
- * holes, patterns) work on it too, through meshes.
+ * holes, patterns) work on it too, through meshes. In an assembly, it becomes a part of its own
+ * (a project holding just that step), placed beside the others.
  */
 export async function importStl() {
-  if (isAssembly()) return toast("Open a part to import an STL: an assembly cannot show meshes yet");
   const file = await pickFile(".stl,model/stl");
   if (!file) return;
   let mesh;
@@ -262,9 +262,22 @@ export async function importStl() {
   leaveModes();
   const fileId = uid();
   const name = file.name.replace(/\.stl$/i, "") || "Mesh";
+  const count = mesh.triangles.length / 3;
+  if (isAssembly()) {
+    const taken = (await listProjects().catch(() => [])).map((p) => p.name);
+    const now = Date.now();
+    const part: CadDocument = { ...emptyDoc(), files: { [fileId]: encodeMesh(mesh) }, features: [{ id: uid(), kind: "import", name, fileId, format: "stl", op: "add", body: "new" }] };
+    const meta: ProjectMeta = { id: newProjectId(), name: taken.includes(name) ? freeName(name, taken) : name, created: now, updated: now, group: newGroup() };
+    try {
+      await putProject(meta, part);
+    } catch {
+      return toast("Could not save in this browser");
+    }
+    if (count > 300_000) toast(`${Math.round(count / 1000)}k triangles: moving it and checking overlaps may be slow`);
+    return insertPart(meta, part);
+  }
   S.doc.files = { ...S.doc.files, [fileId]: encodeMesh(mesh) };
   S.doc.features.push({ id: uid(), kind: "import", name, fileId, format: "stl", op: "add", body: "new" });
-  const count = mesh.triangles.length / 3;
   if (count > 300_000) toast(`${Math.round(count / 1000)}k triangles: cuts and joins with it may take a few seconds`);
   M.fitNext = true;
   commit();

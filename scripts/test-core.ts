@@ -22,7 +22,7 @@ import { connectedContour, entitiesInside, pathTouchesBox, regionAt, selectionOu
 import { parse as parseFont } from "opentype.js";
 import { readFileSync } from "node:fs";
 import { applyParameters, dropSharedCopies, evaluate, partParameters, renameInExpr, resolveParameters, sharedUsed } from "../src/params";
-import type { CadDocument, CombineFeature, Mate, MateRef, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature } from "../src/types";
+import type { CadDocument, CombineFeature, Mate, MateRef, PartInstance, PlaneDef, SkEntity, SkLine, SkPoint, SketchFeature, Vec3 } from "../src/types";
 
 setOC(await opencascade());
 await initManifold();
@@ -1341,6 +1341,44 @@ check("a pinned point does not follow a drag", near(ent<SkPoint>(bsk, fixedPt.id
   }
   const exactStl = exportFile(block(), "stl")!;
   check("stl: exported in STL and 3MF; STEP refuses a mesh alone", stl.size === exactStl.size + 12 * 50 && !!tm && stepErr.includes("STEP"), JSON.stringify([stl.size, exactStl.size, stepErr]));
+
+  // In an assembly: a mesh part placed like any other, a part with both kinds as one mesh, and
+  // overlaps found between meshes and exact parts.
+  setPartDocs({ cube: meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "add", "new"), mixed: both, blk: block() });
+  const asm = (...instances: PartInstance[]): CadDocument => ({ format: "waffle", version: 1, features: [], kind: "assembly", instances });
+  const cubeAt = (x: number, rot: Vec3 = [0, 0, 0]): PartInstance => ({ id: "c", project: "cube", name: "Cube", at: [x, 0, 0], rot });
+  let a = buildShape(asm(cubeAt(50, [0, 0, 90])));
+  const cb = boxOf(a.bodies[0]?.shape);
+  check("stl assembly: a mesh part is placed, turned about Z then moved", !Object.keys(a.errors).length && isMesh(a.bodies[0]?.shape) && !!cb && near(cb[0][0], 40, 1e-4) && near(cb[1][0], 50, 1e-4) && near(cb[0][1], 0, 1e-4), JSON.stringify([a.errors, cb]));
+  a = buildShape(asm({ id: "m", project: "mixed", name: "Mixed", at: [0, 0, 0], rot: [0, 0, 0] }));
+  check("stl assembly: a part with exact and mesh bodies comes as one mesh", !Object.keys(a.errors).length && !Object.keys(a.warnings).length && isMesh(a.bodies[0]?.shape) && near(volumeOf(a.bodies[0].shape), 2000, 1e-2), JSON.stringify([a.errors, a.warnings, a.bodies.map((b) => volumeOf(b.shape))]));
+  const again = buildShape(asm({ id: "m", project: "mixed", name: "Mixed", at: [0, 0, 0], rot: [0, 0, 0] }));
+  check("stl assembly: unchanged, the same mesh comes back", again.bodies[0].shape === a.bodies[0].shape);
+  const view = buildResult(asm(cubeAt(50), { id: "b", project: "blk", name: "Block", at: [0, 0, 0], rot: [0, 0, 0] }));
+  check("stl assembly: shown, the mesh part with a face of its own", view.bodies?.length === 2 && view.bodies.some((b) => b.id === "c" && b.faceIds.length === 1 && b.faceIds[0] < 0), JSON.stringify(view.bodies?.map((b) => [b.id, b.faceIds.length])));
+  // The block is 20 × 10 × 5: the cube at x = 15 overlaps it by 5 × 10 × 5.
+  const clash = interferences(asm(cubeAt(15), { id: "b", project: "blk", name: "Block", at: [0, 0, 0], rot: [0, 0, 0] }));
+  check("stl assembly: a mesh part overlapping an exact one, with the volume", clash.length === 1 && near(clash[0].volume, 250, 1e-2) && clash[0].triangles.length > 0, JSON.stringify(clash.map((c) => c.volume)));
+  check("stl assembly: touching is not overlapping", interferences(asm(cubeAt(20), { id: "b", project: "blk", name: "Block", at: [0, 0, 0], rot: [0, 0, 0] })).length === 0);
+  const asmStl = exportFile(asm(cubeAt(50), { id: "b", project: "blk", name: "Block", at: [0, 0, 0], rot: [0, 0, 0] }), "stl")!;
+  check("stl assembly: exported in STL with the exact parts", asmStl.size === exactStl.size + 12 * 50, JSON.stringify([asmStl.size, exactStl.size]));
+
+  // Combine: the block cut by the cube placed at x = 15 (and turned, which a cube does not show
+  // but its place must still be undone), then the cube cut by the block.
+  const combineDoc = (f: Partial<CombineFeature>): CadDocument => ({
+    format: "waffle",
+    version: 1,
+    features: [{ id: "cb", kind: "combine", name: "Combine", assembly: "a1", target: { instance: "b", project: "blk" }, tools: ["c"], op: "cut", ...f }],
+  });
+  setPartDocs({ cube: meshDoc(boxStl([0, 0, 0], [10, 10, 10]), "add", "new"), blk: block(), a1: asm(cubeAt(15, [0, 0, 90]), { id: "b", project: "blk", name: "Block", at: [0, 0, 0], rot: [0, 0, 0] }) });
+  // Turned 90° about Z, the cube at x = 15 spans x 5 to 15: it takes 10 × 10 × 5 from the block.
+  let cr = buildShape(combineDoc({}));
+  check("stl combine: a mesh part cuts an exact one", !cr.errors.cb && cr.bodies.length === 1 && near(volumeOf(cr.bodies[0].shape), 500, 1e-2), JSON.stringify([cr.errors, cr.bodies.map((b) => volumeOf(b.shape))]));
+  cr = buildShape(combineDoc({ target: { instance: "c", project: "cube" }, tools: ["b"] }));
+  const crb = boxOf(cr.bodies[0]?.shape);
+  check("stl combine: the mesh part cut, in its own coordinates", !cr.errors.cb && near(volumeOf(cr.bodies[0].shape), 500, 1e-2) && !!crb && near(crb[0][2], 5, 1e-4) && near(crb[1][0], 10, 1e-4), JSON.stringify([cr.errors, crb]));
+  cr = buildShape(combineDoc({ clearance: 0.2 }));
+  check("stl combine: no play around a mesh part", !!cr.errors.cb?.includes("Play"), JSON.stringify(cr.errors));
 }
 
 console.log(failures ? `${failures} failure(s)` : "all tests passed");

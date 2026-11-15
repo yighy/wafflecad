@@ -302,6 +302,35 @@ export function transformMesh(s: MeshSolid, m: Mat4 | number[]): MeshSolid {
   return new MeshSolid(out, t, s.closed);
 }
 
+/**
+ * A copy turned and moved as an assembly places a part: about Z, then Y, then X (degrees, through
+ * the origin), then moved by `at`: the order placeShape uses for exact solids.
+ */
+export function placeMesh(s: MeshSolid, at: readonly number[], rot: readonly number[]): MeshSolid {
+  const [rx, ry, rz] = rot;
+  if (rz) s = transformMesh(s, rotation(rz, [0, 0, 1]));
+  if (ry) s = transformMesh(s, rotation(ry, [0, 1, 0]));
+  if (rx) s = transformMesh(s, rotation(rx, [1, 0, 0]));
+  if (at.some((v) => v !== 0)) s = transformMesh(s, translation(at));
+  return s;
+}
+
+/** Several meshes as one (side by side, not joined): closed when each of them is. */
+export function concatMeshes(parts: MeshSolid[]): MeshSolid {
+  if (parts.length === 1) return parts[0];
+  const vertices = new Float32Array(parts.reduce((n, p) => n + p.vertices.length, 0));
+  const triangles = new Uint32Array(parts.reduce((n, p) => n + p.triangles.length, 0));
+  let v = 0;
+  let t = 0;
+  for (const p of parts) {
+    vertices.set(p.vertices, v);
+    for (let i = 0; i < p.triangles.length; i++) triangles[t + i] = p.triangles[i] + v / 3;
+    v += p.vertices.length;
+    t += p.triangles.length;
+  }
+  return new MeshSolid(vertices, triangles, parts.every((p) => p.closed));
+}
+
 export const translation = (d: readonly number[]): number[] => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, d[0], d[1], d[2], 1];
 
 /** Turn by `deg` about an axis through the origin. */

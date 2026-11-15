@@ -8,7 +8,7 @@ import { startCombine } from "./combine";
 import { explodeTarget, toggleExplode } from "./explode";
 import { extrude } from "./extrude";
 import { faceTool } from "./faceTools";
-import { importDrawing, importStep, insertText } from "./files";
+import { importDrawing, importStep, importStl, insertText } from "./files";
 import { filletTool } from "./fillet";
 import { startHoles } from "./holes";
 import { checkInterference, clearClashes } from "./interference";
@@ -275,6 +275,7 @@ export function renderTools() {
     el.appendChild(toolRow("part", "New part", () => void newPartHere()));
     if (S.doc.instances?.length) el.appendChild(toolRow("copy", "Copy as part", () => startCombine(true), { active: S.mode.kind === "combine" && S.mode.op === "keep" }));
     el.appendChild(toolRow("import", "Import STEP", () => void importStep()));
+    el.appendChild(toolRow("import", "Import STL", () => void importStl()));
     if ((S.doc.instances?.length ?? 0) > 1 || S.mode.kind === "mate") {
       el.appendChild(toolRow("align", "Align", startAlign, { active: S.mode.kind === "align", key: "A" }));
       el.appendChild(toolRow("combine", "Combine", () => startCombine(), { active: S.mode.kind === "combine" && S.mode.op !== "keep", key: "B" }));

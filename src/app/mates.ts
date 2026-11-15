@@ -92,7 +92,14 @@ export async function mateTap(p: Ptr) {
   const ei = vp.pickEdge(p.x, p.y, hitRadiusPx(p));
   const face = vp.pickFace(p.x, p.y);
   let pick: MatePick | null = null;
-  for (const k of [ei != null ? { kind: "edge" as const, id: vp.edgeId(ei) } : null, face != null ? { kind: "face" as const, id: face } : null]) {
+  // A mesh part (STL) has no faces of its own: the triangle tapped gives the plane, which is the
+  // flat face it lies in. Holes and round edges cannot be told on a mesh.
+  if (face != null && face < 0 && ei == null) {
+    const tri = vp.pickTriangle(p.x, p.y);
+    const inst = instanceOf(bodies.find((b) => b.faceIds.includes(face))?.id ?? null);
+    if (tri && inst) pick = { ref: { part: inst.id, kind: "plane", ...localRef(tri.point, tri.normal, instanceMatrix(inst)) } };
+  }
+  for (const k of pick ? [] : [ei != null ? { kind: "edge" as const, id: vp.edgeId(ei) } : null, face != null ? { kind: "face" as const, id: face } : null]) {
     if (!k) continue;
     const body = bodies.find((b) => (k.kind === "face" ? b.faceIds : b.edgeIds).includes(k.id));
     const inst = instanceOf(body?.id ?? null);

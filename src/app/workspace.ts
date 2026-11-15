@@ -60,7 +60,7 @@ export function renderWorkspace() {
       "Import",
       [
         ["STEP", () => void importStep()],
-        ...(isAssembly() ? [] : [["STL mesh", () => void importStl()] as [string, () => void]]),
+        ["STL mesh", () => void importStl()],
         // A drawing goes into the sketch open.
         ...(S.mode.kind === "sketch" ? [["DXF / SVG", () => void importDrawing()] as [string, () => void]] : []),
         ["WaffleCAD file (.json)", openFile],

@@ -775,6 +775,17 @@ export class Viewport {
     return { point: [hit.point.x, hit.point.y, hit.point.z], faceId };
   }
 
+  /** The triangle under a screen point: where it was hit, its outward normal, and its face. */
+  pickTriangle(x: number, y: number): { point: Vec3; normal: Vec3; faceId: number | null } | null {
+    if (!this.mesh) return null;
+    const hit = this.ray(x, y).intersectObject(this.mesh)[0];
+    if (!hit?.face || hit.faceIndex == null) return null;
+    const n = hit.face.normal.clone().transformDirection(this.mesh.matrixWorld);
+    const i = hit.faceIndex * 3;
+    const faceId = this.faceGroups.find((g) => i >= g.start && i < g.start + g.count)?.faceId ?? null;
+    return { point: [hit.point.x, hit.point.y, hit.point.z], normal: [n.x, n.y, n.z], faceId };
+  }
+
   /** B-rep face id under a screen point, if any. */
   pickFace(x: number, y: number): number | null {
     if (!this.mesh) return null;

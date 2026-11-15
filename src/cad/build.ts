@@ -4,7 +4,7 @@ import { exportSTEP, measureArea, measureVolume, EdgeFinder, FaceFinder, Plane, 
 import type { Axis, BuildResult, CadDocument, Clash, CombineFeature, PartInstance, EdgeGroup, ExportFormat, ExtrudeFeature, RevolveFeature, FaceRef, FilletFeature, HoleFeature, LoftFeature, PatternFeature, PlanarFace, PlaneDef, ProfileLoop, ProfileSegment, PushPullFeature, ShellFeature, SketchFeature, SweepFeature, Vec3 } from "../types";
 import { holeDims, sketchHolePoints } from "./holes";
 import { make3mf } from "./threemf";
-import { type AnySolid, type MeshSolid, boxesMeet, decodeMesh, displayMesh, isMesh, isMeshText, meshBoolean, meshSolid, mirroring, rotation, stlBlob, transformMesh, translation } from "./mesh";
+import { type AnySolid, type MeshSolid, asMesh, boxesMeet, concatMeshes, decodeMesh, displayMesh, isMesh, isMeshText, meshBoolean, meshSolid, meshVolume, mirroring, placeMesh, rotation, stlBlob, transformMesh, translation } from "./mesh";
 import { hasRef } from "./measure";
 import { sketchLineWorld } from "../sketch/model";
 import { findRegions, openPath, sampleSegments } from "../sketch/profiles";
@@ -754,16 +754,29 @@ function unplaceShape(s: Shape3D, p: Pick<PartInstance, "at" | "rot">): Shape3D 
 }
 
 /** A project's solid (one body of it, or all), built from its document as the app sent it. */
-function projectSolid(id: string, body?: string): Shape3D {
+function projectSolid(id: string, body?: string): AnySolid {
   const part = docOf(id);
   if (!part) throw new Error("A part it uses is no longer there");
   if (part.kind === "assembly") throw new Error("An assembly cannot be combined into a part");
   if (building.has(part)) throw new Error("A part cannot use itself");
   const r = buildShape(part);
-  const solid = body ? r.bodies.find((b) => b.id === body)?.shape : r.shape;
-  if (isMesh(solid) || (!body && r.bodies.some((b) => isMesh(b.shape)))) throw new Error("A part with a mesh (STL) cannot be combined yet");
+  const solid = body ? r.bodies.find((b) => b.id === body)?.shape : wholePart(r);
   if (!solid) throw new Error(body ? "A body it uses is no longer in its part" : "A part it uses has no solid yet");
   return solid;
+}
+
+/** A solid of either kind placed as the assembly has it. */
+const placeAny = (s: AnySolid, p: Pick<PartInstance, "at" | "rot">): AnySolid => (isMesh(s) ? placeMesh(s, p.at, p.rot) : placeShape(s, p));
+
+/** From where the assembly put a solid back to a part's own coordinates. */
+function unplaceAny(s: AnySolid, p: Pick<PartInstance, "at" | "rot">): AnySolid {
+  if (!isMesh(s)) return unplaceShape(s, p);
+  const [rx, ry, rz] = p.rot;
+  if (p.at.some((v) => v !== 0)) s = transformMesh(s, translation(p.at.map((v) => -v)));
+  if (rx) s = transformMesh(s, rotation(-rx, [1, 0, 0]));
+  if (ry) s = transformMesh(s, rotation(-ry, [0, 1, 0]));
+  if (rz) s = transformMesh(s, rotation(-rz, [0, 0, 1]));
+  return s;
 }
 
 /**
@@ -775,7 +788,7 @@ function projectSolid(id: string, body?: string): Shape3D {
  * The combined solid, in the target's own coordinates (so it can take the target's place). With
  * "keep", the target and each other part apart (target first), as the assembly places them.
  */
-function combineSolids(f: CombineFeature): Shape3D[] {
+function combineSolids(f: CombineFeature): AnySolid[] {
   const asm = docOf(f.assembly);
   if (!asm || asm.kind !== "assembly") throw new Error("Its assembly is no longer there");
   const placed = (id: string) => asm.instances?.find((i) => i.id === id);
@@ -785,16 +798,17 @@ function combineSolids(f: CombineFeature): Shape3D[] {
   if (f.op === "keep")
     return [target, ...f.tools.map((id) => placed(id))].map((t) => {
       if (!t) throw new Error("A part it uses was removed from the assembly");
-      return placeShape(projectSolid(t === target ? f.target.project : t.project, t === target ? f.target.body : t.body), t);
+      return placeAny(projectSolid(t === target ? f.target.project : t.project, t === target ? f.target.body : t.body), t);
     });
   let tools = f.tools.map((id) => {
     const t = placed(id);
     if (!t) throw new Error("A part it uses was removed from the assembly");
-    return unplaceShape(placeShape(projectSolid(t.project, t.body), t), target);
+    return unplaceAny(placeAny(projectSolid(t.project, t.body), t), target);
   });
   if (f.op === "cut" && f.clearance) {
     const c = f.clearance;
     tools = tools.map((t) => {
+      if (isMesh(t)) throw new Error("Play cannot be added around a mesh (STL) part: set it to 0");
       try {
         return makeOffset(t as unknown as Face, c);
       } catch {
@@ -804,10 +818,10 @@ function combineSolids(f: CombineFeature): Shape3D[] {
   }
   let s = projectSolid(f.target.project, f.target.body);
   if (f.op === "intersect") {
-    const all = tools.reduce((a, b) => a.fuse(b));
-    s = s.intersect(all);
-  } else for (const t of tools) s = f.op === "add" ? s.fuse(t) : s.cut(t);
-  if (!s.faces.length) throw new Error(f.op === "intersect" ? "The parts do not overlap" : "Nothing is left");
+    const all = tools.reduce((a, b) => boolOp(a, b, "add"));
+    s = boolOp(s, all, "intersect");
+  } else for (const t of tools) s = boolOp(s, t, f.op === "add" ? "add" : "cut");
+  if (isMesh(s) ? !s.triangles.length : !s.faces.length) throw new Error(f.op === "intersect" ? "The parts do not overlap" : "Nothing is left");
   return [s];
 }
 
@@ -849,15 +863,35 @@ export function placeShape(part: Shape3D, p: Pick<PartInstance, "at" | "rot">): 
 const refChecks = new WeakMap<Shape3D, Map<string, boolean>>();
 
 /** Each placed part, kept while neither the part nor its place change. */
-const placedCache = new Map<string, { part: Shape3D; key: string; shape: Shape3D }>();
+const placedCache = new Map<string, { part: AnySolid; key: string; shape: AnySolid }>();
 /** The last assembly as one shape: the same object while no part moved, so its mesh is reused. */
-let lastAssembly: { parts: Shape3D[]; shape: Shape3D | null } = { parts: [], shape: null };
+let lastAssembly: { parts: AnySolid[]; shape: Shape3D | null } = { parts: [], shape: null };
+
+/**
+ * A whole part as one solid in an assembly: its exact bodies as one shape, or, once it has mesh
+ * bodies, everything as one mesh (the exact bodies turned into triangles beside them, not joined).
+ * Kept per part build, so an unchanged part is not turned into triangles again.
+ */
+const wholeParts = new WeakMap<MeshSolid, { from: AnySolid[]; whole: MeshSolid }>();
+function wholePart(r: { shape: Shape3D | null; bodies: { shape: AnySolid }[] }): AnySolid | undefined {
+  const all = r.bodies.map((b) => b.shape);
+  const meshes = all.filter(isMesh);
+  const exact = all.filter((s): s is Shape3D => !isMesh(s));
+  if (!meshes.length) return r.shape ?? undefined;
+  if (!exact.length && meshes.length === 1) return meshes[0];
+  // Bodies never change in place: the same ones give the same mesh.
+  const known = wholeParts.get(meshes[0]);
+  if (known && known.from.length === all.length && known.from.every((s, i) => s === all[i])) return known.whole;
+  const whole = concatMeshes([...exact.map(asMesh), ...meshes]);
+  wholeParts.set(meshes[0], { from: all, whole });
+  return whole;
+}
 
 /** An assembly: each part built from its own project (from the cache when unchanged), then placed. */
 function assemblyShape(doc: CadDocument) {
   const errors: Record<string, string> = {};
   const warnings: Record<string, string> = {};
-  const bodies: { id: string; shape: Shape3D }[] = [];
+  const bodies: { id: string; shape: AnySolid }[] = [];
   /** Each part's solid in its own coordinates (to check the faces mates use). */
   const own = new Map<string, Shape3D>();
   for (const inst of doc.instances ?? []) {
@@ -871,23 +905,22 @@ function assemblyShape(doc: CadDocument) {
       continue;
     }
     const r = buildShape(part);
-    const meshes = r.bodies.some((b) => isMesh(b.shape));
-    if (!r.shape || (inst.body && isMesh(r.bodies.find((b) => b.id === inst.body)?.shape))) {
-      errors[inst.id] = meshes ? "Mesh (STL) bodies cannot be shown in an assembly yet" : "The part has no solid yet";
+    if (!r.bodies.length) {
+      errors[inst.id] = "The part has no solid yet";
       continue;
     }
-    if (meshes && !inst.body) warnings[inst.id] = "Its mesh (STL) bodies are not shown in an assembly yet";
     if (Object.keys(r.errors).length) warnings[inst.id] = "Some steps of the part fail: open it to fix them";
     // One body of the part, or all of it.
-    const solid = (inst.body ? r.bodies.find((b) => b.id === inst.body)?.shape : r.shape) as Shape3D | undefined;
+    const solid = inst.body ? r.bodies.find((b) => b.id === inst.body)?.shape : wholePart(r);
     if (!solid) {
       errors[inst.id] = "Its body is no longer in the part";
       continue;
     }
-    own.set(inst.id, solid);
+    if (!isMesh(solid)) own.set(inst.id, solid);
     const key = JSON.stringify([inst.at, inst.rot]);
     let p = placedCache.get(inst.id);
-    if (!p || p.part !== solid || p.key !== key) placedCache.set(inst.id, (p = { part: solid, key, shape: placeShape(solid, inst) }));
+    if (!p || p.part !== solid || p.key !== key)
+      placedCache.set(inst.id, (p = { part: solid, key, shape: isMesh(solid) ? placeMesh(solid, inst.at, inst.rot) : placeShape(solid, inst) }));
     bodies.push({ id: inst.id, shape: p.shape });
   }
   // A mate whose face or axis is no longer in its part (the part was changed) still holds the
@@ -917,17 +950,32 @@ function assemblyShape(doc: CadDocument) {
  * boxes meet are intersected; parts that only touch (flush faces) have no volume and are left out.
  */
 export function interferences(doc: CadDocument, skip: string[] = []): Clash[] {
-  const list = buildShape(doc).bodies.filter((b): b is { id: string; shape: Shape3D } => !skip.includes(b.id) && !isMesh(b.shape));
-  const boxes = list.map((b) => b.shape.boundingBox.bounds);
+  const list = buildShape(doc).bodies.filter((b) => !skip.includes(b.id));
+  const boxes = list.map((b) => boundsOf(b.shape));
   const out: Clash[] = [];
   for (let i = 0; i < list.length; i++)
     for (let j = i + 1; j < list.length; j++) {
       const [la, ha] = boxes[i];
       const [lb, hb] = boxes[j];
       if ([0, 1, 2].some((k) => ha[k] <= lb[k] + 1e-6 || hb[k] <= la[k] + 1e-6)) continue;
+      const [sa, sb] = [list[i].shape, list[j].shape];
+      if (isMesh(sa) || isMesh(sb)) {
+        // A mesh that is not closed has no inside to overlap with.
+        if ((isMesh(sa) && !sa.closed) || (isMesh(sb) && !sb.closed)) continue;
+        let x: MeshSolid;
+        try {
+          x = meshBoolean(sa, sb, "intersect");
+        } catch {
+          continue;
+        }
+        const volume = x.triangles.length ? meshVolume(x) : 0;
+        if (volume < 1e-3) continue;
+        out.push({ a: list[i].id, b: list[j].id, volume, vertices: x.vertices.slice(), triangles: x.triangles.slice() });
+        continue;
+      }
       let x: Shape3D;
       try {
-        x = list[i].shape.intersect(list[j].shape);
+        x = sa.intersect(sb);
       } catch {
         continue;
       }
